@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// DiamaneOS-wide overlays, installed on the product partition for every device.
+
+runtime_resource_overlay {
+    name: "DiamaneOSSettingsOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSettingsOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSettingsOverlay/res"],
+}
