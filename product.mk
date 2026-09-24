@@ -9,5 +9,7 @@ endif
 
 PRODUCT_BRAND := DiamaneOS
 
+$(call inherit-product, vendor/diamaneos/config/common.mk)
+
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += DiamaneOSSettingsOverlay
