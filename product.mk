@@ -8,3 +8,6 @@ $(error OFFICIAL_BUILD must be unset for DiamaneOS products)
 endif
 
 PRODUCT_BRAND := DiamaneOS
+
+# DiamaneOS-wide overlays (overlay/).
+PRODUCT_PACKAGES += DiamaneOSSettingsOverlay
