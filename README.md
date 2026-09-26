@@ -7,7 +7,8 @@ This repository owns what every DiamaneOS product shares:
 
 - `product.mk`: product identity; inherits `config/common.mk`.
 - `config/common.mk`: vendor-side selection that `base_vendor.mk` would
-  otherwise provide (recovery runtime, compatibility matrix).
+  otherwise provide (recovery runtime, compatibility matrix), and adb
+  authorization for debuggable builds.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi to inherit.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 
