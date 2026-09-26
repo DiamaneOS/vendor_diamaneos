@@ -8,4 +8,9 @@ runtime_resource_overlay {
     product_specific: true,
     manifest: "DiamaneOSSettingsOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSSettingsOverlay/res"],
+    // GrapheneOS's handheld_product.mk installs its Info app (GrapheneOS
+    // release notes from grapheneos.org, donation and community links).
+    // DiamaneOS does not ship it. This overlay is installed on every product,
+    // so it carries the override and nothing else changes on the image.
+    overrides: ["InfoApp"],
 }
