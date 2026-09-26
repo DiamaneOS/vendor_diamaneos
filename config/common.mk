@@ -6,6 +6,13 @@
 # generic_system without base_vendor.mk, so some of its vendor-side selection is
 # restated here.
 
+# Debuggable builds still ask on the phone before trusting a computer for adb.
+# adbd skips that check on userdebug builds and unlocked phones unless this is
+# set, and gen_build_prop sets it only for user builds.
+ifneq ($(TARGET_BUILD_VARIANT),user)
+PRODUCT_SYSTEM_PROPERTIES += ro.adb.secure=1
+endif
+
 # Generate the standard device compatibility matrix and system SDK requirements.
 # generic_system does not inherit the base_vendor package selection.
 PRODUCT_PACKAGES += vendor_compatibility_matrix.xml

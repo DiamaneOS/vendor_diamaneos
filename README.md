@@ -7,7 +7,8 @@ What every DiamaneOS product shares:
 
 - `product.mk`: product identity; inherits `config/common.mk`.
 - `config/common.mk`: vendor-side selection that `base_vendor.mk` would
-  otherwise provide (recovery runtime, compatibility matrix).
+  otherwise provide (recovery runtime, compatibility matrix), and the netd log
+  level that keeps hardware addresses out of the log.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 
