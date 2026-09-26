@@ -7,7 +7,8 @@ ifneq ($(strip $(OFFICIAL_BUILD)),)
 $(error OFFICIAL_BUILD must be unset for DiamaneOS products)
 endif
 
-PRODUCT_BRAND := DiamaneOS
+# Products keep their device maker's brand and product identity in the build
+# properties (as GrapheneOS does); DiamaneOS is the name shown to people.
 
 $(call inherit-product, vendor/diamaneos/config/common.mk)
 
