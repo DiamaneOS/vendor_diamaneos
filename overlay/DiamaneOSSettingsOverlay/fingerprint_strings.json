@@ -1,0 +1,938 @@
+{
+ "af": {
+  "edits": [
+   {
+    "old": "Pixel Imprint gebruik,",
+    "new": "Vingerafdrukslot gebruik,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Vingerafdrukslot, capitalised mid-sentence as in stock 'Wanneer Vingerafdrukslot gebruik word'; no other change."
+ },
+ "am": {
+  "edits": [
+   {
+    "old": "Pixel Imprintን",
+    "new": "በጣት አሻራ መክፈቻን",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "በጣት አሻራ መክፈቻ with accusative ን (በጣት አሻራ መክፈቻን ሲጠቀሙ), as stock inflects it in the split-screen string; no quotes, as in stock."
+ },
+ "ar": {
+  "edits": [
+   {
+    "old": "ميزة Pixel Imprint",
+    "new": "ميزة \\\"فتح الجهاز ببصمة الإصبع\\\"",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "فتح الجهاز ببصمة الإصبع; kept stock's ميزة and put the name in escaped ASCII double quotes after it, as stock does in its term strings."
+ },
+ "as": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ব্যৱহাৰ",
+    "new": "ফিংগাৰপ্ৰিণ্ট আনলক ব্যৱহাৰ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ফিংগাৰপ্ৰিণ্ট আনলক (private_space_fingerprint_title spelling, matching the ণ্ট used throughout these strings), unquoted before ব্যৱহাৰ কৰাৰ সময়ত as in stock's preferences-category string; no other grammar change."
+ },
+ "az": {
+  "edits": [
+   {
+    "old": "Pixel Imprint istifadə",
+    "new": "Barmaqla kilidaçma istifadə",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Barmaqla kilidaçma, sentence-initial; kept stock's bare-object 'X istifadə etdikdə' construction."
+ },
+ "b+sr+Latn": {
+  "edits": [
+   {
+    "old": "koristite Pixel Imprint",
+    "new": "koristite otključavanje otiskom prsta",
+    "applies_to": "all"
+   },
+   {
+    "old": "koristi Pixel Imprint",
+    "new": "koristi otključavanje otiskom prsta",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Otključavanje otiskom prsta, lowercase as in stock running text; accusative equals nominative (neuter) after koristite/koristi."
+ },
+ "be": {
+  "edits": [
+   {
+    "old": "ўжываеце Pixel Imprint",
+    "new": "ўжываеце разблакіроўку адбіткам пальца",
+    "applies_to": "all"
+   },
+   {
+    "old": "функцыю Pixel Imprint",
+    "new": "функцыю разблакіроўкі адбіткам пальца",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Разблакіроўка адбіткам пальца, lowercase as in stock running text; accusative разблакіроўку after ўжываеце, genitive разблакіроўкі after stock's функцыю."
+ },
+ "bg": {
+  "edits": [
+   {
+    "old": "с Pixel Imprint",
+    "new": "с „Отключване с отпечатък“",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Отключване с отпечатък, capitalised in „…“ quotes as stock embeds it in running text; no case change needed."
+ },
+ "bn": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ব্যবহার",
+    "new": "ফিঙ্গারপ্রিন্ট আনলক ব্যবহার",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ফিঙ্গারপ্রিন্ট আনলক, unquoted before ব্যবহার করার সময় exactly as in stock 'ফিঙ্গারপ্রিন্ট আনলক ব্যবহার করার সময়' (stock quotes the name only in its 'feature' phrasings); no other grammar change."
+ },
+ "bs": {
+  "edits": [
+   {
+    "old": "koristite Pixel Imprint",
+    "new": "koristite otključavanje otiskom prsta",
+    "applies_to": "all"
+   },
+   {
+    "old": "koristi Pixel Imprint",
+    "new": "koristi otključavanje otiskom prsta",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Otključavanje otiskom prsta, lowercase as in stock running text; accusative equals nominative (neuter) after koristite/koristi."
+ },
+ "ca": {
+  "edits": [
+   {
+    "old": "Pixel Imprint",
+    "new": "Desbloqueig amb empremta digital",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Desbloqueig amb empremta digital\"; capitalised, no article, as in stock \"Quan utilitzes Desbloqueig amb empremta digital\"."
+ },
+ "cs": {
+  "edits": [
+   {
+    "old": "Pixel Imprint,",
+    "new": "funkci Odemknutí otiskem prstu,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Odemknutí otiskem prstu; added the accusative funkci before the capitalised name, as stock writes funkce Odemknutí otiskem prstu in running text."
+ },
+ "da": {
+  "edits": [
+   {
+    "old": "bruger Pixel Imprint,",
+    "new": "bruger fingeroplåsning,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "fingeroplåsning, lower-case mid-sentence as in stock 'Når du bruger fingeroplåsning'; no other change."
+ },
+ "de": {
+  "edits": [
+   {
+    "old": "die Funktion „Pixel Imprint“",
+    "new": "die Funktion „Entsperrung per Fingerabdruck“",
+    "applies_to": "all"
+   },
+   {
+    "old": "Wenn du Pixel Imprint nutzt",
+    "new": "Wenn du die Entsperrung per Fingerabdruck nutzt",
+    "applies_to": [
+     "footer_message_3:tablet"
+    ]
+   }
+  ],
+  "notes": "Entsperrung per Fingerabdruck; kept stock's die Funktion „…“ quoting; tablet's unquoted duplicate sentence gets the article die (as in stock 'Wenn die Entsperrung per Fingerabdruck genutzt wird')."
+ },
+ "el": {
+  "edits": [
+   {
+    "old": "του Pixel Imprint",
+    "new": "του Ξεκλειδώματος με δακτυλικό αποτύπωμα",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Ξεκλείδωμα με δακτυλικό αποτύπωμα, capitalised as in stock running text; genitive Ξεκλειδώματος after 'Κατά τη χρήση του', identical to stock 'Κατά τη χρήση του Ξεκλειδώματος με δακτυλικό αποτύπωμα'."
+ },
+ "en-rAU": {
+  "edits": [
+   {
+    "old": "use Pixel Imprint,",
+    "new": "use Fingerprint Unlock,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Fingerprint Unlock, capitalised as in stock mid-sentence (\"When using Fingerprint Unlock\"); no other change."
+ },
+ "en-rCA": {
+  "edits": [
+   {
+    "old": "use Pixel Imprint,",
+    "new": "use Fingerprint Unlock,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Fingerprint Unlock, capitalised as in stock mid-sentence (\"When using Fingerprint Unlock\"); no other change."
+ },
+ "en-rGB": {
+  "edits": [
+   {
+    "old": "use Pixel Imprint,",
+    "new": "use Fingerprint Unlock,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Fingerprint Unlock, capitalised as in stock mid-sentence (\"When using Fingerprint Unlock\"); no other change."
+ },
+ "en-rIN": {
+  "edits": [
+   {
+    "old": "use Pixel Imprint,",
+    "new": "use Fingerprint Unlock,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Fingerprint Unlock, capitalised as in stock mid-sentence (\"When using Fingerprint Unlock\"); no other change."
+ },
+ "es-rUS": {
+  "edits": [
+   {
+    "old": "Pixel Imprint",
+    "new": "el Desbloqueo con huellas dactilares",
+    "applies_to": "all"
+   },
+   {
+    "old": "Pixel Imprint",
+    "new": "el Desbloqueo con huellas dactilares",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Desbloqueo con huellas dactilares\" with article \"el\", as in stock \"Cuando se usa el Desbloqueo con huellas dactilares\"; covers both the non-breaking-space and plain-space stock variants."
+ },
+ "es": {
+  "edits": [
+   {
+    "old": "Pixel Imprint",
+    "new": "Desbloqueo con huella digital",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Desbloqueo con huella digital\"; capitalised, no article, as in stock \"Al usar Desbloqueo con huella digital\"."
+ },
+ "et": {
+  "edits": [
+   {
+    "old": "Pixel Imprinti",
+    "new": "sõrmejäljega avamist",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "sõrmejäljega avamine, lowercase as in stock running text; partitive avamist after kasutate/kasutab, as stock 'Sõrmejäljega avamist kasutades'."
+ },
+ "eu": {
+  "edits": [
+   {
+    "old": "Pixel Imprint erabiltzen",
+    "new": "Hatz-marka bidez desblokeatzea erabiltzen",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Hatz-marka bidez desblokeatzea\" (absolutive, object of erabili), as in stock \"Erabili Hatz-marka bidez desblokeatzea\"."
+ },
+ "fa": {
+  "edits": [
+   {
+    "old": "از Pixel Imprint استفاده",
+    "new": "از «قفل‌گشایی با اثر انگشت» استفاده",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "قفل‌گشایی با اثر انگشت; in guillemets «…» as stock embeds it in running text (هنگام استفاده از «قفل‌گشایی با اثر انگشت»)."
+ },
+ "fi": {
+  "edits": [
+   {
+    "old": "Pixel Imprintiä",
+    "new": "sormenjälkiavausta",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "sormenjälkiavaus, lowercase as in stock running text; partitive sormenjälkiavausta after käytät/käyttää, as stock 'Käytä sormenjälkiavausta'."
+ },
+ "fr-rCA": {
+  "edits": [
+   {
+    "old": "la fonctionnalité Pixel Imprint",
+    "new": "le Déverrouillage par empreinte digitale",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Déverrouillage par empreinte digitale\" with article \"le\", as in stock \"Utilisez le Déverrouillage par empreinte digitale\"; the brand classifier \"la fonctionnalité\" is dropped."
+ },
+ "fr": {
+  "edits": [
+   {
+    "old": "utilisez Pixel Imprint",
+    "new": "utilisez le déverrouillage par empreinte digitale",
+    "applies_to": "all"
+   },
+   {
+    "old": "de Pixel Imprint",
+    "new": "du déverrouillage par empreinte digitale",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"déverrouillage par empreinte digitale\", lowercase with article: \"utilisez le ...\", and \"se servir de\" + le contracts to \"du ...\"."
+ },
+ "gl": {
+  "edits": [
+   {
+    "old": "Pixel Imprint",
+    "new": "o desbloqueo dactilar",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"desbloqueo dactilar\", lowercase with article \"o\", as in stock \"Usa o desbloqueo dactilar\"."
+ },
+ "gu": {
+  "edits": [
+   {
+    "old": "Pixel Imprint સુવિધાનો",
+    "new": "ફિંગરપ્રિન્ટ અનલૉકની સુવિધાનો",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ફિંગરપ્રિન્ટ અનલૉક; 'Pixel Imprint સુવિધાનો' becomes 'ફિંગરપ્રિન્ટ અનલૉકની સુવિધાનો' (genitive -ની before સુવિધા, as in stock 'ફિંગરપ્રિન્ટ અનલૉકની સુવિધા વિશે વધુ જાણો')."
+ },
+ "hi": {
+  "edits": [
+   {
+    "old": "Pixel Imprint का",
+    "new": "फ़िंगरप्रिंट अनलॉक का",
+    "applies_to": "all"
+   },
+   {
+    "old": "Pixel की फ़िंगरप्रिंट से पुष्टि करने की सुविधा",
+    "new": "फ़िंगरप्रिंट अनलॉक की सुविधा",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "फ़िंगरप्रिंट अनलॉक; default variants: 'फ़िंगरप्रिंट अनलॉक का इस्तेमाल'; tablet/device/desktop replace the whole descriptive phrase 'Pixel की फ़िंगरप्रिंट से पुष्टि करने की सुविधा' with 'फ़िंगरप्रिंट अनलॉक की सुविधा', as in stock's preferences-category and screen-off strings."
+ },
+ "hr": {
+  "edits": [
+   {
+    "old": "koristite Pixel Imprint",
+    "new": "koristite otključavanje otiskom prsta",
+    "applies_to": "all"
+   },
+   {
+    "old": "koristi Pixel Imprint",
+    "new": "koristi otključavanje otiskom prsta",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Otključavanje otiskom prsta, lowercase as in stock running text; accusative equals nominative (neuter) after koristite/koristi."
+ },
+ "hu": {
+  "edits": [
+   {
+    "old": "Pixel Imprint használatakor",
+    "new": "Feloldás ujjlenyomattal funkció használatakor",
+    "applies_to": "all"
+   },
+   {
+    "old": "Pixel Imprintet",
+    "new": "Feloldás ujjlenyomattal funkciót",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Feloldás ujjlenyomattal, capitalised with 'funkció' as stock embeds it in running text ('A Feloldás ujjlenyomattal funkció használata'); accusative funkciót in the consent string, as stock 'kikapcsolhatja a Feloldás ujjlenyomattal funkciót'."
+ },
+ "hy": {
+  "edits": [
+   {
+    "old": "Pixel Imprint-ը",
+    "new": "մատնահետքով ապակողպումը",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Մատնահետքով ապակողպում, lowercase mid-sentence as in stock terms, keeping the definite article -ը that Pixel Imprint-ը had."
+ },
+ "in": {
+  "edits": [
+   {
+    "old": "menggunakan Pixel Imprint",
+    "new": "menggunakan Buka dengan Sidik Jari",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Buka dengan Sidik Jari (stock feature name), no extra words, as in stock's 'Jika menggunakan Buka dengan Sidik Jari'."
+ },
+ "is": {
+  "edits": [
+   {
+    "old": "notar Pixel Imprint",
+    "new": "notar fingrafarskenni",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "fingrafarskenni (neuter; accusative same as nominative), lower-case mid-sentence as in stock 'Þegar fingrafarskenni er notað'; no other change."
+ },
+ "it": {
+  "edits": [
+   {
+    "old": "Pixel Imprint",
+    "new": "lo Sblocco con l\\'Impronta",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Sblocco con l'Impronta\" with article \"lo\", as in stock \"Quando usi lo Sblocco con l'Impronta\"; apostrophe escaped like stock."
+ },
+ "iw": {
+  "edits": [
+   {
+    "old": "ב-Pixel Imprint",
+    "new": "בפתיחה בטביעת אצבע",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "פתיחה בטביעת אצבע; the prefix ב now attaches directly to the Hebrew name (no hyphen), unquoted as in stock's \"מידע נוסף על פתיחה בטביעת אצבע\"."
+ },
+ "ja": {
+  "edits": [
+   {
+    "old": "Pixel Imprint を使用",
+    "new": "指紋認証を使用",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "指紋認証 (stock feature name); 'Pixel Imprint を使用すると' becomes '指紋認証を使用すると', dropping the space stock puts between Latin text and を."
+ },
+ "ka": {
+  "edits": [
+   {
+    "old": "Pixel Imprint-ის გამოყენებისას",
+    "new": "ანაბეჭდით განბლოკვის გამოყენებისას",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ანაბეჭდით განბლოკვა in the genitive (ანაბეჭდით განბლოკვის), as in stock's learn-more string; sentence otherwise unchanged."
+ },
+ "kk": {
+  "edits": [
+   {
+    "old": "Pixel Imprint функциясын",
+    "new": "Саусақ ізімен ашу функциясын",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Саусақ ізімен ашу, sentence-initial, followed by stock's existing функциясын."
+ },
+ "km": {
+  "edits": [
+   {
+    "old": "ប្រើ Pixel Imprint",
+    "new": "ប្រើការដោះសោ​ដោយស្កេន​ស្នាមម្រាមដៃ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ការដោះសោដោយស្កេនស្នាមម្រាមដៃ (stock feature name, with stock's zero-width spaces), joined to the verb as in stock's 'ប្រើប្រាស់ការដោះសោ...'."
+ },
+ "kn": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ಬಳಸುವಾಗ",
+    "new": "ಫಿಂಗರ್‌ಪ್ರಿಂಟ್ ಅನ್‌ಲಾಕ್ ಬಳಸುವಾಗ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ಫಿಂಗರ್‌ಪ್ರಿಂಟ್ ಅನ್‌ಲಾಕ್, unquoted before ಬಳಸುವಾಗ exactly as in stock 'ಫಿಂಗರ್‌ಪ್ರಿಂಟ್ ಅನ್‌ಲಾಕ್ ಬಳಸುವಾಗ'; no other grammar change."
+ },
+ "ko": {
+  "edits": [
+   {
+    "old": "Pixel Imprint를",
+    "new": "지문 잠금 해제를",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "지문 잠금 해제 (stock feature name); object particle 를 kept (해제 ends in a vowel), as in stock's '지문 잠금 해제를 설정합니다'."
+ },
+ "ky": {
+  "edits": [
+   {
+    "old": "Pixel Imprint функциясында",
+    "new": "Манжа изи менен ачуу функциясында",
+    "applies_to": "all"
+   },
+   {
+    "old": "Ал Pixel Imprint\\'ти колдонгондо",
+    "new": "Ал Манжа изи менен ачуу функциясын колдонгондо",
+    "applies_to": [
+     "footer_message_consent_3:tablet",
+     "footer_message_consent_3:device",
+     "footer_message_consent_3:desktop"
+    ]
+   }
+  ],
+  "notes": "Манжа изи менен ачуу, capitalised mid-sentence as in stock's screen-off term; consent tablet/device/desktop accusative Pixel Imprint\\'ти becomes 'Манжа изи менен ачуу функциясын' (stock pairs the name with функциясы)."
+ },
+ "lo": {
+  "edits": [
+   {
+    "old": "ໃຊ້ Pixel Imprint",
+    "new": "ໃຊ້ການປົດລັອກດ້ວຍລາຍນິ້ວມື",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ການປົດລັອກດ້ວຍລາຍນິ້ວມື: stock feature name with the nominaliser ການ, as in stock's 'ໃນເວລາໃຊ້ການປົດລັອກດ້ວຍລາຍນິ້ວມື'."
+ },
+ "lt": {
+  "edits": [
+   {
+    "old": "„Pixel Imprint“,",
+    "new": "atrakinimą piršto atspaudu,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "atrakinimas piršto atspaudu, lowercase and unquoted as stock embeds it in running text (e.g. footer_message_2 'Naudojant atrakinimą piršto atspaudu'); accusative atrakinimą after naudojate/Naudojant; dropped the brand quotes „…“."
+ },
+ "lv": {
+  "edits": [
+   {
+    "old": "funkciju Pixel Imprint",
+    "new": "autorizāciju ar pirksta nospiedumu",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "autorizācija ar pirksta nospiedumu, lowercase as in stock running text; dropped 'funkciju' and put the name in the accusative (Izmantojot autorizāciju ar pirksta nospiedumu), as stock 'Izmantot autorizāciju ar pirksta nospiedumu'."
+ },
+ "mk": {
+  "edits": [
+   {
+    "old": "на Pixel Imprint",
+    "new": "на „Отклучување со отпечаток“",
+    "applies_to": "all"
+   },
+   {
+    "old": "користи Pixel Imprint",
+    "new": "користи „Отклучување со отпечаток“",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Отклучување со отпечаток, capitalised in „…“ quotes as stock embeds it in running text; no case change needed."
+ },
+ "ml": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ഉപയോഗിക്കുമ്പോൾ",
+    "new": "ഫിംഗർപ്രിന്റ് അൺലോക്ക് ഉപയോഗിക്കുമ്പോൾ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ഫിംഗർപ്രിന്റ് അൺലോക്ക്, unquoted before ഉപയോഗിക്കുമ്പോൾ exactly as in stock 'ഫിംഗർപ്രിന്റ് അൺലോക്ക് ഉപയോഗിക്കുമ്പോൾ'; no other grammar change."
+ },
+ "mn": {
+  "edits": [
+   {
+    "old": "Pixel Imprint-г ашиглах",
+    "new": "Хурууны хээгээр түгжээ тайлахыг ашиглах",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Хурууны хээгээр түгжээ тайлах with accusative -ыг, exactly as stock's 'Хурууны хээгээр түгжээ тайлахыг ашиглах үед'; capitalised mid-sentence as in stock's screen-off term."
+ },
+ "mr": {
+  "edits": [
+   {
+    "old": "Pixel Imprint वापर",
+    "new": "फिंगरप्रिंट अनलॉक वापर",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "फिंगरप्रिंट अनलॉक, unquoted before वापरता/वापरतात as in stock 'फिंगरप्रिंट अनलॉक वापरत असताना'; no other grammar change."
+ },
+ "ms": {
+  "edits": [
+   {
+    "old": "menggunakan Pixel Imprint",
+    "new": "menggunakan Buka Kunci Cap Jari",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Buka Kunci Cap Jari (stock feature name), no extra words, as in stock's 'Apabila menggunakan Buka Kunci Cap Jari'."
+ },
+ "my": {
+  "edits": [
+   {
+    "old": "Pixel Imprint သုံးသောအခါ",
+    "new": "‘လက်ဗွေသုံး လော့ခ်ဖွင့်ခြင်း’ သုံးသောအခါ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "လက်ဗွေသုံး လော့ခ်ဖွင့်ခြင်း in ‘…’ quotes, exactly as stock's '‘လက်ဗွေသုံး လော့ခ်ဖွင့်ခြင်း’ သုံးသောအခါ'."
+ },
+ "nb": {
+  "edits": [
+   {
+    "old": "bruker Pixel Imprint,",
+    "new": "bruker opplåsing med fingeravtrykk,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "opplåsing med fingeravtrykk, lower-case mid-sentence as in stock 'Ved bruk av opplåsing med fingeravtrykk'; no other change."
+ },
+ "ne": {
+  "edits": [
+   {
+    "old": "Pixel Imprint प्रयोग",
+    "new": "फिंगरप्रिन्ट अनलक प्रयोग",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "फिंगरप्रिन्ट अनलक, unquoted before प्रयोग गर्दा exactly as in stock 'फिंगरप्रिन्ट अनलक प्रयोग गर्दा'; no other grammar change."
+ },
+ "nl": {
+  "edits": [
+   {
+    "old": "Pixel Imprint gebruikt",
+    "new": "Ontgrendelen met vingerafdruk gebruikt",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Ontgrendelen met vingerafdruk, capitalised mid-sentence and unquoted as in stock 'Bij gebruik van Ontgrendelen met vingerafdruk'; no other change."
+ },
+ "or": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ବ୍ୟବହାର",
+    "new": "ଫିଙ୍ଗରପ୍ରିଣ୍ଟ ଅନଲକ ବ୍ୟବହାର",
+    "applies_to": "all"
+   },
+   {
+    "old": "Pixel ଇମପ୍ରିଣ୍ଟ ବ୍ୟବହାର",
+    "new": "ଫିଙ୍ଗରପ୍ରିଣ୍ଟ ଅନଲକ ବ୍ୟବହାର",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ଫିଙ୍ଗରପ୍ରିଣ୍ଟ ଅନଲକ, unquoted before ବ୍ୟବହାର କରିବା ସମୟରେ exactly as in stock's preferences-category string; tablet variants' transliterated 'Pixel ଇମପ୍ରିଣ୍ଟ' replaced too; no other grammar change."
+ },
+ "pa": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ਵਰਤਦ",
+    "new": "ਫਿੰਗਰਪ੍ਰਿੰਟ ਅਣਲਾਕ ਵਰਤਦ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ਫਿੰਗਰਪ੍ਰਿੰਟ ਅਣਲਾਕ, unquoted before ਵਰਤਦੇ/ਵਰਤਦਾ as in stock 'ਫਿੰਗਰਪ੍ਰਿੰਟ ਅਣਲਾਕ ਵਰਤਣ ਵੇਲੇ'; no other grammar change."
+ },
+ "pl": {
+  "edits": [
+   {
+    "old": "funkcji Pixel Imprint",
+    "new": "funkcji odblokowywania odciskiem palca",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Odblokowywanie odciskiem palca, lowercase as in stock running text; genitive odblokowywania after stock's z funkcji."
+ },
+ "pt-rBR": {
+  "edits": [
+   {
+    "old": "o Pixel Imprint",
+    "new": "o desbloqueio por impressão digital",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"desbloqueio por impressão digital\", lowercase after the existing article \"o\", as in stock \"Use o desbloqueio por impressão digital\"."
+ },
+ "pt-rPT": {
+  "edits": [
+   {
+    "old": "o Pixel Imprint",
+    "new": "o Desbloqueio por impressão digital",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Desbloqueio por impressão digital\", capitalised after the existing article \"o\", as in stock \"Ao usar o Desbloqueio por impressão digital\"."
+ },
+ "pt": {
+  "edits": [
+   {
+    "old": "o Pixel Imprint",
+    "new": "o desbloqueio por impressão digital",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"desbloqueio por impressão digital\", lowercase after the existing article \"o\", as in stock \"Use o desbloqueio por impressão digital\"."
+ },
+ "ro": {
+  "edits": [
+   {
+    "old": "Pixel Imprint",
+    "new": "Deblocarea cu amprenta",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Term \"Deblocarea cu amprenta\" (articulated form), as in stock \"Când folosești Deblocarea cu amprenta\"."
+ },
+ "ru": {
+  "edits": [
+   {
+    "old": "функции Pixel Imprint",
+    "new": "функции разблокировки по отпечатку пальца",
+    "applies_to": "all"
+   },
+   {
+    "old": "функцией Pixel Imprint",
+    "new": "функцией разблокировки по отпечатку пальца",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Разблокировка по отпечатку пальца, lowercase and unquoted as in stock running text; kept stock's функции/функцией and put the name in the genitive (функции разблокировки по отпечатку пальца)."
+ },
+ "si": {
+  "edits": [
+   {
+    "old": "Pixel Imprint භාවිත",
+    "new": "ඇඟිලි සලකුණු අගුළු හැරීම භාවිත",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "ඇඟිලි සලකුණු අගුළු හැරීම, unquoted before භාවිත/භාවිතා කරන විට as in stock 'ඇඟිලි සලකුණු අගුළු හැරීම භාවිතා කරන විට'; each variant keeps its own භාවිත/භාවිතා spelling."
+ },
+ "sk": {
+  "edits": [
+   {
+    "old": "Pixel Imprint,",
+    "new": "odomknutie odtlačkom prsta,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Odomknutie odtlačkom prsta, lowercase as in stock running text; accusative equals nominative (neuter) after použijete/použije."
+ },
+ "sl": {
+  "edits": [
+   {
+    "old": "Pixel Imprint,",
+    "new": "odklepanje s prstnim odtisom,",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Odklepanje s prstnim odtisom, lowercase as in stock running text; accusative equals nominative (neuter) after uporabljate/uporablja."
+ },
+ "sq": {
+  "edits": [
+   {
+    "old": "Pixel Imprint,",
+    "new": "\\\"Shkyçjen me gjurmën e gishtit\\\",",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Shkyçja me gjurmën e gishtit, capitalised inside escaped straight double quotes as stock embeds it in running text; accusative Shkyçjen after përdorësh/përdorë, as stock udfps_description 'Përdor Shkyçjen me gjurmën e gishtit'."
+ },
+ "sr": {
+  "edits": [
+   {
+    "old": "користите Pixel Imprint",
+    "new": "користите откључавање отиском прста",
+    "applies_to": "all"
+   },
+   {
+    "old": "користи Pixel Imprint",
+    "new": "користи откључавање отиском прста",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Откључавање отиском прста, lowercase as in stock running text; accusative equals nominative (neuter) after користите/користи."
+ },
+ "sv": {
+  "edits": [
+   {
+    "old": "använder Pixel Imprint",
+    "new": "använder fingeravtryckslås",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "fingeravtryckslås, lower-case mid-sentence as in stock 'När du använder fingeravtryckslås'; no other change."
+ },
+ "sw": {
+  "edits": [
+   {
+    "old": "tumia Pixel Imprint",
+    "new": "tumia kipengele cha Kufungua kwa Alama ya Kidole",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Kufungua kwa Alama ya Kidole, introduced with kipengele cha as stock does in running text (Unapotumia kipengele cha ..., kuhusu kipengele cha Kufungua kwa Alama ya Kidole); title-case name as in the title and learn-more string."
+ },
+ "ta": {
+  "edits": [
+   {
+    "old": "Pixel Imprint அம்சத்தை",
+    "new": "கைரேகை அன்லாக் அம்சத்தை",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "கைரேகை அன்லாக், kept with அம்சத்தை as in stock 'கைரேகை அன்லாக் அம்சத்தைப் பயன்படுத்தும்போது'; no other grammar change."
+ },
+ "te": {
+  "edits": [
+   {
+    "old": "Pixel Imprintను",
+    "new": "వేలిముద్ర అన్‌లాక్‌ను",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "వేలిముద్ర అన్‌లాక్‌ను (accusative, without the title's parenthetical '(ఫింగర్‌ప్రింట్)'), as stock embeds it in 'వేలిముద్ర అన్‌లాక్‌ను సెటప్ చేయడానికి'."
+ },
+ "th": {
+  "edits": [
+   {
+    "old": "เมื่อใช้ Pixel Imprint",
+    "new": "เมื่อใช้การปลดล็อกด้วยลายนิ้วมือ",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "การปลดล็อกด้วยลายนิ้วมือ: stock feature name with the nominaliser การ, exactly as in stock's 'เมื่อใช้การปลดล็อกด้วยลายนิ้วมือ'."
+ },
+ "tl": {
+  "edits": [
+   {
+    "old": "ang Pixel Imprint",
+    "new": "ang Pag-unlock Gamit ang Fingerprint",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Pag-unlock Gamit ang Fingerprint (stock feature name), after the marker 'ang' as stock's 'Pixel Imprint' was; capitalised as in stock's 'Matuto pa tungkol sa Pag-unlock Gamit ang Fingerprint'."
+ },
+ "tr": {
+  "edits": [
+   {
+    "old": "Pixel Imprint\\'i kullan",
+    "new": "Parmak İzi Kilidi\\'ni kullan",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Parmak İzi Kilidi with the accusative Kilidi\\'ni, exactly as stock writes it (Parmak İzi Kilidi\\'ni ayarlamak için)."
+ },
+ "uk": {
+  "edits": [
+   {
+    "old": "користуєтеся Pixel Imprint",
+    "new": "користуєтеся розблокуванням відбитком пальця",
+    "applies_to": "all"
+   },
+   {
+    "old": "користується Pixel Imprint",
+    "new": "користується розблокуванням відбитком пальця",
+    "applies_to": "all"
+   },
+   {
+    "old": "функцією Pixel Imprint",
+    "new": "функцією розблокування відбитком пальця",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Розблокування відбитком пальця, lowercase as in stock running text; instrumental розблокуванням after користуватися, genitive розблокування after stock's функцією."
+ },
+ "ur": {
+  "edits": [
+   {
+    "old": "Pixel Imprint کا استعمال",
+    "new": "فنگر پرنٹ اَن لاک کا استعمال",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "فنگر پرنٹ اَن لاک, followed by کا استعمال as in stock 'فنگر پرنٹ اَن لاک کا استعمال کریں'; leading RLM kept."
+ },
+ "uz": {
+  "edits": [
+   {
+    "old": "Pixel Imprint ishlatilganda",
+    "new": "Barmoq izi bilan ochishdan foydalanilganda",
+    "applies_to": "all"
+   },
+   {
+    "old": "Pixel Imprint ishlatilganida",
+    "new": "Barmoq izi bilan ochishdan foydalanilganida",
+    "applies_to": "all"
+   },
+   {
+    "old": "U Pixel Imprint ishlatganida",
+    "new": "U Barmoq izi bilan ochishdan foydalanganida",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Barmoq izi bilan ochish; the verb ishlat- becomes foydalan- with ablative -dan to fit the verbal-noun name, as in stock's 'Barmoq izi bilan ochishdan foydalanilganda'; each variant keeps its own -ganda/-ganida form; capital B mid-sentence as in stock's screen-off term."
+ },
+ "vi": {
+  "edits": [
+   {
+    "old": "dùng Pixel Imprint",
+    "new": "dùng tính năng Mở khoá bằng vân tay",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Mở khoá bằng vân tay, preceded by 'tính năng' as stock does in running text ('Khi dùng tính năng Mở khoá bằng vân tay')."
+ },
+ "zh-rCN": {
+  "edits": [
+   {
+    "old": "使用 Pixel Imprint 时",
+    "new": "使用指纹解锁时",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "指纹解锁 (stock feature name), unquoted and without the Latin-text spaces, as in stock's '使用指纹解锁时'."
+ },
+ "zh-rHK": {
+  "edits": [
+   {
+    "old": "使用 Pixel Imprint 時",
+    "new": "使用「指紋解鎖」時",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "指紋解鎖 in 「」 corner quotes, as stock embeds it in running text ('使用「指紋解鎖」時'); Latin-text spaces dropped."
+ },
+ "zh-rTW": {
+  "edits": [
+   {
+    "old": "使用 Pixel Imprint 時",
+    "new": "使用指紋解鎖時",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "指紋解鎖 (stock feature name), unquoted and without the Latin-text spaces, as in stock's '使用指紋解鎖時'."
+ },
+ "zu": {
+  "edits": [
+   {
+    "old": "i-Pixel Imprint",
+    "new": "Ukuvula Ngesigxivizo Somunwe",
+    "applies_to": "all"
+   }
+  ],
+  "notes": "Ukuvula Ngesigxivizo Somunwe; dropped the loanword prefix i- since the Zulu noun carries its own augment, as in stock's \"Uma usebenzisa Ukuvula Ngesigxivizo Somunwe\"."
+ }
+}
