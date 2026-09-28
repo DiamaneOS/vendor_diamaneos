@@ -2,6 +2,8 @@
 // Copyright 2026 The DiamaneOS Project
 
 // DiamaneOS-wide overlays, installed on the product partition for every device.
+// Each is static and targets one package; the overlay check in DiamaneOS tools
+// (bin/diamaneos overlays check) must pass for every change here.
 
 runtime_resource_overlay {
     name: "DiamaneOSSettingsOverlay",
@@ -13,4 +15,19 @@ runtime_resource_overlay {
     // DiamaneOS does not ship it. This overlay is installed on every product,
     // so it carries the override and nothing else changes on the image.
     overrides: ["InfoApp"],
+}
+
+// Framework (android): the Tally values from the token export
+// (res/values/tally_tokens.xml, written by diamaneos-design
+// design/tokens/generate.py --export framework-overlay), buttons without
+// capitals, no round icons, the neutral 32-bit app text (UI-08) and the default
+// wallpaper. res/drawable-nodpi/default_wallpaper.png is diamaneos-design
+// design/branding/assets/wallpaper/panel-sodium-portrait-dark.png (1116 x 2484,
+// the FP6 screen), exported from its SVG by design/branding/export_png.py and
+// recorded in assets/png-sha256.json.
+runtime_resource_overlay {
+    name: "DiamaneOSFrameworkOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSFrameworkOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSFrameworkOverlay/res"],
 }
