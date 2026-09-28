@@ -17,6 +17,9 @@ PRODUCT_PACKAGES += \
     DiamaneOSFrameworkOverlay \
     DiamaneOSSettingsOverlay
 
+# GrapheneOS packages that DiamaneOS does not install (removed_packages/).
+PRODUCT_PACKAGES += DiamaneOSRemovedPackages
+
 # Sofia Sans for the Tally shell: /product/etc/fonts_customization.xml and the
 # fonts it names, in /product/fonts (fonts/).
 PRODUCT_PACKAGES += DiamaneOSFontsCustomization
