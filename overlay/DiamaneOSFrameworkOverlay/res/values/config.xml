@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- Tally buttons are not in capitals. -->
+    <bool name="config_buttonTextAllCaps">false</bool>
+
+    <!-- Launcher icons take the keycap shape (config_icon_mask in
+         tally_tokens.xml), so apps' round icons are not used. -->
+    <bool name="config_useRoundIcon">false</bool>
+</resources>
