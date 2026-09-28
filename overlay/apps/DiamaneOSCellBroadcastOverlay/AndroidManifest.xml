@@ -11,7 +11,7 @@
      product|system|vendor); this overlay stays inside that group.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="org.diamaneos.overlay.cellbroadcast">
+    package="de.diamaneos.overlay.cellbroadcast">
     <application android:hasCode="false" />
     <overlay android:targetPackage="com.android.cellbroadcastreceiver.module"
         android:targetName="CellBroadcastCustomization"

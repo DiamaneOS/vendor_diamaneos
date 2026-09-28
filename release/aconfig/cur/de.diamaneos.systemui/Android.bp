@@ -6,8 +6,8 @@
 // SystemUI; setting it DISABLED here gives GrapheneOS's own SystemUI, for
 // example to ship a security release before the Tally changes are rebased.
 aconfig_values {
-    name: "aconfig-values-diamaneos-cur-org.diamaneos.systemui-all",
-    package: "org.diamaneos.systemui",
+    name: "aconfig-values-diamaneos-cur-de.diamaneos.systemui-all",
+    package: "de.diamaneos.systemui",
     srcs: [
         "*_flag_values.textproto",
     ],

@@ -4,7 +4,7 @@
      Copyright 2026 The DiamaneOS Project
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="org.diamaneos.overlay.framework">
+    package="de.diamaneos.overlay.framework">
     <application android:hasCode="false" />
     <overlay android:targetPackage="android" android:isStatic="true" android:priority="1" />
 </manifest>
