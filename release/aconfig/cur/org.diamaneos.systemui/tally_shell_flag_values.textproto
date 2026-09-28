@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# Tally in SystemUI. The flag is fixed read-only, so this is a build-time
+# switch: no setting on the phone can change it.
+flag_value {
+  package: "org.diamaneos.systemui"
+  name: "tally_shell"
+  state: ENABLED
+  permission: READ_ONLY
+}
