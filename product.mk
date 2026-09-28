@@ -31,3 +31,6 @@ PRODUCT_PACKAGES += \
     DiamaneOSSpeechServicesOverlay \
     DiamaneOSSystemUIOverlay \
     DiamaneOSThemesOverlay
+
+# GrapheneOS packages that DiamaneOS does not install (removed_packages/).
+PRODUCT_PACKAGES += DiamaneOSRemovedPackages

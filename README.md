@@ -12,6 +12,7 @@ What every DiamaneOS product shares:
   level that keeps hardware addresses out of the log.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
+- `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 
 Rules:
 
