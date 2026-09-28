@@ -20,3 +20,12 @@ PRODUCT_PACKAGES += \
 # Sofia Sans for the Tally shell: /product/etc/fonts_customization.xml and the
 # fonts it names, in /product/fonts (fonts/).
 PRODUCT_PACKAGES += DiamaneOSFontsCustomization
+
+# The Pleat boot animation (media/, from diamaneos-design
+# design/branding/assets/boot; zips of stored entries). bootanimation plays
+# /product/media/bootanimation.zip, or bootanimation-dark.zip when ro.boot.theme
+# is 1, and does not fall back from one to the other, so both are installed.
+# They are the same file.
+PRODUCT_COPY_FILES += \
+    vendor/diamaneos/media/bootanimation.zip:$(TARGET_COPY_OUT_PRODUCT)/media/bootanimation.zip \
+    vendor/diamaneos/media/bootanimation-dark.zip:$(TARGET_COPY_OUT_PRODUCT)/media/bootanimation-dark.zip

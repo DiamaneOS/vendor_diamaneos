@@ -12,6 +12,7 @@ This repository owns what every DiamaneOS product shares:
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi to inherit.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `fonts/`: Sofia Sans for the shell, as named font families.
+- `media/`: the boot animation.
 
 Device-specific configuration, generated hardware inputs and kernel artifacts
 belong to their respective repositories. Generic changes belong here rather
