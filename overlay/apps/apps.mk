@@ -5,4 +5,5 @@
 PRODUCT_PACKAGES += \
     DiamaneOSDialerOverlay \
     DiamaneOSContactsOverlay \
-    DiamaneOSLatinIMEOverlay
+    DiamaneOSLatinIMEOverlay \
+    DiamaneOSBluetoothOverlay
