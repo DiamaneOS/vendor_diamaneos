@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for Contacts (com.android.contacts), light theme. Each
+     colour reads a dynamic-colour role or palette tone, bound as the Tally
+     token library binds its tokens; values-night holds the dark roles.
+     Contacts follows dark theme itself (DayNight themes). Left as they are:
+     white text and icons on the toolbars and the add button, call green, the
+     letter tiles' own colours and their letters, the icon fills, the
+     launcher-shortcut colours and the app icon.
+-->
+<resources>
+    <!-- Pages, cards and sheets (Tally bg, surface, surfaceHigh, outlineVariant) -->
+    <color name="background_primary">@android:color/system_surface_container_low_light</color>
+    <color name="card_margin_color">@android:color/system_surface_container_low_light</color>
+    <color name="contextual_selection_bar_color">@android:color/system_surface_container_low_light</color>
+    <color name="expanding_entry_card_background_color">@android:color/system_neutral1_10</color>
+    <color name="contact_all_list_background_color">@android:color/system_neutral1_10</color>
+    <color name="navigation_drawer_background_color">@android:color/system_neutral1_10</color>
+    <color name="call_subject_history_background">@android:color/system_neutral1_10</color>
+    <color name="searchbox_background_color">@android:color/system_neutral1_10</color>
+    <color name="sold_background_color">@android:color/system_neutral1_10</color>
+    <color name="alert_background">@android:color/system_surface_container_high_light</color>
+    <color name="image_placeholder">@android:color/system_surface_container_high_light</color>
+    <color name="divider_line_color_light">@android:color/system_outline_variant_light</color>
+    <color name="drawer_divider_color">@android:color/system_outline_variant_light</color>
+    <color name="custom_filter_divider">@android:color/system_outline_variant_light</color>
+    <color name="call_subject_divider">@android:color/system_outline_variant_light</color>
+
+    <!-- The selected drawer entry sits in a well, darker than the drawer in both
+         themes, so its accent text and icon keep their contrast -->
+    <color name="drawer_selected_color">@android:color/system_surface_container_high_light</color>
+
+    <!-- Text and icons (Tally ink and muted) -->
+    <color name="primary_text_color">@android:color/system_on_surface_light</color>
+    <color name="dialtacts_primary_text_color">@android:color/system_on_surface_light</color>
+    <color name="contacts_text_color">@android:color/system_on_surface_light</color>
+    <color name="text_color">@android:color/system_on_surface_light</color>
+    <color name="quickcontact_entry_header_text_color">@android:color/system_on_surface_light</color>
+    <color name="searchbox_text_color">@android:color/system_on_surface_light</color>
+    <color name="actionbar_text_color_black">@android:color/system_on_surface_light</color>
+    <color name="expanding_entry_card_button_text_color">@android:color/system_on_surface_light</color>
+    <color name="people_app_theme_color">@android:color/system_on_surface_light</color>
+    <color name="dialtacts_secondary_text_color">@android:color/system_on_surface_variant_light</color>
+    <color name="text_color_secondary">@android:color/system_on_surface_variant_light</color>
+    <color name="quickcontact_entry_sub_header_text_color">@android:color/system_on_surface_variant_light</color>
+    <color name="searchbox_hint_text_color">@android:color/system_on_surface_variant_light</color>
+    <color name="editor_disabled_text_color">@android:color/system_on_surface_variant_light</color>
+    <color name="hint_text_color">@android:color/system_on_surface_variant_light</color>
+    <color name="editor_icon_color">@android:color/system_on_surface_variant_light</color>
+    <color name="actionbar_icon_color_grey">@android:color/system_on_surface_variant_light</color>
+    <color name="actionbar_color_grey_solid">@android:color/system_on_surface_variant_light</color>
+    <color name="call_subject_history_icon">@android:color/system_on_surface_variant_light</color>
+
+    <!-- Accent. primary_color is colorPrimary and colorAccent and also fills the
+         main toolbar and the add button under white titles and icons, so in dark
+         theme it takes primary T50: stock's night tone, about 4.5:1 under white
+         and on the dark page. Accent text that only meets the page takes the
+         Tally accent. -->
+    <color name="primary_color">@android:color/system_primary_light</color>
+    <color name="section_header_text_color">@android:color/system_primary_light</color>
+    <color name="frequently_contacted_title_color">@android:color/system_primary_light</color>
+    <color name="swipe_refresh_color1">@android:color/system_primary_light</color>
+    <color name="swipe_refresh_color2">@android:color/system_primary_light</color>
+    <color name="swipe_refresh_color3">@android:color/system_primary_light</color>
+    <color name="swipe_refresh_color4">@android:color/system_primary_light</color>
+
+    <!-- Status bar behind the main toolbar, under white status icons (primary
+         T30 and T40, stock's tones) -->
+    <color name="primary_color_dark">@android:color/system_accent1_700</color>
+
+    <!-- Favourites star: a lamp-coloured mark on the page (Tally lampInk) -->
+    <color name="material_star_pink">@android:color/system_primary_light</color>
+
+    <!-- Snackbar action on the inverse surface -->
+    <color name="snackbar_action_text">@android:color/system_inverse_primary_light</color>
+
+    <!-- The call-subject character limit stays red: the error role -->
+    <color name="call_subject_limit_exceeded">@android:color/system_error_light</color>
+
+    <!-- Fixed tones under white text and glyphs, the same in both themes: the
+         group view toolbar, a contact card without a photo, the tile of a
+         contact without a letter (neutral variant T40 and T30) -->
+    <color name="group_primary_color">@android:color/system_neutral2_600</color>
+    <color name="group_primary_color_dark">@android:color/system_neutral2_700</color>
+    <color name="quickcontact_default_photo_tint_color">@android:color/system_neutral2_600</color>
+    <color name="quickcontact_default_photo_tint_color_dark">@android:color/system_neutral2_700</color>
+    <color name="letter_tile_default_color">@android:color/system_neutral2_600</color>
+</resources>
