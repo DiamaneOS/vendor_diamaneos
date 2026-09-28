@@ -11,3 +11,10 @@ runtime_resource_overlay {
     manifest: "DiamaneOSDialerOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSDialerOverlay/res"],
 }
+
+runtime_resource_overlay {
+    name: "DiamaneOSContactsOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSContactsOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSContactsOverlay/res"],
+}
