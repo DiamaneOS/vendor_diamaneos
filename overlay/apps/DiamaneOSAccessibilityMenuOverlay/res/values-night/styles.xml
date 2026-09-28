@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The menu's theme follows dark theme through DeviceDefault in both
+     configurations, with the one item the stock style has. A11yMenuBaseTheme,
+     the stock tests' theme, is not overlaid: resource shrinking leaves it out
+     of the built app.
+-->
+<resources>
+    <style name="ServiceTheme" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:colorControlNormal">@color/colorControlNormal</item>
+    </style>
+</resources>

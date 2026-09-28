@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for the Accessibility menu, dark theme (see
+     values/colors.xml).
+-->
+<resources>
+    <!-- The ten shortcut tiles are actions, not things that are on, so they are
+         Tally tonal keys: surfaceHigh under an ink icon (colorControlNormal),
+         not ten hues. -->
+    <color name="power_color">@android:color/system_surface_container_high_dark</color>
+    <color name="quick_settings_color">@android:color/system_surface_container_high_dark</color>
+    <color name="a11y_settings_color">@android:color/system_surface_container_high_dark</color>
+    <color name="recent_apps_color">@android:color/system_surface_container_high_dark</color>
+    <color name="lockscreen_color">@android:color/system_surface_container_high_dark</color>
+    <color name="volume_color">@android:color/system_surface_container_high_dark</color>
+    <color name="notifications_color">@android:color/system_surface_container_high_dark</color>
+    <color name="screenshot_color">@android:color/system_surface_container_high_dark</color>
+    <color name="assistant_color">@android:color/system_surface_container_high_dark</color>
+    <color name="brightness_color">@android:color/system_surface_container_high_dark</color>
+
+    <!-- The icon on the tiles, the snackbar text and the theme's control colour:
+         ink -->
+    <color name="colorControlNormal">@android:color/system_on_surface_dark</color>
+
+    <!-- The menu panel (Tally surface) and its labels (ink) -->
+    <color name="overlay_bg_color">@android:color/system_surface_container_low_dark</color>
+    <color name="grid_item_text_color">@android:color/system_on_surface_dark</color>
+
+    <!-- Page arrows in the footer: ink, and outlineVariant when there is no page
+         to go to -->
+    <color name="footer_icon_color">@android:color/system_on_surface_dark</color>
+    <color name="footer_icon_enabled_color">@android:color/system_on_surface_dark</color>
+    <color name="footer_icon_disabled_color">@android:color/system_outline_variant_dark</color>
+
+    <!-- The page-change note in the footer: a neutral strip under ink text -->
+    <color name="snackbar_bg_color">@android:color/system_surface_container_highest_dark</color>
+
+    <!-- Press layer -->
+    <color name="ripple_material_color">@android:color/system_control_highlight_dark</color>
+</resources>
