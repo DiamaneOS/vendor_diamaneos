@@ -16,7 +16,8 @@ $(call inherit-product, vendor/diamaneos/config/common.mk)
 PRODUCT_PACKAGES += \
     DiamaneOSDocumentsUIOverlay \
     DiamaneOSFrameworkOverlay \
-    DiamaneOSSettingsOverlay
+    DiamaneOSSettingsOverlay \
+    DiamaneOSSetupWizardOverlay
 
 # GrapheneOS packages that DiamaneOS does not install (removed_packages/).
 PRODUCT_PACKAGES += DiamaneOSRemovedPackages
