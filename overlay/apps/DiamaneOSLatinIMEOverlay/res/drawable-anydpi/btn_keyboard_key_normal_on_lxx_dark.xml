@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The shift key: a keycap with a keycap LED, lit (the accent) while
+     caps lock is on, unlit (the outline colour) otherwise.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="@android:color/system_surface_container_low_dark" />
+        </shape>
+    </item>
+    <item android:gravity="bottom|center_horizontal" android:width="12dp" android:height="3dp" android:bottom="3dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="1.5dp" />
+            <solid android:color="@android:color/system_accent1_200" />
+        </shape>
+    </item>
+</layer-list>

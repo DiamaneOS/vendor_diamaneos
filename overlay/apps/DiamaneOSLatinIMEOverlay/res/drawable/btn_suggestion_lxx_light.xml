@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     A pressed suggestion on the light keyboard: the press layer as a rounded key.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <layer-list>
+            <item android:top="4dp" android:bottom="4dp" android:left="2dp" android:right="2dp">
+                <shape android:shape="rectangle">
+                    <corners android:radius="8dp" />
+                    <solid android:color="@android:color/system_control_highlight_light" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</selector>

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for the keyboard (LatinIME). The keyboard picks its light
+     or dark theme itself (Material light, Material dark, or following the
+     system's dark theme), not through resource qualifiers, so the light
+     theme's colours read the light scheme's roles (system_*_light) and the
+     dark theme's the dark scheme's, whatever the system is in. Palette tones
+     (system_accent1_200 and the like) are one tone in both schemes.
+
+     Keys are Tally keys: surface keycaps on a surfaceHigh tray, ink labels,
+     muted secondary labels, the accent for what is highlighted. The gesture
+     trail colours are left alone: this keyboard has no gesture typing.
+-->
+<resources>
+    <!-- Light theme -->
+    <color name="key_text_color_lxx_light">@android:color/system_on_surface_light</color>
+    <color name="auto_correct_color_lxx_light">@android:color/system_on_surface_light</color>
+    <color name="typed_word_color_lxx_light">@android:color/system_on_surface_light</color>
+    <color name="key_functional_text_color_lxx_light">@android:color/system_on_surface_variant_light</color>
+    <color name="key_text_inactive_color_lxx_light">@android:color/system_on_surface_variant_light</color>
+    <color name="key_hint_letter_color_lxx_light">@android:color/system_on_surface_variant_light</color>
+    <color name="language_on_spacebar_text_color_lxx_light">@android:color/system_on_surface_variant_light</color>
+    <color name="suggested_word_color_lxx_light">@android:color/system_on_surface_variant_light</color>
+    <color name="highlight_color_lxx_light">@android:color/system_primary_light</color>
+    <color name="sliding_key_input_preview_color_lxx_light">@android:color/system_primary_light</color>
+    <!-- The keycap (Tally surface) and the press layer over it -->
+    <color name="key_background_lxx_light">@android:color/system_neutral1_10</color>
+    <color name="key_background_pressed_lxx_light">@android:color/system_control_highlight_light</color>
+    <color name="suggested_word_background_selected_lxx_light">@android:color/system_control_highlight_light</color>
+
+    <!-- Dark theme -->
+    <color name="key_text_color_lxx_dark">@android:color/system_on_surface_dark</color>
+    <color name="auto_correct_color_lxx_dark">@android:color/system_on_surface_dark</color>
+    <color name="typed_word_color_lxx_dark">@android:color/system_on_surface_dark</color>
+    <color name="key_functional_text_color_lxx_dark">@android:color/system_on_surface_variant_dark</color>
+    <color name="key_text_inactive_color_lxx_dark">@android:color/system_on_surface_variant_dark</color>
+    <color name="key_hint_letter_color_lxx_dark">@android:color/system_on_surface_variant_dark</color>
+    <color name="suggested_word_color_lxx_dark">@android:color/system_on_surface_variant_dark</color>
+    <color name="highlight_color_lxx_dark">@android:color/system_accent1_200</color>
+    <color name="sliding_key_input_preview_color_lxx_dark">@android:color/system_accent1_200</color>
+    <color name="key_background_lxx_dark">@android:color/system_surface_container_low_dark</color>
+    <color name="key_background_pressed_lxx_dark">@android:color/system_control_highlight_dark</color>
+    <color name="suggested_word_background_selected_lxx_dark">@android:color/system_control_highlight_dark</color>
+</resources>

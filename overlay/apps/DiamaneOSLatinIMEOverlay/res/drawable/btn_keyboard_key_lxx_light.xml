@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Letter keys of the light keyboard: a Tally keycap (radius 8 dp) in place
+     of the flat key colour; the other states keep their drawables.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_active="true" android:state_pressed="true"
+          android:drawable="@drawable/btn_keyboard_key_active_pressed_lxx_light" />
+    <item android:state_active="true"
+          android:drawable="@drawable/btn_keyboard_key_active_lxx_light" />
+    <item android:state_checkable="true" android:state_checked="true" android:state_pressed="true"
+          android:drawable="@drawable/btn_keyboard_key_pressed_on_lxx_light" />
+    <item android:state_checkable="true" android:state_pressed="true"
+          android:drawable="@drawable/btn_keyboard_key_pressed_off_lxx_light" />
+    <item android:state_checkable="true" android:state_checked="true"
+          android:drawable="@drawable/btn_keyboard_key_normal_on_lxx_light" />
+    <item android:state_checkable="true"
+          android:drawable="@drawable/btn_keyboard_key_normal_off_lxx_light" />
+    <item android:state_empty="true" android:state_pressed="true"
+          android:drawable="@color/key_background_pressed_lxx_light" />
+    <item android:state_empty="true"
+          android:drawable="@android:color/transparent" />
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="8dp" />
+                    <solid android:color="@android:color/system_neutral1_10" />
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <corners android:radius="8dp" />
+                    <solid android:color="@android:color/system_control_highlight_light" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="@android:color/system_neutral1_10" />
+        </shape>
+    </item>
+</selector>
