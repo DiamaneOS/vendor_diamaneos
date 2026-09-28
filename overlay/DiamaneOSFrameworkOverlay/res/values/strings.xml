@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- UI-08: the dialog shown when a 32-bit-only app starts
+         (DeprecatedAbiDialog) names GrapheneOS and its plans. Show AOSP's own
+         text for this dialog instead, by reference, so that its translations
+         apply as well. -->
+    <string name="deprecated_abi_message_grapheneos">@*android:string/deprecated_abi_message</string>
+</resources>
