@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# GrapheneOS builds with TARGET_RELEASE=cur (build/release). This adds to
+# that release config: its value sets are applied after the inherited
+# ones, so these values win.
+name: "cur"
+aconfig_value_sets: "aconfig_value_set-diamaneos-cur"

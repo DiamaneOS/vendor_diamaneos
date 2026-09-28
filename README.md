@@ -13,6 +13,7 @@ This repository owns what every DiamaneOS product shares:
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `fonts/`: Sofia Sans for the shell, as named font families.
 - `media/`: the boot animation.
+- `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 
 Device-specific configuration, generated hardware inputs and kernel artifacts

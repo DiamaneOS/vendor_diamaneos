@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// DiamaneOS contributions to release configs, listed in the build's release
+// config metadata as build/release's are.
+release_config_contributions {
+    name: "release_config_contributions-diamaneos",
+    srcs: [
+        "release_configs/*.textproto",
+    ],
+}

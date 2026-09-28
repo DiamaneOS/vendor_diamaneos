@@ -14,6 +14,7 @@ $(call inherit-product, vendor/diamaneos/config/common.mk)
 
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += \
+    DiamaneOSDocumentsUIOverlay \
     DiamaneOSFrameworkOverlay \
     DiamaneOSSettingsOverlay
 
@@ -32,3 +33,10 @@ PRODUCT_PACKAGES += DiamaneOSFontsCustomization
 PRODUCT_COPY_FILES += \
     vendor/diamaneos/media/bootanimation.zip:$(TARGET_COPY_OUT_PRODUCT)/media/bootanimation.zip \
     vendor/diamaneos/media/bootanimation-dark.zip:$(TARGET_COPY_OUT_PRODUCT)/media/bootanimation-dark.zip
+
+# aconfig values added to GrapheneOS's release config (release/): Files keeps
+# its trash flow and new archive code off until each passes its security review.
+# Android also finds this map on its own (build/make core/release_config.mk
+# reads vendor/*/release/); naming it here keeps that working if a tree ever
+# restricts the search.
+PRODUCT_RELEASE_CONFIG_MAPS += vendor/diamaneos/release/release_config_map.textproto

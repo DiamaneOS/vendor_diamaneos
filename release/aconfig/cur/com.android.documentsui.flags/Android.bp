@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// Files (DocumentsUI) ships its Material 3 look (the force_material3
+// overlay) with the trash flow and the new archive code off. Each may be
+// turned on only after its security review and tests, with its threat
+// model row in the same change.
+aconfig_values {
+    name: "aconfig-values-diamaneos-cur-com.android.documentsui.flags-all",
+    package: "com.android.documentsui.flags",
+    srcs: [
+        "*_flag_values.textproto",
+    ],
+}
