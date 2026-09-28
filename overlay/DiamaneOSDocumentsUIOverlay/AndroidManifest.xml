@@ -4,7 +4,7 @@
      Copyright 2026 The DiamaneOS Project
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="org.diamaneos.overlay.documentsui">
+    package="de.diamaneos.overlay.documentsui">
     <application android:hasCode="false" />
     <overlay android:targetPackage="com.android.documentsui"
         android:targetName="DocumentsUICustomization"
