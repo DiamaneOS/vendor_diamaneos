@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The Bluetooth file-transfer, pairing-access and enable dialogs: DeviceDefault
+     instead of plain Material, so they take the system's dialog colours, shape
+     and font instead of Material's teal. The stock style has no items. Accept
+     and Decline stay two separate labelled buttons in their stock places.
+-->
+<resources>
+    <style name="dialog" parent="@android:style/Theme.DeviceDefault.Light.Dialog.Alert" />
+</resources>
