@@ -34,3 +34,12 @@ runtime_resource_overlay {
     manifest: "DiamaneOSDocumentsUIOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSDocumentsUIOverlay/res"],
 }
+
+// Setup (GrapheneOS SetupWizard2): the welcome line, the tagline and the
+// Pleat mark.
+runtime_resource_overlay {
+    name: "DiamaneOSSetupWizardOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSetupWizardOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSetupWizardOverlay/res"],
+}

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- SW-01: the welcome screen's title and tagline. The setup wizard has
+         these strings in English only (no translations upstream). -->
+    <string name="welcome_to_grapheneos">Welcome to DiamaneOS</string>
+    <!-- PROPOSAL, not yet approved by the owner: new text, with no claim that
+         has not been checked. -->
+    <string name="grapheneos_desc">A phone operating system designed around your privacy and security.</string>
+
+    <!-- SW-02: what screen readers say for the logo on the welcome and finish
+         screens. -->
+    <string name="grapheneos_icon">DiamaneOS</string>
+</resources>

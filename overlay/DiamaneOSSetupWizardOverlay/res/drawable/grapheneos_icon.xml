@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The Pleat mark (DiamaneOS), in place of the GrapheneOS logo on the setup
+     welcome and finish screens. Converted from diamaneos-design
+     design/branding/assets/mark/diamaneos-mark-light.svg: the 108 grid master
+     in its square canvas, paths unchanged, the group moving its viewBox origin
+     (28.597, 28.597) to 0. Like the drawable it replaces, it is square with
+     the same intrinsic size, and it takes its ink from the theme
+     (textColorPrimary, which GrapheneOS tints its logo with): the two sheets
+     are ink and only the bond is lit, in the lamp colour (primaryFixedDim,
+     Tally's lamp role). The bond is drawn first and runs under both sheets,
+     as in the brand files. Never mirrored.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="253.8dp"
+    android:height="253.8dp"
+    android:viewportWidth="50.806"
+    android:viewportHeight="50.806">
+    <group
+        android:translateX="-28.597"
+        android:translateY="-28.597">
+        <path
+            android:name="bond"
+            android:fillColor="@android:color/system_primary_fixed_dim"
+            android:pathData="M57.079 43.113L62.468 45.019L67.857 41.208L67.857 64.887L62.468 62.981L57.079 66.792Z" />
+        <path
+            android:name="upper_sheet"
+            android:fillColor="?android:attr/textColorPrimary"
+            android:pathData="M45.532 34.54L62.468 40.528L70.935 34.54L79.403 37.534L79.403 46.516L70.935 43.522L62.468 49.509L45.532 43.522Z" />
+        <path
+            android:name="lower_sheet"
+            android:fillColor="?android:attr/textColorPrimary"
+            android:pathData="M28.597 64.478L37.065 58.491L54 64.478L62.468 58.491L79.403 64.478L79.403 73.46L62.468 67.472L54 73.46L37.065 67.472L28.597 73.46Z" />
+    </group>
+</vector>
