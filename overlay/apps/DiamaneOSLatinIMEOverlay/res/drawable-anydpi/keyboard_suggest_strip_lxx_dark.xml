@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The suggestion strip: the same tray as the keys, with a hairline along
+     its top and the stock drawable's 1 dp top padding.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android"
+    android:paddingMode="stack">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/system_surface_container_high_dark" />
+            <padding android:top="1dp" />
+        </shape>
+    </item>
+    <item android:gravity="top" android:height="1dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@android:color/system_outline_variant_dark" />
+        </shape>
+    </item>
+</layer-list>

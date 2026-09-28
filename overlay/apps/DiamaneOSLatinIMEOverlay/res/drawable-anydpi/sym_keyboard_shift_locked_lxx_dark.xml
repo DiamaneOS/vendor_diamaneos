@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The shift arrow while shift or caps lock is on, in the accent: the stock
+     arrow's outline and size (24 x 18.67 dp), redrawn as a vector.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="18.67dp"
+    android:viewportWidth="72"
+    android:viewportHeight="56">
+    <path
+        android:fillColor="@android:color/system_accent1_200"
+        android:pathData="M36,0 L72,38 L49,38 L49,56 L22,56 L22,38 L0,38 Z" />
+</vector>
