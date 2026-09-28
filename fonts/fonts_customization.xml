@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Installed as /product/etc/fonts_customization.xml, which Android reads
+     with /product/fonts/ as the font directory (SystemFonts,
+     FontCustomizationParser). It adds two named families for the Tally shell,
+     the names the Tally token library uses; it does not change sans-serif.
+
+     Each family is one variable font per slant with a wght axis from 1 to
+     1000 and 400 as its default instance. No wght axis value is fixed here, so
+     text gets exactly the weight it asks for: 280, 380, 400, 500, 560, 600 in
+     the Tally type roles, and these plus 300 with Bold text. Each font's
+     weight is its default instance, the one drawn when 400 is asked for.
+     Android reads this file together with the system font list: a malformed
+     file makes it drop every system font or fail at boot, so check a change
+     against FontCustomizationParser before it ships.
+-->
+<fonts-modification version="1">
+    <family customizationType="new-named-family" name="sofia-sans">
+        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSans-Regular">SofiaSans-Regular.ttf</font>
+        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSans-Italic">SofiaSans-Italic.ttf</font>
+    </family>
+    <family customizationType="new-named-family" name="sofia-sans-semi-condensed">
+        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSansSemiCondensed-Regular">SofiaSansSemiCondensed-Regular.ttf</font>
+        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSansSemiCondensed-Italic">SofiaSansSemiCondensed-Italic.ttf</font>
+    </family>
+</fonts-modification>
