@@ -35,6 +35,14 @@ runtime_resource_overlay {
     resource_dirs: ["DiamaneOSDocumentsUIOverlay/res"],
 }
 
+// Wallpaper & style (ThemesStub): the five DiamaneOS colour presets.
+runtime_resource_overlay {
+    name: "DiamaneOSThemesOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSThemesOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSThemesOverlay/res"],
+}
+
 // Setup (GrapheneOS SetupWizard2): the welcome line, the tagline and the
 // Pleat mark.
 runtime_resource_overlay {
