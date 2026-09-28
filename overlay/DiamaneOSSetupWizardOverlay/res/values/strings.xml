@@ -7,7 +7,7 @@
     <!-- SW-01: the welcome screen's title and tagline. The setup wizard has
          these strings in English only (no translations upstream). -->
     <string name="welcome_to_grapheneos">Welcome to DiamaneOS</string>
-    <!-- PROPOSAL, not yet approved by the owner: new text, with no claim that
+    <!-- New text (approved by the owner, 28 September 2026), with no claim that
          has not been checked. -->
     <string name="grapheneos_desc">A phone operating system designed around your privacy and security.</string>
 
