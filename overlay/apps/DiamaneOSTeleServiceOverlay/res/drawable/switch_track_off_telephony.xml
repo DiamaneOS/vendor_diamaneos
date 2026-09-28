@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The call settings switch track: stock size and insets, with 4 dp
+     corners (Tally radius 4) instead of a pill. Its colour comes from the
+     style's tint (color/switch_track_telephony).
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:gravity="center_vertical|fill_horizontal"
+          android:start="4dp"
+          android:end="4dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="4dp" />
+            <solid android:color="@color/switch_track_off" />
+            <size android:height="14dp" />
+        </shape>
+    </item>
+</layer-list>

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for the Phone services app, dark theme (see
+     values/colors.xml).
+-->
+<resources>
+    <color name="phone_settings_background_color">@android:color/system_surface_container_lowest_dark</color>
+    <color name="dialer_background_color">@android:color/system_surface_container_lowest_dark</color>
+    <color name="actionbar_background_color">@android:color/system_surface_container_lowest_dark</color>
+    <color name="actionbar_background_color_dark">@android:color/system_surface_container_lowest_dark</color>
+    <color name="dialer_divider_color">@android:color/system_outline_variant_dark</color>
+    <color name="dialer_primary_text_color">@android:color/system_on_surface_dark</color>
+    <color name="setting_primary_color">@android:color/system_on_surface_dark</color>
+    <color name="setting_secondary_color">@android:color/system_on_surface_variant_dark</color>
+    <color name="setting_disabled_color">@android:color/system_outline_dark</color>
+    <color name="phone_settings_actionbar_text_color">@android:color/system_on_surface_variant_dark</color>
+    <color name="actionbar_icon_color">@android:color/system_on_surface_variant_dark</color>
+
+    <color name="dialer_theme_color">@android:color/system_accent1_200</color>
+
+    <!-- On, a primary T60 track under a light thumb (stock's night tones) -->
+    <color name="switch_track_on">@android:color/system_accent1_400</color>
+    <color name="switch_thumb_on">@android:color/system_neutral1_10</color>
+    <color name="switch_track_off">@android:color/system_neutral2_500</color>
+    <color name="switch_thumb_off">@android:color/system_neutral1_10</color>
+
+    <color name="emergency_shortcut_button_background_color">@android:color/system_surface_container_high_dark</color>
+    <color name="emergency_info_btn_background_color">@android:color/system_surface_container_high_dark</color>
+    <color name="emergency_shortcut_phone_type_icon_color">@android:color/system_error_600</color>
+    <!-- Stock keeps the confirm key grey in dark theme: neutral T30 -->
+    <color name="emergency_shortcut_confirm_button_background_color">@android:color/system_neutral1_700</color>
+    <color name="emergency_dialpad_fab_tint_color">@android:color/system_error_600</color>
+    <color name="emergency_call_icon_color">@android:color/system_on_surface_dark</color>
+</resources>

@@ -39,3 +39,24 @@ runtime_resource_overlay {
     manifest: "DiamaneOSAccessibilityMenuOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSAccessibilityMenuOverlay/res"],
 }
+
+runtime_resource_overlay {
+    name: "DiamaneOSEmergencyInfoOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSEmergencyInfoOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSEmergencyInfoOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSTeleServiceOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSTeleServiceOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSTeleServiceOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSCellBroadcastOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSCellBroadcastOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSCellBroadcastOverlay/res"],
+}

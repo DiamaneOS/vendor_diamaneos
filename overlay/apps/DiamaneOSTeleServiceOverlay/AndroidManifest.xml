@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for the Phone services app (com.android.phone): call
+     settings and the emergency dialer. Separate from the FP6 device
+     overlay for the same app, which sets IMS configuration and nothing that
+     this overlay sets.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.diamaneos.overlay.teleservice">
+    <application android:hasCode="false" />
+    <overlay android:targetPackage="com.android.phone" android:isStatic="true" android:priority="1" />
+</manifest>

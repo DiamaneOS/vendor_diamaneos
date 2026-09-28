@@ -7,4 +7,7 @@ PRODUCT_PACKAGES += \
     DiamaneOSContactsOverlay \
     DiamaneOSLatinIMEOverlay \
     DiamaneOSBluetoothOverlay \
-    DiamaneOSAccessibilityMenuOverlay
+    DiamaneOSAccessibilityMenuOverlay \
+    DiamaneOSEmergencyInfoOverlay \
+    DiamaneOSTeleServiceOverlay \
+    DiamaneOSCellBroadcastOverlay

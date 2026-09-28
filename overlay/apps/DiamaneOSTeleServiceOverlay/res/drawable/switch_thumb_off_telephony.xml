@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The call settings switch thumb: the Tally switch thumb, a square with
+     4 dp corners (Tally radius 4), at the stock size. Its colour comes from
+     the style's tint (color/switch_thumb_telephony).
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <size android:width="20dp" android:height="20dp" />
+    <corners android:radius="4dp" />
+    <solid android:color="@color/switch_thumb_off" />
+</shape>

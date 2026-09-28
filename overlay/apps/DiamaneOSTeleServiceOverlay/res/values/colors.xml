@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for the Phone services app, light theme; values-night
+     holds the dark ones. The call settings are light pages that Android
+     darkens in dark theme (their themes allow force dark); the emergency
+     dialer is dark over the wallpaper and follows dark theme through these
+     colours.
+
+     The call settings and emergency dialer themes are not re-parented:
+     SettingsLight and DialerSettingsLight (dark) set the app's own
+     switchStyle attribute and EmergencyDialerTheme its dialpadTheme and
+     emergencyButtonBackgroundColor attributes, and a resource overlay can
+     only rewrite styles whose items are all framework attributes. For the
+     same reason the emergency dialer's #10ffffff button colour, an item of
+     EmergencyDialerTheme, stays; the drawable that reads it is unused.
+
+     Left as they are: the translucent white edges and hints drawn over the
+     wallpaper, the dialpad colours, the SIM icon tints and the unused in-call
+     and OTA colours.
+-->
+<resources>
+    <!-- Call settings: pages and app bars (Tally bg), hairlines, text -->
+    <color name="phone_settings_background_color">@android:color/system_surface_container_low_light</color>
+    <color name="dialer_background_color">@android:color/system_surface_container_low_light</color>
+    <color name="actionbar_background_color">@android:color/system_surface_container_low_light</color>
+    <color name="actionbar_background_color_dark">@android:color/system_surface_container_low_light</color>
+    <color name="dialer_divider_color">@android:color/system_outline_variant_light</color>
+    <color name="dialer_primary_text_color">@android:color/system_on_surface_light</color>
+    <color name="setting_primary_color">@android:color/system_on_surface_light</color>
+    <color name="setting_secondary_color">@android:color/system_on_surface_variant_light</color>
+    <color name="setting_disabled_color">@android:color/system_outline_light</color>
+    <color name="phone_settings_actionbar_text_color">@android:color/system_on_surface_variant_light</color>
+    <color name="actionbar_icon_color">@android:color/system_on_surface_variant_light</color>
+
+    <!-- The accent (PhoneCommon's dialer_theme_color): switches, dialog
+         buttons, notifications. The status bar of the SIM import page stays
+         dark under white icons (primary T20). -->
+    <color name="dialer_theme_color">@android:color/system_primary_light</color>
+    <color name="dialer_theme_color_dark">@android:color/system_accent1_800</color>
+
+    <!-- The call settings switch (see drawable/): on, the accent track under
+         a dark thumb; off, a neutral track. The thumb is taller than the
+         track, so it keeps its own contrast with the page. -->
+    <color name="switch_track_on">@android:color/system_accent1_500</color>
+    <color name="switch_thumb_on">@android:color/system_accent1_900</color>
+    <color name="switch_track_off">@android:color/system_neutral2_600</color>
+    <color name="switch_thumb_off">@android:color/system_neutral1_900</color>
+
+    <!-- Emergency dialer, shown before unlock. The reds stay red: fixed error
+         tones (T40) under white glyphs and text, the same at every contrast
+         level. The shortcut buttons are Tally tonal keys. -->
+    <color name="emergency_shortcut_button_background_color">@android:color/system_surface_container_high_light</color>
+    <color name="emergency_info_btn_background_color">@android:color/transparent</color>
+    <color name="emergency_shortcut_phone_type_icon_color">@android:color/system_error_600</color>
+    <color name="emergency_shortcut_confirm_button_background_color">@android:color/system_error_600</color>
+    <color name="emergency_dialpad_fab_tint_color">@android:color/system_error_600</color>
+    <!-- The call icon sits on the grey shortcut and on the red confirm key -->
+    <color name="emergency_call_icon_color">@android:color/system_neutral1_1000</color>
+</resources>
