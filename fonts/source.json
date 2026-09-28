@@ -1,0 +1,46 @@
+{
+  "about": "Sofia Sans and Sofia Sans Semi Condensed, unmodified, from google/fonts at a pinned commit. The files are renamed without the axis suffix in brackets, because Soong reads '[' in a source path as a glob; their contents are byte for byte the upstream files. Sofia Sans is the same pair of files as diamaneos-design design/branding/fonts (source.json there). Installed to /product/fonts by Android.bp and used as the named families in fonts_customization.xml.",
+  "licence": "OFL-1.1",
+  "copyright": "Copyright 2019 The Sofia Sans Project Authors (https://github.com/lettersoup/Sofia-Sans)",
+  "repository": "https://github.com/google/fonts",
+  "revision": "8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5",
+  "files": [
+    {
+      "path": "SofiaSans-Regular.ttf",
+      "upstream": "ofl/sofiasans/SofiaSans[wght].ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/sofiasans/SofiaSans[wght].ttf",
+      "bytes": 345684,
+      "sha256": "a3e1019b8867e21b75d26a7b59d4eb2c81d1acf6b69b9ae6cedca269fb68e291"
+    },
+    {
+      "path": "SofiaSans-Italic.ttf",
+      "upstream": "ofl/sofiasans/SofiaSans-Italic[wght].ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/sofiasans/SofiaSans-Italic[wght].ttf",
+      "bytes": 311316,
+      "sha256": "c0e69116d34100212881b5f993225ff0c3ea23e2c147f4c0853389923c9ab6a5"
+    },
+    {
+      "path": "SofiaSansSemiCondensed-Regular.ttf",
+      "upstream": "ofl/sofiasanssemicondensed/SofiaSansSemiCondensed[wght].ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/sofiasanssemicondensed/SofiaSansSemiCondensed[wght].ttf",
+      "bytes": 348708,
+      "sha256": "7942e1c0b370cb5fe8dbf3584a3f38a913ad84a27e13e74ccd0e547e43d57a1f"
+    },
+    {
+      "path": "SofiaSansSemiCondensed-Italic.ttf",
+      "upstream": "ofl/sofiasanssemicondensed/SofiaSansSemiCondensed-Italic[wght].ttf",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/sofiasanssemicondensed/SofiaSansSemiCondensed-Italic[wght].ttf",
+      "bytes": 315012,
+      "sha256": "ac7f4f8e5cee9c63c722c52e6cb73c97a7894992746e90a0ee8286291e4dfaff"
+    },
+    {
+      "path": "OFL.txt",
+      "upstream": "ofl/sofiasans/OFL.txt",
+      "url": "https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/sofiasans/OFL.txt",
+      "bytes": 4393,
+      "sha256": "3e824d5099202de2c98cbd8e5ecba54da7d220c1ad851330726e65f3e60842d1"
+    }
+  ],
+  "notes": "ofl/sofiasanssemicondensed/OFL.txt at the same revision is identical to ofl/sofiasans/OFL.txt (same SHA-256), so one copy covers both families.",
+  "modifications": "None."
+}

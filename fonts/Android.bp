@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// Sofia Sans and Sofia Sans Semi Condensed for the Tally shell, as two named
+// families (fonts_customization.xml); sans-serif stays Roboto. The fonts are
+// unmodified upstream files under the SIL Open Font License 1.1 (OFL.txt);
+// source.json records where each comes from and its SHA-256.
+
+license {
+    name: "vendor_diamaneos_fonts_sofia_sans_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-OFL-1.1"],
+    license_text: ["OFL.txt"],
+}
+
+prebuilt_font {
+    name: "SofiaSans-Regular.ttf",
+    src: "SofiaSans-Regular.ttf",
+    product_specific: true,
+    licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
+}
+
+prebuilt_font {
+    name: "SofiaSans-Italic.ttf",
+    src: "SofiaSans-Italic.ttf",
+    product_specific: true,
+    licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
+}
+
+prebuilt_font {
+    name: "SofiaSansSemiCondensed-Regular.ttf",
+    src: "SofiaSansSemiCondensed-Regular.ttf",
+    product_specific: true,
+    licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
+}
+
+prebuilt_font {
+    name: "SofiaSansSemiCondensed-Italic.ttf",
+    src: "SofiaSansSemiCondensed-Italic.ttf",
+    product_specific: true,
+    licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
+}
+
+// /product/etc/fonts_customization.xml, with the fonts it names.
+prebuilt_etc {
+    name: "DiamaneOSFontsCustomization",
+    src: "fonts_customization.xml",
+    filename: "fonts_customization.xml",
+    product_specific: true,
+    required: [
+        "SofiaSans-Italic.ttf",
+        "SofiaSans-Regular.ttf",
+        "SofiaSansSemiCondensed-Italic.ttf",
+        "SofiaSansSemiCondensed-Regular.ttf",
+    ],
+}
