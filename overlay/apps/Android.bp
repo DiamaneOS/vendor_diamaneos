@@ -32,3 +32,10 @@ runtime_resource_overlay {
     manifest: "DiamaneOSBluetoothOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSBluetoothOverlay/res"],
 }
+
+runtime_resource_overlay {
+    name: "DiamaneOSAccessibilityMenuOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSAccessibilityMenuOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSAccessibilityMenuOverlay/res"],
+}
