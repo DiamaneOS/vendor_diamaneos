@@ -16,3 +16,7 @@ $(call inherit-product, vendor/diamaneos/config/common.mk)
 PRODUCT_PACKAGES += \
     DiamaneOSFrameworkOverlay \
     DiamaneOSSettingsOverlay
+
+# Sofia Sans for the Tally shell: /product/etc/fonts_customization.xml and the
+# fonts it names, in /product/fonts (fonts/).
+PRODUCT_PACKAGES += DiamaneOSFontsCustomization

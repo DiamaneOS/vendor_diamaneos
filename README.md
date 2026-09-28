@@ -11,6 +11,7 @@ This repository owns what every DiamaneOS product shares:
   authorization for debuggable builds.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi to inherit.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
+- `fonts/`: Sofia Sans for the shell, as named font families.
 
 Device-specific configuration, generated hardware inputs and kernel artifacts
 belong to their respective repositories. Generic changes belong here rather
@@ -18,4 +19,5 @@ than in a device tree.
 Upstream `OFFICIAL_BUILD` must be unset: it selects upstream delivery identity.
 This initial configuration defines no update service or release endpoint.
 
-Original code is Apache-2.0; see LICENSE.
+Original code is Apache-2.0; see LICENSE. The fonts in `fonts/` keep their
+SIL Open Font License (`fonts/OFL.txt`).
