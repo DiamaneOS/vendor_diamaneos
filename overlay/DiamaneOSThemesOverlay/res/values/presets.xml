@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- The colour presets in Wallpaper & style: the five Tally lamp colours
+         instead of AOSP's 17. ThemePicker (ColorProvider) reads color_bundles
+         from this stub, then, for each item, its name from bundle_name_<item>,
+         its seed from color_secondary_<item> and its palette style from
+         color_style_<item> (a ThemeStyle name). An overlay cannot add resource
+         names, so the presets reuse the stub's keys rainbow1 to rainbow5. Seeds
+         and names are from the DiamaneOS brand (diamaneos-design
+         design/branding/source.json); each uses Tonal Spot, the style that the
+         DiamaneOS palette refines. -->
+    <array name="color_bundles">
+        <item>rainbow1</item>
+        <item>rainbow2</item>
+        <item>rainbow3</item>
+        <item>rainbow4</item>
+        <item>rainbow5</item>
+    </array>
+
+    <string name="bundle_name_rainbow1" translatable="false">Sodium</string>
+    <string name="bundle_name_rainbow2" translatable="false">Phosphor</string>
+    <string name="bundle_name_rainbow3" translatable="false">Signal violet</string>
+    <string name="bundle_name_rainbow4" translatable="false">Rose</string>
+    <string name="bundle_name_rainbow5" translatable="false">Lichen</string>
+
+    <color name="color_secondary_rainbow1">#FBA700</color>
+    <color name="color_secondary_rainbow2">#00D7D4</color>
+    <color name="color_secondary_rainbow3">#7D39FF</color>
+    <color name="color_secondary_rainbow4">#D6408F</color>
+    <color name="color_secondary_rainbow5">#B2CC4C</color>
+
+    <!-- Not read by ThemePicker at the pin; kept equal to the seed so that the
+         stub never pairs a DiamaneOS name with another colour. -->
+    <color name="color_primary_rainbow1">#FBA700</color>
+    <color name="color_primary_rainbow2">#00D7D4</color>
+    <color name="color_primary_rainbow3">#7D39FF</color>
+    <color name="color_primary_rainbow4">#D6408F</color>
+    <color name="color_primary_rainbow5">#B2CC4C</color>
+
+    <string name="color_style_rainbow1" translatable="false">TONAL_SPOT</string>
+    <string name="color_style_rainbow2" translatable="false">TONAL_SPOT</string>
+    <string name="color_style_rainbow3" translatable="false">TONAL_SPOT</string>
+    <string name="color_style_rainbow4" translatable="false">TONAL_SPOT</string>
+    <string name="color_style_rainbow5" translatable="false">TONAL_SPOT</string>
+</resources>

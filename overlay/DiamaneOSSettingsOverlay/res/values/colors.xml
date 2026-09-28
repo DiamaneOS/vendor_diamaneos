@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- Settings homepage icons: every one of Settings' ten hue families
+         (homepage_<hue>_fg and _bg, which the homepage_<entry>_foreground and
+         _background colours and injected tiles use) takes the same neutral
+         roles, so colour appears only where something is on. The glyph is
+         Tally's muted ink (on-surface-variant) on a raised key
+         (surface-container-high), which keeps it at 5:1 or more against the
+         key at stock tones (light T40 on T92, dark T70 on T12) and with the
+         DiamaneOS palette. values-night/ holds the dark roles. -->
+    <color name="homepage_blue_variant_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_blue_variant_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_blue_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_blue_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_pink_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_pink_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_orange_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_orange_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_yellow_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_yellow_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_green_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_green_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_grey_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_grey_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_cyan_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_cyan_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_red_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_red_bg">@android:color/system_surface_container_high_light</color>
+    <color name="homepage_purple_fg">@android:color/system_on_surface_variant_light</color>
+    <color name="homepage_purple_bg">@android:color/system_surface_container_high_light</color>
+</resources>
