@@ -1,0 +1,2 @@
+Packages DiamaneOS does not install (DiamaneOSRemovedPackages in Android.bp):
+InfoApp, Calendar, Music. This file is not installed.

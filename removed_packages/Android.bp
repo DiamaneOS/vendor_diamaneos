@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// Packages that GrapheneOS installs and DiamaneOS does not. Each name is a
+// module in GrapheneOS's handheld_product.mk (build/make target/product):
+//   InfoApp   GrapheneOS's Info app (external/Info): GrapheneOS release notes
+//             from grapheneos.org, donation and community links.
+//   Calendar  com.android.calendar (packages/apps/Calendar).
+//   Music     com.android.music (packages/apps/Music).
+// Consequence: until the user installs apps for them, there is no built-in
+// handler for calendar event links (and no calendar event reminders) or for
+// audio-file preview and picking. The calendar storage (CalendarProvider)
+// stays.
+//
+// This is an ETC module that installs nothing rather than a phony module:
+// make applies `overrides` only from apps, executables, shared libraries and
+// ETC modules (build/make core/main.mk module-overrides), and a Soong phony
+// module passes no overrides to make, so on make-packaged products such as the
+// FP6 a phony module would remove nothing. removed_packages.txt is only its
+// required source file.
+prebuilt_etc {
+    name: "DiamaneOSRemovedPackages",
+    src: "removed_packages.txt",
+    installable: false,
+    product_specific: true,
+    overrides: [
+        "Calendar",
+        "InfoApp",
+        "Music",
+    ],
+}
