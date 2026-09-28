@@ -18,3 +18,10 @@ runtime_resource_overlay {
     manifest: "DiamaneOSContactsOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSContactsOverlay/res"],
 }
+
+runtime_resource_overlay {
+    name: "DiamaneOSLatinIMEOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSLatinIMEOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSLatinIMEOverlay/res"],
+}
