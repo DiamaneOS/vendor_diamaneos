@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- Files in Material 3. This also turns on the read-only features that
+         Files gates on Material 3 and that the release config enables: the
+         in-app progress of file operations (visual_signals_ro) and the new
+         search (use_search_v2_read_only). The trash flow and the new archive
+         code stay off through release/ until each has passed its security
+         review. -->
+    <bool name="force_material3">true</bool>
+</resources>

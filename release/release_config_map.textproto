@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+description: "DiamaneOS additions to GrapheneOS's release configs. Adds aconfig values only; declares no build flags."
+default_containers: "product"
