@@ -26,3 +26,11 @@ runtime_resource_overlay {
     manifest: "DiamaneOSFrameworkOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSFrameworkOverlay/res"],
 }
+
+// Files (DocumentsUI): Material 3 (force_material3, in its overlayable).
+runtime_resource_overlay {
+    name: "DiamaneOSDocumentsUIOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSDocumentsUIOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSDocumentsUIOverlay/res"],
+}

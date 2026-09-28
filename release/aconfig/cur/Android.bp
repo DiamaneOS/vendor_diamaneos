@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// aconfig values for the cur release config (release_configs/cur.textproto).
+// Each package directory holds an aconfig_values module named
+// aconfig-values-diamaneos-cur-<package>-all.
+aconfig_value_set {
+    name: "aconfig_value_set-diamaneos-cur",
+    srcs: [
+        "*/Android.bp",
+    ],
+}
