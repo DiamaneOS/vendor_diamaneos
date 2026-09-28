@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for Emergency information (com.android.emergency). Its
+     screens are light in both themes (light AppCompat and DeviceDefault
+     Settings themes, no dark variant), so these read light-scheme roles and
+     palette tones and have no night values.
+
+     The reds stay red: the error role and error tones. The emergency
+     information header is red under white text; the tab indicator on it,
+     Material yellow before, is the error role's own on-colour, like the text.
+     The teal tab indicator of the editing screens takes the accent. The
+     Emergency SOS countdown screen (black, white and greys) is left as it is.
+-->
+<resources>
+    <!-- Header of the emergency information screen, shown from the lock
+         screen, and the countdown notification's colour -->
+    <color name="emergency_primary">@android:color/system_error_light</color>
+    <!-- Its status bar: error T30 -->
+    <color name="emergency_primary_dark">@android:color/system_error_700</color>
+    <!-- Text and tabs on the red header -->
+    <color name="emergency_owner_text_color">@android:color/system_on_error_light</color>
+    <color name="tab_text_color">@android:color/system_on_error_light</color>
+    <color name="emergency_accent">@android:color/system_on_error_light</color>
+    <!-- Emergency contacts' heading on the page -->
+    <color name="emergency_contacts_text_color">@android:color/system_error_light</color>
+    <!-- Tab indicator and action bar accent of the editing screens -->
+    <color name="accent_color_dark">@android:color/system_primary_light</color>
+</resources>

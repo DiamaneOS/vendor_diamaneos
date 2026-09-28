@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Wireless emergency alerts: the Cell Broadcast module's alert app
+     (com.android.cellbroadcastreceiver.module). The legacy
+     com.android.cellbroadcastreceiver app only keeps a content provider for
+     old alert history and shows no alerts. The module declares which
+     resources may be overlaid (CellBroadcastCustomization, policy
+     product|system|vendor); this overlay stays inside that group.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.diamaneos.overlay.cellbroadcast">
+    <application android:hasCode="false" />
+    <overlay android:targetPackage="com.android.cellbroadcastreceiver.module"
+        android:targetName="CellBroadcastCustomization"
+        android:isStatic="true"
+        android:priority="1" />
+</manifest>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The alert notifications' colour: the error role, so alerts stay red
+     and match the system's error colour. The notification shade keeps it
+     legible in light and dark theme itself.
+
+     Nothing else in the overlayable group is changed: the four themes
+     already build on DeviceDefault and SettingsLib themes, so they take the
+     dynamic colours as they are; cell_broadcast_color_primary and
+     cell_broadcast_color_primary_dark are not used by the app; the alert
+     dimensions are layout, not colour; the red extreme-alert icon is not
+     overlayable and stays. No booleans, arrays or strings.
+-->
+<resources>
+    <color name="notification_color">@android:color/system_error_light</color>
+</resources>
