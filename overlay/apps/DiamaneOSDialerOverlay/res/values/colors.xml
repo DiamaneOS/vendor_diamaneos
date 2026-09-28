@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for Phone (com.android.dialer), light theme. Each colour
+     reads a dynamic-colour role or palette tone, bound as the Tally token
+     library binds its tokens, so the seed and dark theme reach them.
+
+     The Dialer is a light app that Android darkens in dark theme (its
+     themes allow force dark), except the in-call window and the dialogs and
+     the call-subject window it opens, which stay light. So values-night only
+     holds colours that are drawn on dark surfaces in dark theme; colours that
+     also reach those light windows stay light-theme colours in both.
+
+     Left as they are, on purpose: call green (dial, answer, notification
+     accept), end-call, decline and notification-dismiss red, the spam and
+     blocked reds, the call-recording text and the app and shortcut icons.
+
+     The Dialer's theme code asserts that colorPrimary, colorPrimaryDark,
+     colorAccent, colorIcon, colorIconSecondary and its text colours are
+     never exactly #FFFFFFFF, so none of them reads a role that can be pure
+     white (on_primary, surface_container_lowest in light theme, on_surface
+     in dark theme at raised contrast).
+-->
+<resources>
+    <!-- Pages and surfaces (Tally bg, surface, outlineVariant) -->
+    <color name="dialer_background_color">@android:color/system_surface_container_low_light</color>
+    <color name="dialer_search_bar_color">@android:color/system_neutral1_10</color>
+    <color name="incall_dialpad_background">@android:color/system_neutral1_10</color>
+    <color name="dialer_divider_line_color">@android:color/system_outline_variant_light</color>
+    <color name="call_subject_divider">@android:color/system_outline_variant_light</color>
+
+    <!-- Accent: colorPrimary and colorAccent (action bars, toolbars, the
+         dialpad button, switches, dialog buttons, links, the selected tab).
+         White titles and icons sit on it. -->
+    <color name="dialer_theme_color">@android:color/system_primary_light</color>
+    <color name="dialer_secondary_color">@android:color/system_primary_light</color>
+    <color name="dialer_link_color">@android:color/system_primary_light</color>
+    <color name="nav_item_selected">@android:color/system_primary_light</color>
+    <color name="DO_NOT_USE_OR_I_WILL_BREAK_YOU_text_span_tertiary_button">@android:color/system_primary_light</color>
+
+    <!-- Press layer of the dialpad keys (Tally press: ink at 10 to 12 %) -->
+    <color name="dialer_theme_color_20pct">@android:color/system_control_highlight_light</color>
+
+    <!-- Text and icons on the page (Tally ink and muted) -->
+    <color name="nav_item">@android:color/system_on_surface_variant_light</color>
+    <color name="call_type_icon_read_color">@android:color/system_on_surface_variant_light</color>
+    <color name="feature_icon_read_color">@android:color/system_on_surface_variant_light</color>
+    <color name="feature_icon_unread_color">@android:color/system_on_surface_light</color>
+    <color name="conference_call_manager_caller_name_text_color">@android:color/system_on_surface_light</color>
+    <color name="conference_call_manager_secondary_text_color">@android:color/system_on_surface_variant_light</color>
+
+    <!-- Missed calls, the call-subject limit and Remove stay red: the error role -->
+    <color name="dialer_red">@android:color/system_error_light</color>
+    <color name="call_type_icon_unread_color">@android:color/system_error_light</color>
+    <color name="call_subject_limit_exceeded">@android:color/system_error_light</color>
+    <color name="remove_highlighted_text_color">@android:color/system_error_light</color>
+
+    <!-- Fixed tones, the same in both themes -->
+    <!-- Status bar behind the coloured action bars, and the icon on a lit
+         in-call key (primary T20) -->
+    <color name="settings_primary_dark">@android:color/system_accent1_800</color>
+    <!-- Snackbar action on the snackbar's fixed dark grey (primary T80) -->
+    <color name="dialer_snackbar_action_text_color">@android:color/system_accent1_200</color>
+    <!-- Tile of a contact without a letter, under a white glyph (neutral variant T40) -->
+    <color name="letter_tile_default_color">@android:color/system_neutral2_600</color>
+
+    <!-- The in-call screen is dark in both themes, with white text: primary
+         T10 to T20, so the call screen carries the seed quietly. -->
+    <color name="incall_background_gradient_top">@android:color/system_accent1_900</color>
+    <color name="incall_background_gradient_middle">@android:color/system_accent1_900</color>
+    <color name="incall_background_gradient_bottom">@android:color/system_accent1_800</color>
+    <color name="incall_background_multiwindow">@android:color/system_accent1_900</color>
+    <color name="dialer_dark_theme_color">@android:color/system_accent1_200</color>
+    <color name="dialer_dark_secondary_color">@android:color/system_accent1_200</color>
+    <color name="blue_grey_100">@android:color/system_neutral2_100</color>
+
+    <!-- Google's palette, tone for tone, from the seed's palettes. The text
+         colour lists (dialer_primary_text_color and the others) read these. -->
+    <color name="google_blue_50">@android:color/system_accent1_50</color>
+    <color name="google_blue_100">@android:color/system_accent1_100</color>
+    <color name="google_blue_500">@android:color/system_accent1_500</color>
+    <color name="google_blue_900">@android:color/system_accent1_700</color>
+    <color name="google_grey_100">@android:color/system_neutral1_50</color>
+    <color name="google_grey_300">@android:color/system_neutral1_100</color>
+    <color name="google_grey_400">@android:color/system_neutral1_200</color>
+    <color name="google_grey_600">@android:color/system_neutral2_500</color>
+    <color name="google_grey_700">@android:color/system_neutral2_600</color>
+    <color name="google_grey_800">@android:color/system_neutral1_700</color>
+    <color name="google_grey_900">@android:color/system_neutral1_900</color>
+</resources>

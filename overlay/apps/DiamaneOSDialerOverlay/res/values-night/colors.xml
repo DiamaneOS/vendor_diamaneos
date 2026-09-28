@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     Tally colours for Phone (com.android.dialer), dark theme: only colours
+     drawn on dark surfaces in dark theme, and the ones the Dialer itself
+     gives a night value (see values/colors.xml).
+-->
+<resources>
+    <color name="dialer_background_color">@android:color/system_surface_container_lowest_dark</color>
+    <color name="dialer_search_bar_color">@android:color/system_surface_container_low_dark</color>
+    <!-- The in-call dialpad keeps stock's black here: its letters and icons
+         are light-theme greys (colorIcon), which read best on black. -->
+    <color name="incall_dialpad_background">@android:color/system_surface_container_lowest_dark</color>
+    <color name="dialer_divider_line_color">@android:color/system_outline_variant_dark</color>
+
+    <!-- colorPrimary is also the button colour of the in-call dialogs, which
+         stay light in dark theme, so it takes primary T60 (stock's night
+         tone) rather than the Tally accent T80: never below stock's contrast
+         on those white dialogs, on dark pages, or under white titles once
+         force dark darkens the fill. -->
+    <color name="dialer_theme_color">@android:color/system_accent1_400</color>
+    <!-- The Tally accent in dark theme (primary T80) where the colour only
+         meets dark surfaces; force dark darkens the dialpad button's fill
+         under its white icon. -->
+    <color name="dialer_secondary_color">@android:color/system_accent1_200</color>
+    <color name="dialer_link_color">@android:color/system_accent1_200</color>
+    <color name="nav_item_selected">@android:color/system_accent1_200</color>
+    <color name="DO_NOT_USE_OR_I_WILL_BREAK_YOU_text_span_tertiary_button">@android:color/system_accent1_200</color>
+
+    <color name="dialer_theme_color_20pct">@android:color/system_control_highlight_dark</color>
+
+    <color name="nav_item">@android:color/system_on_surface_variant_dark</color>
+    <color name="call_type_icon_read_color">@android:color/system_on_surface_variant_dark</color>
+    <color name="feature_icon_read_color">@android:color/system_on_surface_variant_dark</color>
+    <color name="feature_icon_unread_color">@android:color/system_on_surface_dark</color>
+    <color name="conference_call_manager_caller_name_text_color">@android:color/system_on_surface_dark</color>
+    <color name="conference_call_manager_secondary_text_color">@android:color/system_on_surface_variant_dark</color>
+
+    <color name="dialer_red">@android:color/system_error_dark</color>
+    <color name="call_type_icon_unread_color">@android:color/system_error_dark</color>
+    <color name="remove_highlighted_text_color">@android:color/system_error_dark</color>
+
+    <!-- The Dialer has a night value for this one; the tone stays T20 -->
+    <color name="settings_primary_dark">@android:color/system_accent1_800</color>
+</resources>

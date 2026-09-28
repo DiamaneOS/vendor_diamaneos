@@ -20,6 +20,9 @@ PRODUCT_PACKAGES += \
     DiamaneOSSetupWizardOverlay \
     DiamaneOSThemesOverlay
 
+# Tally colour overlays for first-party apps (overlay/apps/).
+$(call inherit-product, vendor/diamaneos/overlay/apps/apps.mk)
+
 # GrapheneOS packages that DiamaneOS does not install (removed_packages/).
 PRODUCT_PACKAGES += DiamaneOSRemovedPackages
 
