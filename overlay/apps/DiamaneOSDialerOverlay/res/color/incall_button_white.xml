@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The fill of a switched-on in-call key (mute, speaker, hold, the video
+     keys): lamp-coloured, since it shows what is on. Primary T80 as a palette
+     tone, not the lamp role (system_primary_fixed_dim): the in-call screen
+     is dark in both themes, and stock monet darkens the light-theme lamp to
+     T30-T44 at raised contrast. The key's icon is the in-call secondary
+     colour, primary T20 by default (settings_primary_dark).
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="true" android:color="@android:color/system_accent1_200" />
+    <item android:state_enabled="false" android:color="@android:color/system_accent1_200" android:alpha="0.6" />
+</selector>
