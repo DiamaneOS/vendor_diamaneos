@@ -14,6 +14,7 @@ What every DiamaneOS product shares:
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
   and the shell's named families, with the script that builds it.
+- `media/`: the boot animation.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 
 Rules:
