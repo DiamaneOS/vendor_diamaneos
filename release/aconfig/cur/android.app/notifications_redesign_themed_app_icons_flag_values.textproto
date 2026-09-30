@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# Themed app icons in notification rows (SystemUI's AppIconProviderImpl), so
+# the shade matches Home's themed keys. Fixed on: the flag is otherwise a
+# read-write experiment that GrapheneOS leaves at its default (off).
+flag_value {
+  package: "android.app"
+  name: "notifications_redesign_themed_app_icons"
+  state: ENABLED
+  permission: READ_ONLY
+}
