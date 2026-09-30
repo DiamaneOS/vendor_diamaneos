@@ -26,8 +26,10 @@ $(call inherit-product, vendor/diamaneos/overlay/apps/apps.mk)
 # GrapheneOS packages that DiamaneOS does not install (removed_packages/).
 PRODUCT_PACKAGES += DiamaneOSRemovedPackages
 
-# Sofia Sans for the Tally shell: /product/etc/fonts_customization.xml and the
-# fonts it names, in /product/fonts (fonts/).
+# Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
+# (sans-serif) and the Tally shell's named families:
+# /product/etc/fonts_customization.xml and the fonts it names, in
+# /product/fonts (fonts/).
 PRODUCT_PACKAGES += DiamaneOSFontsCustomization
 
 # The Pleat boot animation (media/, from diamaneos-design

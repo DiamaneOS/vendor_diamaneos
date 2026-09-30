@@ -1,0 +1,4 @@
+# The build (build_tally_fonts.py) needs fontTools at this version to reproduce the recorded SHA-256.
+fonttools==4.60.1
+# Only for measure_tally_fonts.py.
+uharfbuzz==0.56.2

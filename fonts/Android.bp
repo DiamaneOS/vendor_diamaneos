@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The DiamaneOS Project
 
-// Sofia Sans and Sofia Sans Semi Condensed for the Tally shell, as two named
-// families (fonts_customization.xml); sans-serif stays Roboto. The fonts are
-// unmodified upstream files under the SIL Open Font License 1.1 (OFL.txt);
-// source.json records where each comes from and its SHA-256.
+// Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font:
+// sans-serif and the two named families the Tally shell uses
+// (fonts_customization.xml). tools/build_tally_fonts.py builds the installed
+// fonts from the unmodified upstream files beside them (source.json records
+// both, with their SHA-256); the upstream files are its input and are not
+// installed. All are under the SIL Open Font License 1.1 (OFL.txt).
 
 license {
     name: "vendor_diamaneos_fonts_sofia_sans_license",
@@ -14,29 +16,29 @@ license {
 }
 
 prebuilt_font {
-    name: "SofiaSans-Regular.ttf",
-    src: "SofiaSans-Regular.ttf",
+    name: "SofiaSansTally-Regular.ttf",
+    src: "SofiaSansTally-Regular.ttf",
     product_specific: true,
     licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
 }
 
 prebuilt_font {
-    name: "SofiaSans-Italic.ttf",
-    src: "SofiaSans-Italic.ttf",
+    name: "SofiaSansTally-Italic.ttf",
+    src: "SofiaSansTally-Italic.ttf",
     product_specific: true,
     licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
 }
 
 prebuilt_font {
-    name: "SofiaSansSemiCondensed-Regular.ttf",
-    src: "SofiaSansSemiCondensed-Regular.ttf",
+    name: "SofiaSansTallySemiCondensed-Regular.ttf",
+    src: "SofiaSansTallySemiCondensed-Regular.ttf",
     product_specific: true,
     licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
 }
 
 prebuilt_font {
-    name: "SofiaSansSemiCondensed-Italic.ttf",
-    src: "SofiaSansSemiCondensed-Italic.ttf",
+    name: "SofiaSansTallySemiCondensed-Italic.ttf",
+    src: "SofiaSansTallySemiCondensed-Italic.ttf",
     product_specific: true,
     licenses: ["vendor_diamaneos_fonts_sofia_sans_license"],
 }
@@ -48,9 +50,9 @@ prebuilt_etc {
     filename: "fonts_customization.xml",
     product_specific: true,
     required: [
-        "SofiaSans-Italic.ttf",
-        "SofiaSans-Regular.ttf",
-        "SofiaSansSemiCondensed-Italic.ttf",
-        "SofiaSansSemiCondensed-Regular.ttf",
+        "SofiaSansTally-Italic.ttf",
+        "SofiaSansTally-Regular.ttf",
+        "SofiaSansTallySemiCondensed-Italic.ttf",
+        "SofiaSansTallySemiCondensed-Regular.ttf",
     ],
 }

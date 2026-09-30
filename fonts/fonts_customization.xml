@@ -5,8 +5,21 @@
 
      Installed as /product/etc/fonts_customization.xml, which Android reads
      with /product/fonts/ as the font directory (SystemFonts,
-     FontCustomizationParser). It adds two named families for the Tally shell,
-     the names the Tally token library uses; it does not change sans-serif.
+     FontCustomizationParser). It makes Sofia Sans Tally, the metric-adjusted
+     Sofia Sans (tools/build_tally_fonts.py), the system font:
+
+     - sans-serif, Android's default family, is Sofia Sans Tally. A named
+       family defined here replaces the system one of the same name
+       (FontListParser.readFamilies), so every text drawn in the default
+       font, in sans-serif or in one of its aliases (sans-serif-medium,
+       -light, -thin, -black, arial, helvetica, tahoma, verdana) takes it.
+       Roboto stays the first fallback family, so characters Sofia Sans
+       lacks (Vietnamese, Kazakh, Azerbaijani's schwa, Esperanto, some
+       currency signs) are still drawn, in Roboto at the same x-height.
+       sans-serif-condensed, serif and monospace stay stock.
+     - sofia-sans and sofia-sans-semi-condensed, the names the Tally token
+       library uses, are the same fonts, so Tally's type roles take their
+       nominal sp without a size step of their own.
 
      Each family is one variable font per slant with a wght axis from 1 to
      1000 and 400 as its default instance. No wght axis value is fixed here, so
@@ -15,15 +28,19 @@
      weight is its default instance, the one drawn when 400 is asked for.
      Android reads this file together with the system font list: a malformed
      file makes it drop every system font or fail at boot, so check a change
-     against FontCustomizationParser before it ships.
+     with `diamaneos fonts check` (DiamaneOS tools) before it ships.
 -->
 <fonts-modification version="1">
+    <family customizationType="new-named-family" name="sans-serif">
+        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSansTally-Regular">SofiaSansTally-Regular.ttf</font>
+        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSansTally-Italic">SofiaSansTally-Italic.ttf</font>
+    </family>
     <family customizationType="new-named-family" name="sofia-sans">
-        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSans-Regular">SofiaSans-Regular.ttf</font>
-        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSans-Italic">SofiaSans-Italic.ttf</font>
+        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSansTally-Regular">SofiaSansTally-Regular.ttf</font>
+        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSansTally-Italic">SofiaSansTally-Italic.ttf</font>
     </family>
     <family customizationType="new-named-family" name="sofia-sans-semi-condensed">
-        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSansSemiCondensed-Regular">SofiaSansSemiCondensed-Regular.ttf</font>
-        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSansSemiCondensed-Italic">SofiaSansSemiCondensed-Italic.ttf</font>
+        <font weight="400" style="normal" supportedAxes="wght" postScriptName="SofiaSansTallySemiCondensed-Regular">SofiaSansTallySemiCondensed-Regular.ttf</font>
+        <font weight="400" style="italic" supportedAxes="wght" postScriptName="SofiaSansTallySemiCondensed-Italic">SofiaSansTallySemiCondensed-Italic.ttf</font>
     </family>
 </fonts-modification>
