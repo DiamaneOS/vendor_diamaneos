@@ -18,6 +18,7 @@ PRODUCT_PACKAGES += \
     DiamaneOSFrameworkOverlay \
     DiamaneOSSettingsOverlay \
     DiamaneOSSetupWizardOverlay \
+    DiamaneOSSystemUIOverlay \
     DiamaneOSThemesOverlay
 
 # Tally colour overlays for first-party apps (overlay/apps/).
