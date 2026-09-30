@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# A location-only privacy item animates the status bar privacy chip, then the
+# dot, as the camera and microphone do (stock SystemEventCoordinator, with its
+# 10-minute per-app debounce). Fixed on: the flag is otherwise a read-write
+# development flag that GrapheneOS leaves at its default (off). It needs
+# location_indicators_enabled, which GrapheneOS's release config sets on.
+flag_value {
+  package: "android.location.flags"
+  name: "location_indicators_animation"
+  state: ENABLED
+  permission: READ_ONLY
+}

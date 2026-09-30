@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// The status bar privacy chip animates in for location, as for the camera and
+// microphone (owner, 30 September 2026). Only SystemUI's SystemEventCoordinator reads
+// location_indicators_animation.
+aconfig_values {
+    name: "aconfig-values-diamaneos-cur-android.location.flags-all",
+    package: "android.location.flags",
+    srcs: [
+        "*_flag_values.textproto",
+    ],
+}
