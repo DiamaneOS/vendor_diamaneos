@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     A notification's expand key (the count and chevron at a card's top end)
+     as a small Tally key, radius 4 (tally_radius_xs), as the prototype's
+     small keys (app.css .el-retry, .rs-stop), in place of the stock pill (its
+     radius is the key's full 18 dp height). The same two layers as the
+     framework's drawable, and the tinted layer keeps the framework's id:
+     NotificationExpandButton looks it up by that id to colour it, and a
+     drawable without it would crash the notification's view.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@*android:id/expand_button_pill_colorized_layer">
+        <shape>
+            <corners android:radius="4dp" />
+            <solid android:color="@android:color/white" />
+        </shape>
+    </item>
+    <item>
+        <shape>
+            <corners android:radius="4dp" />
+            <solid android:color="@*android:color/notification_expand_button_state_tint" />
+        </shape>
+    </item>
+</layer-list>
