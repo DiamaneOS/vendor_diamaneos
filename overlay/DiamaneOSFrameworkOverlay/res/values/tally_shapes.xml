@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- The Tally key radius (tally_radius_s) on the emphasized notification
+         action buttons: live and promoted notifications, calls and
+         full-screen alerts drawn as buttons. Stock draws them as pills (a
+         20 dp radius on 40 dp). Its only user is btn_notification_emphasized;
+         the shade is the shell's, so no pills there. -->
+    <dimen name="notification_action_button_radius">8dp</dimen>
+</resources>

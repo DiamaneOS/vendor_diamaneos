@@ -15,8 +15,9 @@ runtime_resource_overlay {
 // Framework (android): the Tally values from the token export
 // (res/values/tally_tokens.xml, written by diamaneos-design
 // design/tokens/generate.py --export framework-overlay), buttons without
-// capitals, no round icons, the neutral 32-bit app text (UI-08) and the default
-// wallpaper. res/drawable-nodpi/default_wallpaper.png is diamaneos-design
+// capitals, no round icons, the neutral 32-bit app text (UI-08), the key radius
+// on emphasized notification actions (res/values/tally_shapes.xml) and the
+// default wallpaper. res/drawable-nodpi/default_wallpaper.png is diamaneos-design
 // design/branding/assets/wallpaper/panel-sodium-portrait-dark.png (1116 x 2484,
 // the FP6 screen), exported from its SVG by design/branding/export_png.py and
 // recorded in assets/png-sha256.json.
@@ -25,6 +26,15 @@ runtime_resource_overlay {
     product_specific: true,
     manifest: "DiamaneOSFrameworkOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSFrameworkOverlay/res"],
+}
+
+// SystemUI: the Tally key radius on the stock status bar chips
+// (res/values/tally_shapes.xml).
+runtime_resource_overlay {
+    name: "DiamaneOSSystemUIOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSystemUIOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSystemUIOverlay/res"],
 }
 
 // Files (DocumentsUI): Material 3 (force_material3, in its overlayable).

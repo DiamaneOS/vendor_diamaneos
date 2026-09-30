@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- Tally shapes for SettingsLib's expressive theme in Settings: no pills
+         in the shell's own controls (Settings' pages are part of the shell).
+
+         The "full" radius draws only the dialog keys
+         (settingslib_expressive_button_background_filled and _outline, the
+         buttons of every Settings dialog) and the spinners
+         (settingslib_expressive_spinner_background and _outlined); with the
+         Tally key radius they are r8 keys instead of pills. -->
+    <dimen name="settingslib_expressive_radius_full">8dp</dimen>
+    <!-- Large 1 draws only the usage meters: the thick bar of Battery and
+         Storage (SettingsLibProgressBarStyle.Linear.Expressive) and the
+         segmented bar chart. The prototype's meter is r8. -->
+    <dimen name="settingslib_expressive_radius_large1">8dp</dimen>
+</resources>

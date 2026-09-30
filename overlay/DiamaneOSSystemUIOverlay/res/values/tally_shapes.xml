@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- The Tally key radius (tally_radius_s) on the status bar's stock
+         ongoing-activity chips (a live timer or stopwatch, a call, casting),
+         the lock screen's user chip and the quick action chips, as the Tally
+         capture and privacy chips already have. Stock draws them as pills
+         (28 dp). The Tally capture chips take their own radius and are not
+         changed. -->
+    <dimen name="ongoing_activity_chip_corner_radius">8dp</dimen>
+</resources>
