@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 The DiamaneOS Project
 
-# New archive code (ZIP creation and extraction). Off until it is reviewed
-# for path traversal, symlink entries and size and entry limits, and
-# fuzzed.
+# New archive code (ZIP/7z/tar browsing, creation and extraction). Turned on
+# after its security review and host fuzzing (2026-09-30): path traversal and
+# zip-slip are collapsed to the extraction root by Archive.getEntryPath and
+# extraction is SAF-mediated, archive symlink entries are never followed,
+# extraction size is bounded (per-file to the declared size and in total to the
+# pre-checked free space), and mutational fuzzing of the parser found no crash,
+# hang or unbounded allocation. See the "Files archive handling" threat-model
+# row added with this change.
 flag_value {
   package: "com.android.documentsui.flags"
   name: "zip_ng_ro"
-  state: DISABLED
+  state: ENABLED
   permission: READ_ONLY
 }

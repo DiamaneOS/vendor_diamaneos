@@ -2,8 +2,11 @@
 // Copyright 2026 The DiamaneOS Project
 
 // Files (DocumentsUI) ships its Material 3 look (the force_material3
-// overlay) with the trash flow and the new archive code off. Each may be
-// turned on only after its security review and tests, with its threat
+// overlay). The new archive code (zip_ng_ro) is on after its security
+// review and fuzzing (2026-09-30). The trash flow (enable_trash_flow_ro)
+// stays off until its retention, cross-app and cross-profile isolation and
+// erase behaviour are tested on a build and the "files stay on the phone
+// until emptied" wording is added. Each is turned on only with its threat
 // model row in the same change.
 aconfig_values {
     name: "aconfig-values-diamaneos-cur-com.android.documentsui.flags-all",
