@@ -10,8 +10,7 @@
          its seed from color_secondary_<item> and its palette style from
          color_style_<item> (a ThemeStyle name). An overlay cannot add resource
          names, so the presets reuse the stub's keys rainbow1 to rainbow5. Seeds
-         and names are from the DiamaneOS brand (diamaneos-design
-         design/branding/source.json); each uses Tonal Spot, the style that the
+         and names are from the DiamaneOS brand; each uses Tonal Spot, the style that the
          DiamaneOS palette refines. -->
     <array name="color_bundles">
         <item>rainbow1</item>
