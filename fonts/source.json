@@ -44,31 +44,31 @@
       "path": "SofiaSansTally-Regular.ttf",
       "built_from": "SofiaSans-Regular.ttf",
       "tool": "tools/build_tally_fonts.py",
-      "bytes": 365000,
-      "sha256": "3d3cbacc421b3d03fc0809917bfe468a94c18d4b87c0e2f93726797708379b48"
+      "bytes": 365072,
+      "sha256": "5abaceaa60465b95ab47a577d56ff5acaeceb7cc70a9530cef7130d9c52ac268"
     },
     {
       "path": "SofiaSansTally-Italic.ttf",
       "built_from": "SofiaSans-Italic.ttf",
       "tool": "tools/build_tally_fonts.py",
-      "bytes": 330980,
-      "sha256": "15a512bfdeef343301971db04d6dba1b3b7ce9c69b6b49fcf6a1d109edd4f711"
+      "bytes": 331052,
+      "sha256": "f95e2b3fcce89f9f148c2ab32c47f4b5ae172a1f60aaffdeb72e703236aebfd0"
     },
     {
       "path": "SofiaSansTallySemiCondensed-Regular.ttf",
       "built_from": "SofiaSansSemiCondensed-Regular.ttf",
       "tool": "tools/build_tally_fonts.py",
-      "bytes": 367296,
-      "sha256": "18c0908d6a8c4e1f744bf80b37e5bd5f036716866bfe1b22b1c208c1a8256409"
+      "bytes": 367368,
+      "sha256": "1f42f3efd15a89aa97107ce5c038c5b4468c752ce7425bff918eed3160c33ca6"
     },
     {
       "path": "SofiaSansTallySemiCondensed-Italic.ttf",
       "built_from": "SofiaSansSemiCondensed-Italic.ttf",
       "tool": "tools/build_tally_fonts.py",
-      "bytes": 333324,
-      "sha256": "0d98803a40002402ffa61d219049a78d67b39044ac250ea9b7b599c3c6205deb"
+      "bytes": 333396,
+      "sha256": "2aa97525b8fcecbaa2b5410c09f8d9b8b51ee7a603761781c5c77c694af7b26b"
     }
   ],
   "notes": "ofl/sofiasanssemicondensed/OFL.txt at the same revision is identical to ofl/sofiasans/OFL.txt (same SHA-256), so one copy covers both families.",
-  "modifications": "The upstream files: none. The Sofia Sans Tally files: every glyph drawn 1.08 times larger against the em (2048 units per em), 0.0125 of the drawn size less advance on every spacing glyph, Roboto's vertical metrics (ascent 1900, descent 500, no line gap; font box and win metrics at least Roboto's), and renamed Sofia Sans Tally; see tools/build_tally_fonts.py. They are under the SIL Open Font License 1.1 as the originals; Sofia Sans declares no Reserved Font Name."
+  "modifications": "The upstream files: none. The Sofia Sans Tally files: every glyph drawn 1.08 times larger against the em (2048 units per em), 0.0125 of the drawn size less advance on every spacing glyph, Roboto's vertical metrics (ascent 1900, descent 500, no line gap; font box and win metrics at least Roboto's), empty THIN SPACE and NARROW NO-BREAK SPACE glyphs (U+2009, U+202F) a sixth of the drawn em wide, U+2010 and U+2011 drawn with the hyphen and U+2215 with the slash, and renamed Sofia Sans Tally; see tools/build_tally_fonts.py. They are under the SIL Open Font License 1.1 as the originals; Sofia Sans declares no Reserved Font Name."
 }
