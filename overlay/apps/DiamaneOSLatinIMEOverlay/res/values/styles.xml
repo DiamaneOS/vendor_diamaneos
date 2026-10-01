@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The keyboard's settings (and its dictionary and spell checker settings)
+     keep the platform's Settings theme, as the stock style has it, but their
+     navigation bar takes the page's colour, with no divider, where the
+     platform theme draws it black in dark theme and white in light theme.
+     The bar's keys follow the page: windowLightNavigationBar is the
+     platform theme's own for each.
+-->
+<resources>
+    <style name="platformSettingsTheme" parent="@android:style/Theme.DeviceDefault.Settings">
+        <item name="android:navigationBarColor">?android:attr/colorBackground</item>
+        <item name="android:navigationBarDividerColor">@android:color/transparent</item>
+    </style>
+</resources>
