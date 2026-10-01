@@ -7,22 +7,21 @@
      strings in English only (no translations upstream).
 -->
 <resources>
-    <!-- UI-02: Security > Duress password. Unchanged but for the name. -->
+    <!-- Security > Duress password. Unchanged but for the name. -->
     <string name="duress_pwd_description">"Duress password can be entered instead of the user password in any place that asks for it, such as the lock screen of any user and any user or work profile password prompt.
 
 Submitting the duress password will immediately make the storage contents permanently inaccessible, delete all eSIMs and then power off the device. DiamaneOS will remain installed.
 
 Duress PIN works the same way duress password does."</string>
 
-    <!-- UI-04: App info > Exploit protection, the compatibility mode switch.
+    <!-- App info > Exploit protection, the compatibility mode switch.
          Unchanged but for the name. -->
     <string name="aep_compat_mode_summary">Improves compatibility by disabling some of the DiamaneOS exploit protections for this app</string>
 
-    <!-- UI-03: App info > Play Integrity API. GrapheneOS's text names it four
+    <!-- App info > Play Integrity API. GrapheneOS's text names it four
          times and states which integrity level it passes, that apps ban it and
          what hardware attestation verifies. None of that has been tested on
          DiamaneOS on the FP6, so this says only what the API is for and what
-         a user can do.
-         New text, approved by the owner on 28 September 2026. -->
+         a user can do. New, reviewed text. -->
     <string name="app_play_integrity_top_intro">The Play Integrity API allows services to verify properties of a device through their app. Some services accept only the operating system that the device was sold with, so their apps may not work on DiamaneOS. If an app does not work, you can contact its developer.</string>
 </resources>

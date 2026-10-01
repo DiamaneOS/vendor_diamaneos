@@ -4,14 +4,13 @@
      Copyright 2026 The DiamaneOS Project
 -->
 <resources>
-    <!-- SW-01: the welcome screen's title and tagline. The setup wizard has
+    <!-- The welcome screen's title and tagline. The setup wizard has
          these strings in English only (no translations upstream). -->
     <string name="welcome_to_grapheneos">Welcome to DiamaneOS</string>
-    <!-- New text (approved by the owner, 28 September 2026), with no claim that
-         has not been checked. -->
+    <!-- New, reviewed text, with no claim that has not been checked. -->
     <string name="grapheneos_desc">A phone operating system designed around your privacy and security.</string>
 
-    <!-- SW-02: what screen readers say for the logo on the welcome and finish
+    <!-- What screen readers say for the logo on the welcome and finish
          screens. -->
     <string name="grapheneos_icon">DiamaneOS</string>
 </resources>

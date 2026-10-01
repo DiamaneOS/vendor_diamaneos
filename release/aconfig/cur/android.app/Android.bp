@@ -2,7 +2,7 @@
 // Copyright 2026 The DiamaneOS Project
 
 // Notification rows show each app's icon themed in one colour, as Home's keys
-// are (owner, 30 September 2026). Only SystemUI's notification icon provider
+// are. Only SystemUI's notification icon provider
 // reads this flag.
 aconfig_values {
     name: "aconfig-values-diamaneos-cur-android.app-all",
