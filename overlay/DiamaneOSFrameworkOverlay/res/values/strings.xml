@@ -4,7 +4,7 @@
      Copyright 2026 The DiamaneOS Project
 -->
 <resources>
-    <!-- UI-08: the dialog shown when a 32-bit-only app starts
+    <!-- The dialog shown when a 32-bit-only app starts
          (DeprecatedAbiDialog) names GrapheneOS and its plans. Show AOSP's own
          text for this dialog instead, by reference, so that its translations
          apply as well. -->
