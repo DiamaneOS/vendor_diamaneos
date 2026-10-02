@@ -16,10 +16,13 @@ runtime_resource_overlay {
 // (res/values/tally_tokens.xml, generated from the DiamaneOS design tokens),
 // buttons without capitals, no round icons, the neutral 32-bit app text, the key
 // radius on emphasized notification actions (res/values/tally_shapes.xml), the
-// small key radius on a notification's expand key (res/drawable) and the default
-// wallpaper. res/drawable-nodpi/default_wallpaper.png is the DiamaneOS Sodium
-// panel wallpaper, portrait and dark (1116 x 2484, the FP6 screen), exported from
-// its SVG.
+// small key radius on a notification's expand key (res/drawable) and the
+// wallpapers. The default wallpaper (default_wallpaper_component) is Tally's
+// plain wallpaper in SystemUI. The built-in picture,
+// res/drawable-nodpi/default_wallpaper.png, stays the DiamaneOS Sodium panel
+// wallpaper (portrait and dark, 1116 x 2484, the FP6 screen, exported from its
+// SVG): Wallpaper & style offers it under On-device wallpapers, and apps that
+// read the wallpaper as a picture get it.
 runtime_resource_overlay {
     name: "DiamaneOSFrameworkOverlay",
     product_specific: true,
