@@ -11,7 +11,7 @@
          tally_tokens.xml), so apps' round icons are not used. -->
     <bool name="config_useRoundIcon">false</bool>
 
-    <!-- The default wallpaper is Tally's plain wallpaper in SystemUI: one colour, the same in
-         light and dark theme, with no lock screen dim. A wallpaper someone chose stays theirs. -->
+    <!-- The default wallpaper is Tally's Paper wallpaper in SystemUI: grained stone paper, light
+         or dark with the theme, with no lock screen dim. A wallpaper someone chose stays theirs. -->
     <string name="default_wallpaper_component" translatable="false">com.android.systemui/com.android.systemui.tally.wallpaper.TallyWallpaper</string>
 </resources>
