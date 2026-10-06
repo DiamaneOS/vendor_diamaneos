@@ -17,6 +17,14 @@ What every DiamaneOS product shares:
 - `media/`: the boot animation.
 - `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
+- `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
+  the gallery, and the notices of Glimpse's bundled libraries.
+
+Switches in `product.mk`:
+
+- `DIAMANEOS_GALLERY`: the gallery (`glimpse` or `grapheneos`).
+- `DIAMANEOS_SCREENSHOT_EDITOR`: the screenshot editor (`canvas`, LineageOS's
+  Canvas, or `grapheneos`).
 
 Rules:
 
@@ -30,4 +38,5 @@ Rules:
   (`releases.diamaneos.de`). Other builds leave it unset.
 
 Original code is Apache-2.0 (LICENSE). The fonts in `fonts/` keep their SIL
-Open Font License (`fonts/OFL.txt`).
+Open Font License (`fonts/OFL.txt`), and `gallery/notices/` holds the licence
+texts of Glimpse's bundled libraries.
