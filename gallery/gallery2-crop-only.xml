@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<!-- Gallery2 (com.android.gallery3d) keeps only its crop screen,
+     com.android.gallery3d.filtershow.crop.CropActivity: the
+     com.android.camera.action.CROP handler that the profile photo picker uses.
+     Every other component is off: those in Gallery2's manifest at GrapheneOS
+     2026091000, and the two that its AndroidX libraries merge into it. Package
+     Manager applies these states to system apps at every boot. -->
+<config>
+    <component-override package="com.android.gallery3d">
+        <!-- Gallery: launcher entry, viewer, picker, older shortcuts -->
+        <component class="com.android.gallery3d.app.GalleryActivity" enabled="false" />
+        <component class="com.android.gallery3d.app.Gallery" enabled="false" />
+        <component class="com.cooliris.media.Gallery" enabled="false" />
+        <component class="com.android.gallery3d.app.DialogPicker" enabled="false" />
+        <component class="com.android.gallery3d.app.AlbumPicker" enabled="false" />
+        <component class="com.android.gallery3d.settings.GallerySettings" enabled="false" />
+        <!-- Video player and trimming -->
+        <component class="com.android.gallery3d.app.MovieActivity" enabled="false" />
+        <component class="com.android.gallery3d.app.TrimVideo" enabled="false" />
+        <!-- Editor (Edit for images) -->
+        <component class="com.android.gallery3d.filtershow.FilterShowActivity" enabled="false" />
+        <component class="com.android.gallery3d.filtershow.pipeline.ProcessingService" enabled="false" />
+        <component class="com.android.gallery3d.filtershow.provider.SharedImageProvider" enabled="false" />
+        <!-- Wallpaper -->
+        <component class="com.android.gallery3d.app.Wallpaper" enabled="false" />
+        <!-- Camera trampolines -->
+        <component class="com.android.camera.CameraActivity" enabled="false" />
+        <component class="com.android.camera.CameraLauncher" enabled="false" />
+        <component class="com.android.camera.DisableCameraReceiver" enabled="false" />
+        <component class="com.android.camera.MediaSaveService" enabled="false" />
+        <!-- Import from USB cameras (MTP) -->
+        <component class="com.android.gallery3d.ingest.IngestActivity" enabled="false" />
+        <component class="com.android.gallery3d.ingest.IngestService" enabled="false" />
+        <!-- Widgets -->
+        <component class="com.android.gallery3d.gadget.WidgetClickHandler" enabled="false" />
+        <component class="com.android.gallery3d.gadget.WidgetTypeChooser" enabled="false" />
+        <component class="com.android.gallery3d.gadget.WidgetConfigure" enabled="false" />
+        <component class="com.android.gallery3d.gadget.WidgetService" enabled="false" />
+        <!-- Content providers -->
+        <component class="com.android.gallery3d.provider.GalleryProvider" enabled="false" />
+        <component class="com.android.photos.data.PhotoProvider" enabled="false" />
+        <component class="androidx.core.content.FileProvider" enabled="false" />
+        <!-- Background work -->
+        <component class="com.android.gallery3d.app.PackagesMonitor" enabled="false" />
+        <component class="com.android.gallery3d.app.PackagesMonitor$AsyncService" enabled="false" />
+        <component class="com.android.gallery3d.app.BatchService" enabled="false" />
+        <!-- Merged from AndroidX (startup and profile installer) -->
+        <component class="androidx.startup.InitializationProvider" enabled="false" />
+        <component class="androidx.profileinstaller.ProfileInstallReceiver" enabled="false" />
+    </component-override>
+</config>
