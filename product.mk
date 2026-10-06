@@ -38,6 +38,45 @@ $(call inherit-product, vendor/diamaneos/overlay/apps/apps.mk)
 # GrapheneOS packages that DiamaneOS does not install (removed_packages/).
 PRODUCT_PACKAGES += DiamaneOSRemovedPackages
 
+# Gallery and screenshot editor: one switch each. The defaults below are the
+# FP6's; the build environment or a product (before inheriting this file) may
+# set another value.
+#
+# DIAMANEOS_GALLERY
+#   glimpse     LineageOS's Glimpse (packages/apps/Glimpse, unmodified) is the
+#               gallery and holds the system gallery role; its own overlay sets
+#               config_systemGallery. Gallery2 stays installed for its crop
+#               screen only (gallery/): the profile photo picker needs a crop
+#               handler, and Glimpse has none.
+#   grapheneos  GrapheneOS's own gallery selection.
+# Glimpse overrides GrapheneOS's future Gallery module, so a tree that has
+# GrapheneOS's new gallery (external/Gallery) must use grapheneos.
+DIAMANEOS_GALLERY ?= glimpse
+ifeq ($(DIAMANEOS_GALLERY),glimpse)
+ifneq ($(wildcard external/Gallery/Android.bp),)
+$(error GrapheneOS ships its own gallery (external/Gallery): set DIAMANEOS_GALLERY := grapheneos)
+endif
+PRODUCT_PACKAGES += \
+    DiamaneOSGallery2CropOnly \
+    Glimpse
+else ifneq ($(DIAMANEOS_GALLERY),grapheneos)
+$(error DIAMANEOS_GALLERY must be glimpse or grapheneos)
+endif
+
+# DIAMANEOS_SCREENSHOT_EDITOR
+#   canvas      LineageOS's Canvas (packages/apps/Canvas, unmodified) edits
+#               screenshots: SystemUI's preferred editor
+#               (overlay/DiamaneOSScreenshotEditorOverlay).
+#   grapheneos  SystemUI's default: Edit offers the apps that edit images.
+DIAMANEOS_SCREENSHOT_EDITOR ?= canvas
+ifeq ($(DIAMANEOS_SCREENSHOT_EDITOR),canvas)
+PRODUCT_PACKAGES += \
+    Canvas \
+    DiamaneOSScreenshotEditorOverlay
+else ifneq ($(DIAMANEOS_SCREENSHOT_EDITOR),grapheneos)
+$(error DIAMANEOS_SCREENSHOT_EDITOR must be canvas or grapheneos)
+endif
+
 # Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
 # (sans-serif) and the Tally shell's named families:
 # /product/etc/fonts_customization.xml and the fonts it names, in

@@ -39,6 +39,16 @@ runtime_resource_overlay {
     resource_dirs: ["DiamaneOSSystemUIOverlay/res"],
 }
 
+// SystemUI: Edit on a screenshot opens LineageOS's Canvas
+// (config_preferredScreenshotEditor). product.mk installs it with Canvas when
+// DIAMANEOS_SCREENSHOT_EDITOR is canvas.
+runtime_resource_overlay {
+    name: "DiamaneOSScreenshotEditorOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSScreenshotEditorOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSScreenshotEditorOverlay/res"],
+}
+
 // Files (DocumentsUI): Material 3 (force_material3, in its overlayable).
 runtime_resource_overlay {
     name: "DiamaneOSDocumentsUIOverlay",

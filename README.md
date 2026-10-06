@@ -17,6 +17,9 @@ What every DiamaneOS product shares:
 - `media/`: the boot animation.
 - `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
+- `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
+  the gallery; `product.mk` switches the gallery (`DIAMANEOS_GALLERY`) and the
+  screenshot editor (`DIAMANEOS_SCREENSHOT_EDITOR`, LineageOS's Canvas).
 
 Rules:
 
