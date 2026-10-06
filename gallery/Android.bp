@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// Gallery2 reduced to its crop screen while LineageOS's Glimpse is the gallery
+// (product.mk, DIAMANEOS_GALLERY := glimpse). The profile photo picker asks for
+// com.android.camera.action.CROP, and neither Glimpse nor Canvas handles it.
+// gallery2-crop-only.xml is a sysconfig component-override that turns off every
+// other Gallery2 component, so Gallery2 shows no launcher entry and answers no
+// other intent. It requires Gallery2, so a tree without Gallery2 fails to build
+// instead of shipping without a crop handler.
+prebuilt_etc {
+    name: "DiamaneOSGallery2CropOnly",
+    src: "gallery2-crop-only.xml",
+    filename: "diamaneos-gallery2-crop-only.xml",
+    sub_dir: "sysconfig",
+    product_specific: true,
+    required: ["Gallery2"],
+}

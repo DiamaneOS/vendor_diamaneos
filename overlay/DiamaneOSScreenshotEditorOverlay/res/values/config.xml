@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- Edit on a screenshot, and on an image in the clipboard overlay, opens
+         LineageOS's Canvas. SystemUI uses this activity only while it exists;
+         otherwise it falls back to its own default (config_screenshotEditor,
+         blank: the chooser of apps that edit images). -->
+    <string name="config_preferredScreenshotEditor" translatable="false">org.lineageos.canvas/org.lineageos.canvas.MainActivity</string>
+</resources>
