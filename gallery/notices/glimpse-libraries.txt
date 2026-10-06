@@ -1,0 +1,16 @@
+Libraries bundled in Glimpse, the DiamaneOS gallery
+
+Glimpse (org.lineageos.glimpse) is LineageOS's gallery, Apache-2.0. It ships
+these libraries as prebuilt jars from its own source tree:
+
+- AndroidX Media3 1.10.0 (The Android Open Source Project): Apache-2.0
+- Glide 5.0.5 with its disklrucache and gifdecoder (Google, Inc.; Jake
+  Wharton and The Android Open Source Project; Xcellent Creations, Inc.):
+  BSD-style licence, Apache-2.0 and MIT, in Glide's LICENSE
+- Material Components for Android 1.14.0-alpha10 (The Android Open Source
+  Project): Apache-2.0
+- Okio 3.16.4 (Square, Inc.): Apache-2.0
+- ZoomImage 1.4.0 (panpf): Apache-2.0
+- Adobe XMPCore 6.1.11 (Adobe Systems Incorporated): BSD-3-Clause
+
+The licence texts are in the device's third-party licence notices.
