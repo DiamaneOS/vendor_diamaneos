@@ -16,3 +16,35 @@ prebuilt_etc {
     product_specific: true,
     required: ["Gallery2"],
 }
+
+// Notices for the libraries Glimpse bundles as prebuilt jars
+// (packages/apps/Glimpse/app/libs), which its Android.bp builds in without
+// licence metadata. This file installs with Glimpse and carries their licences
+// into the device's third-party notices. Apache-2.0 needs no text here (no
+// NOTICE files upstream); notices/Glide-LICENSE is Glide's LICENSE at v5.0.5
+// and notices/XMPCore-LICENSE is Adobe's XMP licence for XMPCore (the Maven
+// jar names BSD-3-Clause but ships no text; AOSP's external/xmp_toolkit
+// carries it). Update both lists with each Glimpse library change.
+license {
+    name: "vendor_diamaneos_gallery_glimpse_libraries_license",
+    visibility: [":__subpackages__"],
+    license_kinds: [
+        "SPDX-license-identifier-Apache-2.0",
+        "SPDX-license-identifier-BSD-2-Clause",
+        "SPDX-license-identifier-BSD-3-Clause",
+        "SPDX-license-identifier-MIT",
+    ],
+    license_text: [
+        "notices/Glide-LICENSE",
+        "notices/XMPCore-LICENSE",
+    ],
+}
+
+prebuilt_etc {
+    name: "DiamaneOSGlimpseLibraryNotices",
+    src: "notices/glimpse-libraries.txt",
+    filename: "glimpse-libraries.txt",
+    sub_dir: "notices",
+    product_specific: true,
+    licenses: ["vendor_diamaneos_gallery_glimpse_libraries_license"],
+}

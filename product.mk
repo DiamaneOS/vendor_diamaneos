@@ -43,11 +43,12 @@ PRODUCT_PACKAGES += DiamaneOSRemovedPackages
 # set another value.
 #
 # DIAMANEOS_GALLERY
-#   glimpse     LineageOS's Glimpse (packages/apps/Glimpse, unmodified) is the
-#               gallery and holds the system gallery role; its own overlay sets
-#               config_systemGallery. Gallery2 stays installed for its crop
-#               screen only (gallery/): the profile photo picker needs a crop
-#               handler, and Glimpse has none.
+#   glimpse     LineageOS's Glimpse (packages/apps/Glimpse, forked without
+#               network access) is the gallery and holds the system gallery
+#               role; its own overlay sets config_systemGallery, and gallery/
+#               adds its bundled libraries' notices. Gallery2 stays installed
+#               for its crop screen only (gallery/): the profile photo picker
+#               needs a crop handler, and Glimpse has none.
 #   grapheneos  GrapheneOS's own gallery selection.
 # Glimpse overrides GrapheneOS's future Gallery module, so a tree that has
 # GrapheneOS's new gallery (external/Gallery) must use grapheneos.
@@ -58,6 +59,7 @@ $(error GrapheneOS ships its own gallery (external/Gallery): set DIAMANEOS_GALLE
 endif
 PRODUCT_PACKAGES += \
     DiamaneOSGallery2CropOnly \
+    DiamaneOSGlimpseLibraryNotices \
     Glimpse
 else ifneq ($(DIAMANEOS_GALLERY),grapheneos)
 $(error DIAMANEOS_GALLERY must be glimpse or grapheneos)
