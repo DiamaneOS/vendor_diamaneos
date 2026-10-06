@@ -5,7 +5,8 @@ inherit `product.mk` after their framework and hardware inputs.
 
 What every DiamaneOS product shares:
 
-- `product.mk`: product identity; inherits `config/common.mk`.
+- `product.mk`: the entry point. It inherits `config/common.mk`, selects the
+  parts below and adds the Updater to official builds.
 - `config/common.mk`: vendor-side selection that `base_vendor.mk` would
   otherwise provide (recovery runtime, compatibility matrix), and the netd log
   level that keeps hardware addresses out of the log.
@@ -17,11 +18,7 @@ What every DiamaneOS product shares:
 - `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 
-Device-specific configuration, generated hardware inputs and kernel artifacts
-belong to their respective repositories. Generic changes belong here rather
-than in a device tree.
-Upstream `OFFICIAL_BUILD` must be unset: it selects upstream delivery identity.
-This initial configuration defines no update service or release endpoint.
+Rules:
 
 - Device-specific configuration, generated hardware inputs and kernel artifacts
   belong in their own repositories. Generic changes belong here, not in a
