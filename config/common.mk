@@ -13,6 +13,15 @@ ifneq ($(TARGET_BUILD_VARIANT),user)
 PRODUCT_SYSTEM_PROPERTIES += ro.adb.secure=1
 endif
 
+# User builds log no hardware identifiers. netd logs every binder call it
+# serves, with arguments and results, at info level (tag netd); its interface
+# configuration calls carry the interface's hardware address, the factory
+# Wi-Fi MAC until Android sets a randomised one. Keep its warnings and errors;
+# `dumpsys netd` still lists the calls. Debuggable builds keep the info lines.
+ifeq ($(TARGET_BUILD_VARIANT),user)
+PRODUCT_PRODUCT_PROPERTIES += log.tag.netd=W
+endif
+
 # Generate the standard device compatibility matrix and system SDK requirements.
 # generic_system does not inherit the base_vendor package selection.
 PRODUCT_PACKAGES += vendor_compatibility_matrix.xml
