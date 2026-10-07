@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# Cold boot in forked workers (see Android.bp in this directory).
+flag_value {
+  package: "com.android.ueventd.flags"
+  name: "enable_threadpool_coldboot"
+  state: DISABLED
+  permission: READ_ONLY
+}

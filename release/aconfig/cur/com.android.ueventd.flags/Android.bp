@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// ueventd's cold boot runs in forked workers, as in Android 16, not in
+// Android 17's thread pool. With the thread pool, one FP6 boot labelled
+// /dev/ashmem<boot_id> with a truncated SELinux context; the node fell back
+// to the generic device label and system_server could not start. ueventd
+// ignores a failed setfscreatecon and never re-checks a new node, so the
+// error was silent. Forked workers cost a few tens of milliseconds of boot.
+aconfig_values {
+    name: "aconfig-values-diamaneos-cur-com.android.ueventd.flags-all",
+    package: "com.android.ueventd.flags",
+    srcs: [
+        "*_flag_values.textproto",
+    ],
+}
