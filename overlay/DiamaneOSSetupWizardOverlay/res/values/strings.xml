@@ -7,10 +7,14 @@
     <!-- The welcome screen's title and tagline. The setup wizard has
          these strings in English only (no translations upstream). -->
     <string name="welcome_to_grapheneos">Welcome to DiamaneOS</string>
-    <!-- New, reviewed text, with no claim that has not been checked. -->
-    <string name="grapheneos_desc">A phone operating system designed around your privacy and security.</string>
+    <!-- A plain statement of what the OS is, as on the website: no
+         privacy or security claim. -->
+    <string name="grapheneos_desc">A phone operating system based on GrapheneOS.</string>
 
     <!-- What screen readers say for the logo on the welcome and finish
          screens. -->
     <string name="grapheneos_icon">DiamaneOS</string>
+
+    <!-- Restore screen: GrapheneOS's text names a previous GrapheneOS device. -->
+    <string name="data_restore_desc">If you have a backup from your previous device, you can restore it here.</string>
 </resources>
