@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- The app's name in text-to-speech settings and the app list. The
+         presigned app has this string in English only. -->
+    <string name="app_name">Speech Services</string>
+</resources>

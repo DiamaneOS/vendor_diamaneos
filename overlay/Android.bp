@@ -63,3 +63,12 @@ runtime_resource_overlay {
     manifest: "DiamaneOSSetupWizardOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSSetupWizardOverlay/res"],
 }
+
+// Speech Services (GrapheneOS's presigned text-to-speech app): its name
+// without GrapheneOS's.
+runtime_resource_overlay {
+    name: "DiamaneOSSpeechServicesOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSpeechServicesOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSpeechServicesOverlay/res"],
+}
