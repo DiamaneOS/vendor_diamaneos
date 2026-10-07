@@ -29,6 +29,7 @@ PRODUCT_PACKAGES += \
     DiamaneOSFrameworkOverlay \
     DiamaneOSSettingsOverlay \
     DiamaneOSSetupWizardOverlay \
+    DiamaneOSSpeechServicesOverlay \
     DiamaneOSSystemUIOverlay \
     DiamaneOSThemesOverlay
 
