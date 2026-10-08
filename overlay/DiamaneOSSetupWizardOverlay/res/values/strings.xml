@@ -17,4 +17,8 @@
 
     <!-- Restore screen: GrapheneOS's text names a previous GrapheneOS device. -->
     <string name="data_restore_desc">If you have a backup from your previous device, you can restore it here.</string>
+
+    <!-- Geocoder screen: GrapheneOS's text names its own server. DiamaneOS offers only
+         OpenStreetMap's public service, which this switch turns on. -->
+    <string name="geocoder_enabled_desc">Turn on the geocoder to let apps use OpenStreetMap\'s public service to convert between geographic coordinates and human-readable addresses. OpenStreetMap sees your IP address and what is looked up. Some apps need this for critical functionality.</string>
 </resources>
