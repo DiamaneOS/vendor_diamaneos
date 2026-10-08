@@ -33,7 +33,7 @@ Everything else is kept: the wght axis (1 to 1000) and its named instances, ever
 (tnum, case, locl, smcp, ss01, ...), the glyph set, the gasp and prep tables (the upstream fonts
 carry no other hinting) and the head timestamps, so the build is reproducible.
 
-Usage, with fontTools as pinned in requirements.txt:
+Usage, with fontTools and uharfbuzz as pinned in requirements.txt:
   python3 build_tally_fonts.py           verify the inputs' SHA-256, write the fonts into ..
   python3 build_tally_fonts.py --check   build in memory; exit 1 if a file in .. differs
 """
@@ -49,6 +49,7 @@ from fontTools.misc.fixedTools import otRound
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.scaleUpem import ScalerVisitor
 from fontTools.ttLib.tables._g_l_y_f import Glyph
+from fontTools.ttLib.tables.otBase import USE_HARFBUZZ_REPACKER
 
 FONT_DIR = Path(__file__).resolve().parent.parent
 
@@ -178,8 +179,15 @@ def rename(font: TTFont) -> str:
     return ps_name
 
 
+# fontTools packs GSUB and GPOS with HarfBuzz's repacker if uharfbuzz is installed, else with its
+# own serializer, and the bytes differ. The recorded SHA-256 come from the repacker: require it,
+# so a build without uharfbuzz stops (ImportError) instead of writing different fonts.
+FONTTOOLS_CFG = {USE_HARFBUZZ_REPACKER: True}
+
+
 def build(source: bytes) -> tuple[bytes, str]:
-    font = TTFont(io.BytesIO(source), recalcBBoxes=True, recalcTimestamp=False)
+    font = TTFont(io.BytesIO(source), recalcBBoxes=True, recalcTimestamp=False,
+                  cfg=FONTTOOLS_CFG)
     ligatures = ligature_lengths(font)
     marks = set()
     if 'GDEF' in font and font['GDEF'].table.GlyphClassDef:
@@ -211,7 +219,8 @@ def build(source: bytes) -> tuple[bytes, str]:
 
     # Then the font box and the win metrics grow to Roboto's where they are smaller, and are kept
     # as set.
-    font = TTFont(io.BytesIO(first.getvalue()), recalcBBoxes=False, recalcTimestamp=False)
+    font = TTFont(io.BytesIO(first.getvalue()), recalcBBoxes=False, recalcTimestamp=False,
+                  cfg=FONTTOOLS_CFG)
     head, os2 = font['head'], font['OS/2']
     y_max, y_min = head.yMax, head.yMin
     head.yMax, head.yMin = max(y_max, ROBOTO_Y_MAX), min(y_min, ROBOTO_Y_MIN)
