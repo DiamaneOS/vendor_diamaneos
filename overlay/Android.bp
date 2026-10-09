@@ -22,7 +22,8 @@ runtime_resource_overlay {
 // picture, res/drawable-nodpi/default_wallpaper.png, stays the DiamaneOS Sodium
 // panel wallpaper (portrait and dark, 1116 x 2484, the FP6 screen, exported from
 // its SVG): Wallpaper & style offers it under On-device wallpapers, and apps
-// that read the wallpaper as a picture get it.
+// that read the wallpaper as a picture get it. Network time over HTTPS comes
+// from the DiamaneOS time server (config_httpsTimeUrls).
 runtime_resource_overlay {
     name: "DiamaneOSFrameworkOverlay",
     product_specific: true,
@@ -66,7 +67,7 @@ runtime_resource_overlay {
 }
 
 // Setup (GrapheneOS SetupWizard2): the welcome line, the tagline, the
-// restore text and the Pleat mark.
+// restore text, the network location text and the Pleat mark.
 runtime_resource_overlay {
     name: "DiamaneOSSetupWizardOverlay",
     product_specific: true,
