@@ -26,7 +26,8 @@ runtime_resource_overlay {
 // Paper wallpaper in SystemUI, light or dark with the theme. The built-in
 // picture, res/drawable-nodpi/default_wallpaper.png, stays the DiamaneOS Sodium
 // panel wallpaper (portrait and dark, 1116 x 2484, exported from its SVG): Wallpaper & style offers it under On-device wallpapers, and apps
-// that read the wallpaper as a picture get it.
+// that read the wallpaper as a picture get it. Network time over HTTPS comes
+// from the DiamaneOS time server (config_httpsTimeUrls).
 runtime_resource_overlay {
     name: "DiamaneOSFrameworkOverlay",
     product_specific: true,
