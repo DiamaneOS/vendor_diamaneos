@@ -23,5 +23,16 @@ Duress PIN works the same way duress password does."</string>
          what hardware attestation verifies. None of that has been tested on
          DiamaneOS on the FP6, so this says only what the API is for and what
          a user can do. New, reviewed text. -->
+    <!-- Location and Network: the default server choices go to the DiamaneOS
+         servers (frameworks/base, Connectivity and NetworkLocation forks), so
+         they name DiamaneOS. Connectivity checks keep GrapheneOS's label: the
+         NetworkStack and DnsResolver modules still use GrapheneOS's servers. -->
+    <string name="supl_enabled_grapheneos_proxy">DiamaneOS proxy</string>
+    <string name="psds_enabled_grapheneos_server">DiamaneOS server</string>
+    <string name="network_location_enabled_grapheneos_apple_proxy">DiamaneOS Apple proxy</string>
+    <string name="remote_provisioning_enabled_grapheneos_proxy">DiamaneOS proxy</string>
+    <string name="widevine_provisioning_enabled_grapheneos_proxy">DiamaneOS proxy</string>
+    <string name="cert_transparency_dl_grapheneos_server">DiamaneOS server</string>
+
     <string name="app_play_integrity_top_intro">The Play Integrity API allows services to verify properties of a device through their app. Some services accept only the operating system that the device was sold with, so their apps may not work on DiamaneOS. If an app does not work, you can contact its developer.</string>
 </resources>

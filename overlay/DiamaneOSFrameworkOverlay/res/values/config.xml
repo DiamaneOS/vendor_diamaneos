@@ -14,4 +14,10 @@
     <!-- The default wallpaper is Tally's Paper wallpaper in SystemUI: grained stone paper, light
          or dark with the theme, with no lock screen dim. A wallpaper someone chose stays theirs. -->
     <string name="default_wallpaper_component" translatable="false">com.android.systemui/com.android.systemui.tally.wallpaper.TallyWallpaper</string>
+
+    <!-- Network time over HTTPS from the DiamaneOS time server instead of GrapheneOS's: the
+         same request, X-Time response and TLS checks (HttpsTimeClient). -->
+    <string-array name="config_httpsTimeUrls" translatable="false">
+        <item>https://time.diamaneos.de/generate_204</item>
+    </string-array>
 </resources>
