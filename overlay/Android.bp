@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The DiamaneOS Project
 
+package {
+    default_applicable_licenses: ["vendor_diamaneos_license"],
+}
+
 // DiamaneOS-wide overlays, installed on the product partition for every device.
 // Each is static and targets one package; the overlay check in DiamaneOS tools
 // (bin/diamaneos overlays check) must pass for every change here.
