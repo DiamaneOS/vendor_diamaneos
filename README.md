@@ -5,11 +5,11 @@ inherit `product.mk` after their framework and hardware inputs.
 
 What every DiamaneOS product shares:
 
-- `product.mk`: product identity; inherits `config/common.mk`; adds the
-  Updater to official builds.
+- `product.mk`: the entry point. It inherits `config/common.mk`, selects the
+  parts below and adds the Updater to official builds.
 - `config/common.mk`: vendor-side selection that `base_vendor.mk` would
-  otherwise provide (recovery runtime, compatibility matrix), and adb
-  authorization for debuggable builds.
+  otherwise provide (recovery runtime, compatibility matrix), and the netd log
+  level that keeps hardware addresses out of the log.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
@@ -18,9 +18,13 @@ What every DiamaneOS product shares:
 - `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 - `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
-  the gallery, and the notices of Glimpse's bundled libraries; `product.mk`
-  switches the gallery (`DIAMANEOS_GALLERY`) and the screenshot editor
-  (`DIAMANEOS_SCREENSHOT_EDITOR`, LineageOS's Canvas).
+  the gallery, and the notices of Glimpse's bundled libraries.
+
+Switches in `product.mk`:
+
+- `DIAMANEOS_GALLERY`: the gallery (`glimpse` or `grapheneos`).
+- `DIAMANEOS_SCREENSHOT_EDITOR`: the screenshot editor (`canvas`, LineageOS's
+  Canvas, or `grapheneos`).
 
 Rules:
 
