@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+package {
+    default_applicable_licenses: ["vendor_diamaneos_license"],
+}
+
+// Tally colour overlays for first-party apps, installed on the product
+// partition for every device. They change colours, styles and drawables only:
+// no strings, booleans, integers, arrays or layouts. apps.mk lists them.
+
+runtime_resource_overlay {
+    name: "DiamaneOSDialerOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSDialerOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSDialerOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSContactsOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSContactsOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSContactsOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSLatinIMEOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSLatinIMEOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSLatinIMEOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSBluetoothOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSBluetoothOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSBluetoothOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSAccessibilityMenuOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSAccessibilityMenuOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSAccessibilityMenuOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSEmergencyInfoOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSEmergencyInfoOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSEmergencyInfoOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSTeleServiceOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSTeleServiceOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSTeleServiceOverlay/res"],
+}
+
+runtime_resource_overlay {
+    name: "DiamaneOSCellBroadcastOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSCellBroadcastOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSCellBroadcastOverlay/res"],
+}

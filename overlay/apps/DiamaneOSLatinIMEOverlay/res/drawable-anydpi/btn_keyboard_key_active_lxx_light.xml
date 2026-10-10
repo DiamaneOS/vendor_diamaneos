@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The action key (enter, emoji) and the action row of long-press panels:
+     a filled key. Its icons are white in both themes, so the fill is primary
+     T40 (T20 pressed). 38 dp is the stock drawable's size: the keyboard keeps
+     this key square from it.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <size android:width="38dp" android:height="38dp" />
+    <corners android:radius="8dp" />
+    <solid android:color="@android:color/system_primary_light" />
+</shape>
