@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The DiamaneOS Project
 
+package {
+    default_applicable_licenses: ["vendor_diamaneos_license"],
+}
+
 // Tally colour overlays for first-party apps, installed on the product
 // partition for every device. They change colours, styles and drawables only:
 // no strings, booleans, integers, arrays or layouts. apps.mk lists them.
