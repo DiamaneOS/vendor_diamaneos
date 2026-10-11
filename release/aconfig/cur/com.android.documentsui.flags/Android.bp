@@ -6,8 +6,7 @@
 // review and fuzzing. The trash flow (enable_trash_flow_ro)
 // stays off until its retention, cross-app and cross-profile isolation and
 // erase behaviour are tested on a build and the "files stay on the phone
-// until emptied" wording is added. Each is turned on only with its threat
-// model row in the same change.
+// until emptied" wording is added.
 aconfig_values {
     name: "aconfig-values-diamaneos-cur-com.android.documentsui.flags-all",
     package: "com.android.documentsui.flags",

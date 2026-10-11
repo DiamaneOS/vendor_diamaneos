@@ -7,8 +7,7 @@
 # extraction is SAF-mediated, archive symlink entries are never followed,
 # extraction size is bounded (per-file to the declared size and in total to the
 # pre-checked free space), and mutational fuzzing of the parser found no crash,
-# hang or unbounded allocation. See the "Files archive handling" threat-model
-# row added with this change.
+# hang or unbounded allocation.
 flag_value {
   package: "com.android.documentsui.flags"
   name: "zip_ng_ro"
