@@ -2,7 +2,7 @@
 # Copyright 2026 The DiamaneOS Project
 
 # New archive code (ZIP/7z/tar browsing, creation and extraction). Turned on
-# after its security review and host fuzzing (2026-09-30): path traversal and
+# after its security review and host fuzzing: path traversal and
 # zip-slip are collapsed to the extraction root by Archive.getEntryPath and
 # extraction is SAF-mediated, archive symlink entries are never followed,
 # extraction size is bounded (per-file to the declared size and in total to the
