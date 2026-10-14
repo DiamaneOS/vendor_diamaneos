@@ -35,4 +35,14 @@ Duress PIN works the same way duress password does."</string>
          DiamaneOS on the FP6, so this says only what the API is for and what
          a user can do. New, reviewed text. -->
     <string name="app_play_integrity_top_intro">The Play Integrity API allows services to verify properties of a device through their app. Some services accept only the operating system that the device was sold with, so their apps may not work on DiamaneOS. If an app does not work, you can contact its developer.</string>
+    <!-- Network location and Widevine provisioning: GrapheneOS's text with one more paragraph
+         or sentence saying what Apple or Google receive, and where. English only, as upstream. -->
+    <string name="network_location_footer">
+"Network location is a method of determining your device’s location by using various nearby signals, such as Wi-Fi networks, Bluetooth devices, and cell towers. Your device scans for these signals and sends their identifiers to a server, which then provides positioning data that your device uses to estimate its location. Currently, Wi-Fi networks and cell towers are used.
+
+This method can be particularly useful when GNSS is unavailable or unreliable, such as indoors or in areas with poor satellite reception. Network location provides a quicker way to determine your location before a GNSS lock is acquired or when GNSS signals are weak.
+
+With an Apple option, the identifiers go to Apple in the USA, with no account or phone identifier. With the DiamaneOS Apple proxy, Apple sees the proxy’s address instead of yours."
+    </string>
+    <string name="widevine_provisioning_footer">The provisioned certificate will be used for accessing DRM protected content. Only when an app plays protected video, the phone asks Google in the USA for a device certificate. With the DiamaneOS proxy, Google sees the proxy\'s address instead of yours.</string>
 </resources>
