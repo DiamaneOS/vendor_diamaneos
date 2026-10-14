@@ -10,7 +10,7 @@
     <!-- A plain statement of what the OS is, as on the website: no
          privacy or security claim. The phone contacts DiamaneOS services
          during setup, so the privacy policy is named before that. -->
-    <string name="grapheneos_desc">A phone operating system based on GrapheneOS.\n\nHow it handles your data: diamaneos.de/legal</string>
+    <string name="grapheneos_desc">A phone operating system based on GrapheneOS.\nHow it handles your data: diamaneos.de/legal</string>
 
     <!-- What screen readers say for the logo on the welcome and finish
          screens. -->
