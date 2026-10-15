@@ -19,12 +19,17 @@ What every DiamaneOS product shares:
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 - `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
   the gallery, and the notices of Glimpse's bundled libraries.
+- `attestation/`: the hardware attestation feature, or Auditor left out.
 
 Switches in `product.mk`:
 
 - `DIAMANEOS_GALLERY`: the gallery (`glimpse` or `grapheneos`).
 - `DIAMANEOS_SCREENSHOT_EDITOR`: the screenshot editor (`canvas`, LineageOS's
   Canvas, or `grapheneos`).
+- `DIAMANEOS_HARDWARE_ATTESTATION`: `true` (the default) installs Auditor and
+  the `de.diamaneos.hardware_attestation` feature. `false`, for a device that
+  never gets attestation keys, installs neither. Without the feature Settings
+  hides Attestation key provisioning and the App Store does not offer Auditor.
 
 Rules:
 

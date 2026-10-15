@@ -1,0 +1,2 @@
+Leaves out Auditor where DIAMANEOS_HARDWARE_ATTESTATION is false
+(DiamaneOSNoAuditor in Android.bp). This file is not installed.
