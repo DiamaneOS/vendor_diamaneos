@@ -39,6 +39,20 @@ $(call inherit-product, vendor/diamaneos/overlay/apps/apps.mk)
 # GrapheneOS packages that DiamaneOS does not install (removed_packages/).
 PRODUCT_PACKAGES += DiamaneOSRemovedPackages
 
+# DIAMANEOS_HARDWARE_ATTESTATION (attestation/)
+#   true    the keystore gets hardware attestation keys: Auditor and the
+#           de.diamaneos.hardware_attestation feature are installed.
+#   false   the device never gets attestation keys: neither is installed.
+# A device sets false in its product makefile.
+DIAMANEOS_HARDWARE_ATTESTATION ?= true
+ifeq ($(DIAMANEOS_HARDWARE_ATTESTATION),true)
+PRODUCT_PACKAGES += DiamaneOSHardwareAttestationFeature
+else ifeq ($(DIAMANEOS_HARDWARE_ATTESTATION),false)
+PRODUCT_PACKAGES += DiamaneOSNoAuditor
+else
+$(error DIAMANEOS_HARDWARE_ATTESTATION must be true or false)
+endif
+
 # Gallery and screenshot editor: one switch each. The defaults below are the
 # FP6's; the build environment or a product (before inheriting this file) may
 # set another value.

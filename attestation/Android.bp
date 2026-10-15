@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// DIAMANEOS_HARDWARE_ATTESTATION in product.mk picks one of these.
+
+// The de.diamaneos.hardware_attestation feature: the keystore gets hardware
+// attestation keys. Settings shows Attestation key provisioning and the App
+// Store offers Auditor only where it is declared.
+prebuilt_etc {
+    name: "DiamaneOSHardwareAttestationFeature",
+    src: "de.diamaneos.hardware_attestation.xml",
+    sub_dir: "permissions",
+    filename_from_src: true,
+    product_specific: true,
+}
+
+// No Auditor (external/Auditor, in GrapheneOS's handheld_product.mk) and so
+// no sysconfig file, which only Auditor requires. An ETC module that installs
+// nothing, as in removed_packages/.
+prebuilt_etc {
+    name: "DiamaneOSNoAuditor",
+    src: "no_auditor.txt",
+    installable: false,
+    product_specific: true,
+    overrides: ["Auditor"],
+}
