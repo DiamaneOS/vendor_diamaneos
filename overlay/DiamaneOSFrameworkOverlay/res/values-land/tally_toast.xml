@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 The DiamaneOS Project
+
+  Landscape keeps the toast clearance of res/values/tally_tokens.xml (the Tally
+  token tally_toast_bottom_clearance): an app's bottom bar is as tall there.
+  Stock sets a smaller offset for landscape, which would otherwise win.
+-->
+<resources>
+    <dimen name="toast_y_offset">116dp</dimen>
+</resources>

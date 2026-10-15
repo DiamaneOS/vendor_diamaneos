@@ -5,7 +5,7 @@
 
   Generated from the Tally token spec (design/tokens/tokens.json in the DiamaneOS design
   repository) by design/tokens/generate.py. Do not edit: change the spec and regenerate.
-  Spec: tokens.json sha256 39573265ce47cb9e3c87823c350e4494f0e263be0d7db00fe2d88eb28dcb39c1
+  Spec: tokens.json sha256 de1c449bdbdcb512fca45306402ee2f9472cc78a4afe8d808a2e17f581a3dd11
 -->
 <resources>
     <!-- Export framework-overlay: DiamaneOSFrameworkOverlay in vendor_diamaneos (target android, product partition): literal values, so the overlay neither links tallytokens nor depends on the libs_systemui fork -->
@@ -20,5 +20,6 @@
     <string-array name="theming_defaults" translatable="false">
         <item>*|TONAL_SPOT|#FBA700</item>
     </string-array>
-    <!-- Not yet: toast_y_offset, set from tally_toast_bottom_clearance (116 dp above the screen bottom) once measured on the phone -->
+    <!-- from tally_toast_bottom_clearance -->
+    <dimen name="toast_y_offset">116dp</dimen>
 </resources>
