@@ -16,6 +16,42 @@ runtime_resource_overlay {
     resource_dirs: ["DiamaneOSSettingsOverlay/res"],
 }
 
+// Framework (android): the Tally values from the token export
+// (res/values/tally_tokens.xml, generated from the DiamaneOS design tokens),
+// buttons without capitals, no round icons, the neutral 32-bit app text, the key
+// radius on emphasized notification actions (res/values/tally_shapes.xml), the
+// small key radius on a notification's expand key (res/drawable), the system's
+// icon as the Pleat mark (res/drawable-anydpi-v26), the toast offset and the
+// wallpapers. The default wallpaper (default_wallpaper_component) is Tally's
+// Paper wallpaper in SystemUI, light or dark with the theme. The built-in
+// picture, res/drawable-nodpi/default_wallpaper.png, stays the DiamaneOS Sodium
+// panel wallpaper (portrait and dark, 1116 x 2484, exported from its SVG): Wallpaper & style offers it under On-device wallpapers, and apps
+// that read the wallpaper as a picture get it.
+runtime_resource_overlay {
+    name: "DiamaneOSFrameworkOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSFrameworkOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSFrameworkOverlay/res"],
+}
+
+// SystemUI: the Tally key radius on the stock status bar chips
+// (res/values/tally_shapes.xml) and System UI's icon, the unlit Pleat mark as a
+// neutral system key (res/drawable).
+runtime_resource_overlay {
+    name: "DiamaneOSSystemUIOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSystemUIOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSystemUIOverlay/res"],
+}
+
+// Wallpaper & style (ThemesStub): the five DiamaneOS colour presets.
+runtime_resource_overlay {
+    name: "DiamaneOSThemesOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSThemesOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSThemesOverlay/res"],
+}
+
 // Setup (GrapheneOS SetupWizard2): the welcome line, the tagline, the
 // restore text, the network location text and the Pleat mark.
 runtime_resource_overlay {

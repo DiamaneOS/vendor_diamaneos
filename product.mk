@@ -25,6 +25,9 @@ $(call inherit-product, vendor/diamaneos/config/common.mk)
 
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += \
+    DiamaneOSFrameworkOverlay \
     DiamaneOSSettingsOverlay \
     DiamaneOSSetupWizardOverlay \
-    DiamaneOSSpeechServicesOverlay
+    DiamaneOSSpeechServicesOverlay \
+    DiamaneOSSystemUIOverlay \
+    DiamaneOSThemesOverlay

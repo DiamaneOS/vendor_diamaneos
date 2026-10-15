@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     System UI's icon, monochrome layer: the Pleat mark's silhouette, which the
+     launcher tints.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M45.532 34.54L62.468 40.528L70.935 34.54L79.403 37.534L79.403 46.516L70.935 43.522L67.857 45.699L67.857 60.396L79.403 64.478L79.403 73.46L62.468 67.472L54 73.46L37.065 67.472L28.597 73.46L28.597 64.478L37.065 58.491L54 64.478L57.079 62.301L57.079 47.604L45.532 43.522Z" />
+</vector>

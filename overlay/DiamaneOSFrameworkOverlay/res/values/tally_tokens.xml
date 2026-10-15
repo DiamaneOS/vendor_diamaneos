@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  Copyright 2026 The DiamaneOS Project
+
+  Generated from the Tally token spec (design/tokens/tokens.json in the DiamaneOS design
+  repository) by design/tokens/generate.py. Do not edit: change the spec and regenerate.
+  Spec: tokens.json sha256 de1c449bdbdcb512fca45306402ee2f9472cc78a4afe8d808a2e17f581a3dd11
+-->
+<resources>
+    <!-- Export framework-overlay: DiamaneOSFrameworkOverlay in vendor_diamaneos (target android, product partition): literal values, so the overlay neither links tallytokens nor depends on the libs_systemui fork -->
+    <!-- from tally_radius_s -->
+    <dimen name="config_buttonCornerRadius">8dp</dimen>
+    <!-- from tally_radius_l -->
+    <dimen name="config_dialogCornerRadius">20dp</dimen>
+    <!-- from tally_radius_l -->
+    <dimen name="config_bottomDialogCornerRadius">20dp</dimen>
+    <!-- from tally_keycap_mask -->
+    <string name="config_icon_mask" translatable="false">"M22,0 L78,0 A22,22 0 0,1 100,22 L100,78 A22,22 0 0,1 78,100 L22,100 A22,22 0 0,1 0,78 L0,22 A22,22 0 0,1 22,0 Z"</string>
+    <string-array name="theming_defaults" translatable="false">
+        <item>*|TONAL_SPOT|#FBA700</item>
+    </string-array>
+    <!-- from tally_toast_bottom_clearance -->
+    <dimen name="toast_y_offset">116dp</dimen>
+</resources>

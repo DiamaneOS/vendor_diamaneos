@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+
+     The system's icon (the android package, labelled DiamaneOS) as the Pleat
+     mark's adaptive icon, in place of the stock PNGs: the layers of the
+     design repository's ic_launcher_diamaneos (design/branding/assets/android),
+     paths and colours unchanged. They are inline because an overlay may only
+     carry resources its target has. anydpi wins over the stock density PNGs.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <background>
+        <aapt:attr name="android:drawable">
+            <vector
+                android:width="108dp"
+                android:height="108dp"
+                android:viewportWidth="108"
+                android:viewportHeight="108">
+                <path
+                    android:fillColor="#FF3B3936"
+                    android:pathData="M0 0H108V108H0Z" />
+            </vector>
+        </aapt:attr>
+    </background>
+    <foreground>
+        <aapt:attr name="android:drawable">
+            <vector
+                android:width="108dp"
+                android:height="108dp"
+                android:viewportWidth="108"
+                android:viewportHeight="108">
+                <path
+                    android:fillColor="#FFFBA700"
+                    android:pathData="M57.079 43.113L62.468 45.019L67.857 41.208L67.857 64.887L62.468 62.981L57.079 66.792Z" />
+                <path
+                    android:fillColor="#FFEBE8E4"
+                    android:pathData="M45.532 34.54L62.468 40.528L70.935 34.54L79.403 37.534L79.403 46.516L70.935 43.522L62.468 49.509L45.532 43.522Z" />
+                <path
+                    android:fillColor="#FFEBE8E4"
+                    android:pathData="M28.597 64.478L37.065 58.491L54 64.478L62.468 58.491L79.403 64.478L79.403 73.46L62.468 67.472L54 73.46L37.065 67.472L28.597 73.46Z" />
+            </vector>
+        </aapt:attr>
+    </foreground>
+    <monochrome>
+        <aapt:attr name="android:drawable">
+            <vector
+                android:width="108dp"
+                android:height="108dp"
+                android:viewportWidth="108"
+                android:viewportHeight="108">
+                <path
+                    android:fillColor="#FFFFFFFF"
+                    android:pathData="M45.532 34.54L62.468 40.528L70.935 34.54L79.403 37.534L79.403 46.516L70.935 43.522L67.857 45.699L67.857 60.396L79.403 64.478L79.403 73.46L62.468 67.472L54 73.46L37.065 67.472L28.597 73.46L28.597 64.478L37.065 58.491L54 64.478L57.079 62.301L57.079 47.604L45.532 43.522Z" />
+            </vector>
+        </aapt:attr>
+    </monochrome>
+</adaptive-icon>
