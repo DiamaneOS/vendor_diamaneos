@@ -25,7 +25,7 @@ import uharfbuzz as hb
 from fontTools.ttLib import TTFont
 
 FONT_DIR = Path(__file__).resolve().parent.parent
-# The string of the 2026-09 third-party audit (canvas measureText in the prototype).
+# The design audit's sample string (canvas measureText in the prototype).
 TEXT = ('Lentil & squash stew · 35 min · serves 4 · Remind me near a shop · '
         'Search recipes · Vegetarian Under 30 min')
 SIZES = ((16, 400), (16, 500), (14, 400), (14, 500))
