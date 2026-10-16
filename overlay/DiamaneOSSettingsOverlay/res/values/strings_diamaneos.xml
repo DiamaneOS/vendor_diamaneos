@@ -43,5 +43,5 @@ This method can be particularly useful when GNSS is unavailable or unreliable, s
 
 With an Apple option, the identifiers go to Apple in the USA, with no account or phone identifier. With the DiamaneOS Apple proxy, Apple sees the proxy’s address instead of yours."
     </string>
-    <string name="widevine_provisioning_footer">The provisioned certificate will be used for accessing DRM protected content. Only when an app plays protected video, the phone asks Google in the USA for a device certificate. With the DiamaneOS proxy, Google sees the proxy\'s address instead of yours.</string>
+    <string name="widevine_provisioning_footer">The provisioned certificate will be used for accessing DRM protected content. The phone asks Google in the USA for a device certificate only when an app plays protected video. With the DiamaneOS proxy, Google sees the proxy\'s address instead of yours.</string>
 </resources>
