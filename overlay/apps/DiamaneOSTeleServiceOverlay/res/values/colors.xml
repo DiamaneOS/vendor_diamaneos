@@ -3,9 +3,9 @@
      SPDX-License-Identifier: Apache-2.0
      Copyright 2026 The DiamaneOS Project
 
-     Tally colours for the Phone services app, light theme; values-night
+     Tally colours for the Phone services app, light theme. values-night
      holds the dark ones. The call settings are light pages that Android
-     darkens in dark theme (their themes allow force dark); the emergency
+     darkens in dark theme (their themes allow force dark). The emergency
      dialer is dark over the wallpaper and follows dark theme through these
      colours.
 
@@ -15,7 +15,7 @@
      emergencyButtonBackgroundColor attributes, and a resource overlay can
      only rewrite styles whose items are all framework attributes. For the
      same reason the emergency dialer's #10ffffff button colour, an item of
-     EmergencyDialerTheme, stays; the drawable that reads it is unused.
+     EmergencyDialerTheme, stays. The drawable that reads it is unused.
 
      Left as they are: the translucent white edges and hints drawn over the
      wallpaper, the dialpad colours, the SIM icon tints and the unused in-call
@@ -42,7 +42,7 @@
     <color name="dialer_theme_color_dark">@android:color/system_accent1_800</color>
 
     <!-- The call settings switch (see drawable/): on, the accent track under
-         a dark thumb; off, a neutral track. The thumb is taller than the
+         a dark thumb. Off, a neutral track. The thumb is taller than the
          track, so it keeps its own contrast with the page. -->
     <color name="switch_track_on">@android:color/system_accent1_500</color>
     <color name="switch_thumb_on">@android:color/system_accent1_900</color>

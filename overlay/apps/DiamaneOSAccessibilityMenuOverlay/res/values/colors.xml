@@ -3,7 +3,7 @@
      SPDX-License-Identifier: Apache-2.0
      Copyright 2026 The DiamaneOS Project
 
-     Tally colours for the Accessibility menu, light theme; values-night
+     Tally colours for the Accessibility menu, light theme. values-night
      holds the dark roles. The app icon's colour stays as it is.
 -->
 <resources>

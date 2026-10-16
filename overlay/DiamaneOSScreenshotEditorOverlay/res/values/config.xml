@@ -5,8 +5,8 @@
 -->
 <resources>
     <!-- Edit on a screenshot, and on an image in the clipboard overlay, opens
-         LineageOS's Canvas. SystemUI uses this activity only while it exists;
-         otherwise it falls back to its own default (config_screenshotEditor,
+         LineageOS's Canvas. SystemUI uses this activity only while it exists.
+         Otherwise it falls back to its own default (config_screenshotEditor,
          blank: the chooser of apps that edit images). -->
     <string name="config_preferredScreenshotEditor" translatable="false">org.lineageos.canvas/org.lineageos.canvas.MainActivity</string>
 </resources>

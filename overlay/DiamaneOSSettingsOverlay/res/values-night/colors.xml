@@ -4,7 +4,7 @@
      Copyright 2026 The DiamaneOS Project
 -->
 <resources>
-    <!-- Dark-theme roles for the Settings homepage icons; see values/colors.xml. -->
+    <!-- Dark-theme roles for the Settings homepage icons. See values/colors.xml. -->
     <color name="homepage_blue_variant_fg">@android:color/system_on_surface_variant_dark</color>
     <color name="homepage_blue_variant_bg">@android:color/system_surface_container_high_dark</color>
     <color name="homepage_blue_fg">@android:color/system_on_surface_variant_dark</color>

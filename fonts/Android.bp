@@ -5,7 +5,7 @@
 // sans-serif and the two named families the Tally shell uses
 // (fonts_customization.xml). tools/build_tally_fonts.py builds the installed
 // fonts from the unmodified upstream files beside them (source.json records
-// both, with their SHA-256); the upstream files are its input and are not
+// both, with their SHA-256). The upstream files are its input and are not
 // installed. All are under the SIL Open Font License 1.1 (OFL.txt).
 
 license {

@@ -8,7 +8,7 @@
      com.android.cellbroadcastreceiver app only keeps a content provider for
      old alert history and shows no alerts. The module declares which
      resources may be overlaid (CellBroadcastCustomization, policy
-     product|system|vendor); this overlay stays inside that group.
+     product|system|vendor). This overlay stays inside that group.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="de.diamaneos.overlay.cellbroadcast">

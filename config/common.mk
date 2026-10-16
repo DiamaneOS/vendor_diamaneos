@@ -14,9 +14,9 @@ PRODUCT_SYSTEM_PROPERTIES += ro.adb.secure=1
 endif
 
 # User builds log no hardware identifiers. netd logs every binder call it
-# serves, with arguments and results, at info level (tag netd); its interface
+# serves, with arguments and results, at info level (tag netd). Its interface
 # configuration calls carry the interface's hardware address, the factory
-# Wi-Fi MAC until Android sets a randomised one. Keep its warnings and errors;
+# Wi-Fi MAC until Android sets a randomised one. Keep its warnings and errors.
 # `dumpsys netd` still lists the calls. Debuggable builds keep the info lines.
 ifeq ($(TARGET_BUILD_VARIANT),user)
 PRODUCT_PRODUCT_PROPERTIES += log.tag.netd=W
@@ -28,7 +28,7 @@ PRODUCT_PACKAGES += vendor_compatibility_matrix.xml
 
 # Select the platform recovery runtime explicitly: image generation alone does
 # not select these packages when generic_system is used without base_vendor.
-# This follows base_vendor.mk's recovery group; fastbootd serves dynamic partitions.
+# This follows base_vendor.mk's recovery group. fastbootd serves dynamic partitions.
 PRODUCT_PACKAGES += \
     adbd.recovery \
     cgroups.recovery.json \

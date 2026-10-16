@@ -14,7 +14,7 @@ PRODUCT_COPY_FILES += \
 # User builds log no hardware identifiers. The supplicant starts at debug level
 # (-dd in its service) until the Wi-Fi service sets info, and at every Wi-Fi
 # start logs its own address ("Own MAC address", while the interface still has
-# the factory MAC); with verbose logging its debug lines also carry network and
+# the factory MAC). With verbose logging its debug lines also carry network and
 # peer addresses. Keep its info lines and up (tag wpa_supplicant). Debuggable
 # builds keep the debug lines.
 ifeq ($(TARGET_BUILD_VARIANT),user)

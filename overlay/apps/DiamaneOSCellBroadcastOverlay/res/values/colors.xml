@@ -9,9 +9,9 @@
 
      Nothing else in the overlayable group is changed: the four themes
      already build on DeviceDefault and SettingsLib themes, so they take the
-     dynamic colours as they are; cell_broadcast_color_primary and
-     cell_broadcast_color_primary_dark are not used by the app; the alert
-     dimensions are layout, not colour; the red extreme-alert icon is not
+     dynamic colours as they are. cell_broadcast_color_primary and
+     cell_broadcast_color_primary_dark are not used by the app. The alert
+     dimensions are layout, not colour. The red extreme-alert icon is not
      overlayable and stays. No booleans, arrays or strings.
 -->
 <resources>

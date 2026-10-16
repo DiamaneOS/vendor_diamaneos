@@ -10,7 +10,7 @@
      The Dialer is a light app that Android darkens in dark theme (its
      themes allow force dark), except the in-call window and the dialogs and
      the call-subject window it opens, which stay light. So values-night only
-     holds colours that are drawn on dark surfaces in dark theme; colours that
+     holds colours that are drawn on dark surfaces in dark theme. Colours that
      also reach those light windows stay light-theme colours in both.
 
      Left as they are, on purpose: call green (dial, answer, notification

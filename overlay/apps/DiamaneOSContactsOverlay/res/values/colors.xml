@@ -5,7 +5,7 @@
 
      Tally colours for Contacts (com.android.contacts), light theme. Each
      colour reads a dynamic-colour role or palette tone, bound as the Tally
-     token library binds its tokens; values-night holds the dark roles.
+     token library binds its tokens. values-night holds the dark roles.
      Contacts follows dark theme itself (DayNight themes). Left as they are:
      white text and icons on the toolbars and the add button, call green, the
      letter tiles' own colours and their letters, the icon fills, the

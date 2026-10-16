@@ -9,7 +9,7 @@
      palette tones and have no night values.
 
      The reds stay red: the error role and error tones. The emergency
-     information header is red under white text; the tab indicator on it,
+     information header is red under white text. The tab indicator on it,
      Material yellow before, is the error role's own on-colour, like the text.
      The teal tab indicator of the editing screens takes the accent. The
      Emergency SOS countdown screen (black, white and greys) is left as it is.

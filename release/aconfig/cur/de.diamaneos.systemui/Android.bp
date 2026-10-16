@@ -3,7 +3,7 @@
 
 // DiamaneOS's own SystemUI flags (frameworks/base
 // packages/SystemUI/aconfig/diamaneos). tally_shell turns on Tally in
-// SystemUI; setting it DISABLED here gives GrapheneOS's own SystemUI, for
+// SystemUI. Setting it DISABLED here gives GrapheneOS's own SystemUI, for
 // example to ship a security release before the Tally changes are rebased.
 aconfig_values {
     name: "aconfig-values-diamaneos-cur-de.diamaneos.systemui-all",

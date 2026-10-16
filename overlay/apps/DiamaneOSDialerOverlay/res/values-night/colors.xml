@@ -22,7 +22,7 @@
          force dark darkens the fill. -->
     <color name="dialer_theme_color">@android:color/system_accent1_400</color>
     <!-- The Tally accent in dark theme (primary T80) where the colour only
-         meets dark surfaces; force dark darkens the dialpad button's fill
+         meets dark surfaces. Force dark darkens the dialpad button's fill
          under its white icon. -->
     <color name="dialer_secondary_color">@android:color/system_accent1_200</color>
     <color name="dialer_link_color">@android:color/system_accent1_200</color>
@@ -42,6 +42,6 @@
     <color name="call_type_icon_unread_color">@android:color/system_error_dark</color>
     <color name="remove_highlighted_text_color">@android:color/system_error_dark</color>
 
-    <!-- The Dialer has a night value for this one; the tone stays T20 -->
+    <!-- The Dialer has a night value for this one. The tone stays T20 -->
     <color name="settings_primary_dark">@android:color/system_accent1_800</color>
 </resources>

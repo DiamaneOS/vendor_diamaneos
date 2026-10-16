@@ -7,7 +7,7 @@
     <!-- The Tally key radius (tally_radius_s) on the emphasized notification
          action buttons: live and promoted notifications, calls and
          full-screen alerts drawn as buttons. Stock draws them as pills (a
-         20 dp radius on 40 dp). Its only user is btn_notification_emphasized;
-         the shade is the shell's, so no pills there. -->
+         20 dp radius on 40 dp). Its only user is btn_notification_emphasized.
+         The shade is the shell's, so no pills there. -->
     <dimen name="notification_action_button_radius">8dp</dimen>
 </resources>

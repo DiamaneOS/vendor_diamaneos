@@ -4,7 +4,7 @@
      Copyright 2026 The DiamaneOS Project
 
      Letter keys of the dark keyboard: a Tally keycap (radius 8 dp) in place
-     of the flat key colour; the other states keep their drawables.
+     of the flat key colour. The other states keep their drawables.
 -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_active="true" android:state_pressed="true"

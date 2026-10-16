@@ -10,7 +10,7 @@
          The "full" radius draws only the dialog keys
          (settingslib_expressive_button_background_filled and _outline, the
          buttons of every Settings dialog) and the spinners
-         (settingslib_expressive_spinner_background and _outlined); with the
+         (settingslib_expressive_spinner_background and _outlined). With the
          Tally key radius they are r8 keys instead of pills. -->
     <dimen name="settingslib_expressive_radius_full">8dp</dimen>
     <!-- Large 1 draws only the usage meters: the thick bar of Battery and
