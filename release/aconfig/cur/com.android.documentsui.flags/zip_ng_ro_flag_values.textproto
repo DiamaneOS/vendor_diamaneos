@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# New archive code (ZIP creation and extraction). Off until it is reviewed
+# for path traversal, symlink entries and size and entry limits, and
+# fuzzed.
+flag_value {
+  package: "com.android.documentsui.flags"
+  name: "zip_ng_ro"
+  state: DISABLED
+  permission: READ_ONLY
+}

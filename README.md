@@ -15,6 +15,7 @@ What every DiamaneOS product shares:
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
   and the shell's named families, with the script that builds it.
 - `media/`: the boot animation.
+- `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 
 Rules:
