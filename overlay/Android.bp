@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+package {
+    default_applicable_licenses: ["vendor_diamaneos_license"],
+}
+
+// DiamaneOS-wide overlays, installed on the product partition for every device.
+// Each is static and targets one package. The overlay check in DiamaneOS tools
+// (bin/diamaneos overlays check) must pass for every change here.
+
+runtime_resource_overlay {
+    name: "DiamaneOSSettingsOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSettingsOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSettingsOverlay/res"],
+}
+
+// Setup (GrapheneOS SetupWizard2): the welcome line, the tagline, the
+// restore text, the network location text and the Pleat mark.
+runtime_resource_overlay {
+    name: "DiamaneOSSetupWizardOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSetupWizardOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSetupWizardOverlay/res"],
+}
+
+// Speech Services (GrapheneOS's presigned text-to-speech app): its name
+// without GrapheneOS's.
+runtime_resource_overlay {
+    name: "DiamaneOSSpeechServicesOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSSpeechServicesOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSSpeechServicesOverlay/res"],
+}

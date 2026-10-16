@@ -22,3 +22,9 @@ endif
 # properties (as GrapheneOS does). DiamaneOS is the name shown to people.
 
 $(call inherit-product, vendor/diamaneos/config/common.mk)
+
+# DiamaneOS-wide overlays (overlay/).
+PRODUCT_PACKAGES += \
+    DiamaneOSSettingsOverlay \
+    DiamaneOSSetupWizardOverlay \
+    DiamaneOSSpeechServicesOverlay

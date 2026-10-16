@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- The welcome screen's title and tagline. The setup wizard has
+         these strings in English only (no translations upstream). -->
+    <string name="welcome_to_grapheneos">Welcome to DiamaneOS</string>
+    <!-- A plain statement of what the OS is, as on the website: no
+         privacy or security claim. The phone contacts DiamaneOS services
+         during setup, so the privacy policy is named before that. -->
+    <string name="grapheneos_desc">A phone operating system based on GrapheneOS.\nHow it handles your data: diamaneos.de/legal</string>
+
+    <!-- What screen readers say for the logo on the welcome and finish
+         screens. -->
+    <string name="grapheneos_icon">DiamaneOS</string>
+
+    <!-- Restore screen: GrapheneOS's text names a previous GrapheneOS device. -->
+    <string name="data_restore_desc">If you have a backup from your previous device, you can restore it here.</string>
+
+    <!-- Geocoder screen: GrapheneOS's text names its own server. DiamaneOS offers only
+         OpenStreetMap's public service, which this switch turns on. -->
+    <string name="geocoder_enabled_desc">Turn on the geocoder to let apps use OpenStreetMap\'s public service to convert between geographic coordinates and human-readable addresses. OpenStreetMap sees your IP address and what is looked up. Some apps need this for critical functionality.</string>
+</resources>

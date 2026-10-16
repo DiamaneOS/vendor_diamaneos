@@ -11,6 +11,7 @@ What every DiamaneOS product shares:
   otherwise provide (recovery runtime, compatibility matrix), and the netd log
   level that keeps hardware addresses out of the log.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
+- `overlay/`: DiamaneOS-wide runtime resource overlays.
 
 Rules:
 
