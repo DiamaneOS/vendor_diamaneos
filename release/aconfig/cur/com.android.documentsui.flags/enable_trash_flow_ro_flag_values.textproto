@@ -2,8 +2,8 @@
 # Copyright 2026 The DiamaneOS Project
 
 # Trash: Delete would move files to a trash instead of deleting them.
-# Off until retention, purge, visibility to other apps and profiles, and
-# clearing by erase are reviewed and tested.
+# Off, because retention, purge, visibility to other apps and profiles, and
+# clearing by erase have no review.
 flag_value {
   package: "com.android.documentsui.flags"
   name: "enable_trash_flow_ro"
