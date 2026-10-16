@@ -12,6 +12,8 @@ What every DiamaneOS product shares:
   level that keeps hardware addresses out of the log.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
+- `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
+  and the shell's named families, with the script that builds it.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 
 Rules:
@@ -25,4 +27,5 @@ Rules:
   and adds the Updater, which checks DiamaneOS's update server
   (`releases.diamaneos.de`). Other builds leave it unset.
 
-Original code is Apache-2.0 (LICENSE).
+Original code is Apache-2.0 (LICENSE). The fonts in `fonts/` keep their SIL
+Open Font License (`fonts/OFL.txt`).
