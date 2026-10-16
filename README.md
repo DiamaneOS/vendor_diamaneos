@@ -37,6 +37,6 @@ Rules:
   and adds the Updater, which checks DiamaneOS's update server
   (`releases.diamaneos.de`). Other builds leave it unset.
 
-Original code is Apache-2.0; see LICENSE. The fonts in `fonts/` keep their
-SIL Open Font License (`fonts/OFL.txt`); `gallery/notices/` holds the licence
+Original code is Apache-2.0 (LICENSE). The fonts in `fonts/` keep their SIL
+Open Font License (`fonts/OFL.txt`), and `gallery/notices/` holds the licence
 texts of Glimpse's bundled libraries.
