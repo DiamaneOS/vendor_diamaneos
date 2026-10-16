@@ -6,7 +6,7 @@ package {
 }
 
 // DiamaneOS-wide overlays, installed on the product partition for every device.
-// Each is static and targets one package; the overlay check in DiamaneOS tools
+// Each is static and targets one package. The overlay check in DiamaneOS tools
 // (bin/diamaneos overlays check) must pass for every change here.
 
 runtime_resource_overlay {
@@ -24,8 +24,7 @@ runtime_resource_overlay {
 // wallpapers. The default wallpaper (default_wallpaper_component) is Tally's
 // Paper wallpaper in SystemUI, light or dark with the theme. The built-in
 // picture, res/drawable-nodpi/default_wallpaper.png, stays the DiamaneOS Sodium
-// panel wallpaper (portrait and dark, 1116 x 2484, the FP6 screen, exported from
-// its SVG): Wallpaper & style offers it under On-device wallpapers, and apps
+// panel wallpaper (portrait and dark, 1116 x 2484, exported from its SVG): Wallpaper & style offers it under On-device wallpapers, and apps
 // that read the wallpaper as a picture get it. Network time over HTTPS comes
 // from the DiamaneOS time server (config_httpsTimeUrls).
 runtime_resource_overlay {
