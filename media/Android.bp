@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+package {
+    default_applicable_licenses: ["vendor_diamaneos_license"],
+}
+
+// The Pleat boot animation, from the DiamaneOS brand assets (a zip of stored
+// entries). bootanimation plays /product/media/bootanimation.zip, or
+// bootanimation-dark.zip when ro.boot.theme is 1, and does not fall back from
+// one to the other, so the dark name is a link to the same file.
+//
+// GrapheneOS defines a module of the same name in its branding project, which
+// the DiamaneOS manifest leaves out, and base_product.mk lists it. Two modules
+// cannot install the same file, so this one takes its name.
+prebuilt_media {
+    name: "bootanimation_zip",
+    product_specific: true,
+    filename: "bootanimation.zip",
+    src: "bootanimation.zip",
+    symlinks: ["bootanimation-dark.zip"],
+}
