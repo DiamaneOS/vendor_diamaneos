@@ -26,6 +26,9 @@ endif
 
 $(call inherit-product, vendor/diamaneos/config/common.mk)
 
+# System_ext policy for DiamaneOS features of the platform forks (sepolicy/).
+SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += vendor/diamaneos/sepolicy/system_ext/private
+
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += \
     DiamaneOSDocumentsUIOverlay \

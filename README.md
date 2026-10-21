@@ -13,6 +13,8 @@ What every DiamaneOS product shares:
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
 - `config/euicc.mk`: the eUICC transport log level, for devices with an eUICC.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
+- `sepolicy/system_ext/private/`: SELinux rules for DiamaneOS features of the
+  platform forks, such as the encrypted microSD card of the vold fork.
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
   and the shell's named families, with the script that builds it.
 - `media/`: the boot animation.
