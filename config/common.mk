@@ -22,6 +22,10 @@ ifeq ($(TARGET_BUILD_VARIANT),user)
 PRODUCT_PRODUCT_PROPERTIES += log.tag.netd=W
 endif
 
+# Factory reset offers "Erase eSIMs" as a choice, as on Pixels, instead of erasing them without
+# asking. It shows while eSIM support is on and an eSIM was downloaded on the phone.
+PRODUCT_PRODUCT_PROPERTIES += masterclear.allow_retain_esim_profiles_after_fdr=true
+
 # Generate the standard device compatibility matrix and system SDK requirements.
 # generic_system does not inherit the base_vendor package selection.
 PRODUCT_PACKAGES += vendor_compatibility_matrix.xml

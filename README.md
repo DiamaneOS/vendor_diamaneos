@@ -8,8 +8,8 @@ What every DiamaneOS product shares:
 - `product.mk`: the entry point. It inherits `config/common.mk`, selects the
   parts below and adds the Updater to official builds.
 - `config/common.mk`: vendor-side selection that `base_vendor.mk` would
-  otherwise provide (recovery runtime, compatibility matrix), and the netd log
-  level that keeps hardware addresses out of the log.
+  otherwise provide (recovery runtime, compatibility matrix), the netd log
+  level that keeps hardware addresses out of the log, and the eSIM reset choice.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
