@@ -88,3 +88,12 @@ runtime_resource_overlay {
     manifest: "DiamaneOSSpeechServicesOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSSpeechServicesOverlay/res"],
 }
+
+// System update (the Updater, app.seamlessupdate.client): the DiamaneOS update
+// server and its certificate pins. product.mk installs it with the Updater.
+runtime_resource_overlay {
+    name: "DiamaneOSUpdaterOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSUpdaterOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSUpdaterOverlay/res"],
+}

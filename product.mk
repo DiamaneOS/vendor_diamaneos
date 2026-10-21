@@ -9,13 +9,16 @@ endif
 
 # DIAMANEOS_OFFICIAL_BUILD=true marks a build made by the DiamaneOS builder
 # ("diamaneos build --official"), as GrapheneOS's OFFICIAL_BUILD marks its own:
-# it adds the Updater (packages/apps/Updater, the DiamaneOS fork), which checks
-# releases.diamaneos.de for updates. Other builds leave it unset.
+# it adds the Updater (packages/apps/Updater, the DiamaneOS fork) and its
+# overlay (overlay/DiamaneOSUpdaterOverlay), which points it at
+# releases.diamaneos.de and its certificate pins. Other builds leave it unset.
 ifneq ($(filter-out true,$(strip $(DIAMANEOS_OFFICIAL_BUILD))),)
 $(error DIAMANEOS_OFFICIAL_BUILD must be true or unset)
 endif
 ifeq ($(strip $(DIAMANEOS_OFFICIAL_BUILD)),true)
-PRODUCT_PACKAGES += Updater
+PRODUCT_PACKAGES += \
+    DiamaneOSUpdaterOverlay \
+    Updater
 endif
 
 # Products keep their device maker's brand and product identity in the build
