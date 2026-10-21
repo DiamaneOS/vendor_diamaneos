@@ -19,6 +19,8 @@ What every DiamaneOS product shares:
   DiamaneOS app forks, each with its `provenance.json`. They replace
   GrapheneOS's `external/` prebuilt projects, which the manifest leaves out.
 - `release/`: aconfig values added to GrapheneOS's release config.
+- `download-policy/`: the shared download server policy client
+  (`DiamaneOSDownloadPolicyClient`) that Settings, Setup and the Updater link.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 - `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
   the gallery, and the notices of Glimpse's bundled libraries.

@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// The shared download server policy client. Settings, Setup and the Updater link it. The App
+// Store (built outside the OS tree) carries identical copies of these sources.
+java_library {
+    name: "DiamaneOSDownloadPolicyClient",
+    srcs: ["client/**/*.java"],
+    sdk_version: "current",
+    min_sdk_version: "31",
+    visibility: ["//visibility:public"],
+}
