@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SPDX-License-Identifier: Apache-2.0
+     Copyright 2026 The DiamaneOS Project
+-->
+<resources>
+    <!-- The airplane mode notice's help link: the DiamaneOS answer instead of a Google support
+         page for Pixel phones. -->
+    <string name="config_apmLearnMoreLink" translatable="false">https://diamaneos.de/faq/#airplane-mode</string>
+</resources>

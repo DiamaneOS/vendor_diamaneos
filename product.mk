@@ -34,7 +34,8 @@ PRODUCT_PACKAGES += \
     DiamaneOSSetupWizardOverlay \
     DiamaneOSSpeechServicesOverlay \
     DiamaneOSSystemUIOverlay \
-    DiamaneOSThemesOverlay
+    DiamaneOSThemesOverlay \
+    DiamaneOSWifiOverlay
 
 # Tally colour overlays for first-party apps (overlay/apps/).
 $(call inherit-product, vendor/diamaneos/overlay/apps/apps.mk)

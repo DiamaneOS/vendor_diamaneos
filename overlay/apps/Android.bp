@@ -7,7 +7,8 @@ package {
 
 // Tally colour overlays for first-party apps, installed on the product
 // partition for every device. They change colours, styles and drawables only:
-// no strings, booleans, integers, arrays or layouts. apps.mk lists them.
+// no strings, booleans, integers, arrays or layouts. apps.mk lists them. The one
+// exception is the Bluetooth overlay's airplane mode help link.
 
 runtime_resource_overlay {
     name: "DiamaneOSDialerOverlay",

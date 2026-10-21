@@ -97,3 +97,12 @@ runtime_resource_overlay {
     manifest: "DiamaneOSUpdaterOverlay/AndroidManifest.xml",
     resource_dirs: ["DiamaneOSUpdaterOverlay/res"],
 }
+
+// Wi-Fi (com.android.wifi.resources): the airplane mode notice's help link, a
+// DiamaneOS answer instead of a Google support page.
+runtime_resource_overlay {
+    name: "DiamaneOSWifiOverlay",
+    product_specific: true,
+    manifest: "DiamaneOSWifiOverlay/AndroidManifest.xml",
+    resource_dirs: ["DiamaneOSWifiOverlay/res"],
+}
