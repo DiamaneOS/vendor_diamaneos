@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+package {
+    default_applicable_licenses: ["vendor_diamaneos_license"],
+}
+
+// The Tally palette style, compiled into frameworks/libs/systemui's monet library in its own
+// package, because it uses monet's package-private parts.
+filegroup {
+    name: "monet_tally_srcs",
+    srcs: ["src/**/*.java"],
+    visibility: ["//frameworks/libs/systemui/monet"],
+}

@@ -30,6 +30,8 @@ What every DiamaneOS product shares:
 - `tallytokens/`: the Tally token library (Soong module `tallytokens`), which
   SystemUI, Launcher3, Settings and other apps link. Generated from the token
   spec in the DiamaneOS design repository (`design/tokens/generate.py`).
+- `monet/`: the Tally palette style (SchemeTally, TallyDynamicColors), compiled
+  into frameworks/libs/systemui's monet library.
 
 Switches in `product.mk`:
 
