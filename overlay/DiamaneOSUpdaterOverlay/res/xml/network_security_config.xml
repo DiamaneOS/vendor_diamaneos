@@ -4,6 +4,9 @@
     <domain-config>
         <domain>releases.diamaneos.de</domain>
         <domain>releases-na.diamaneos.de</domain>
+        <!-- Release test build only: the staging download names, same pins. -->
+        <domain>releases.staging.diamaneos.de</domain>
+        <domain>releases-na.staging.diamaneos.de</domain>
         <!-- The update server uses Let's Encrypt certificates. Keep the expiration
              about three months ahead when releasing. After it, Android no longer
              enforces these pins. -->
