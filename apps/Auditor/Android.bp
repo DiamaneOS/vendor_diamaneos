@@ -1,0 +1,21 @@
+android_app_import {
+    name: "Auditor",
+    product_specific: true,
+
+    apk: "prebuilt/app-release.apk",
+    preprocessed: true,
+
+    optional_uses_libs: ["androidx.window.extensions", "androidx.window.sidecar"],
+
+    required: [
+        "etc_sysconfig_de.diamaneos.auditor.xml"
+    ]
+}
+
+prebuilt_etc {
+    name: "etc_sysconfig_de.diamaneos.auditor.xml",
+    src: "etc/sysconfig/de.diamaneos.auditor.xml",
+    sub_dir: "sysconfig",
+    filename_from_src: true,
+    product_specific: true,
+}

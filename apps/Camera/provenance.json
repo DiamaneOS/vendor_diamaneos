@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "package": "app.grapheneos.camera",
+  "version_code": 9303,
+  "version_name": "93.3",
+  "source": {
+    "repository": "https://github.com/DiamaneOS/Camera.git",
+    "commit": "6a5dedf22069cee6c684a1eabcd6f42d405d0a39",
+    "tree": "e4df4870dfa6db905926aa9a0e85c05ccb06deeb"
+  },
+  "unsigned_apk": {
+    "bytes": 3942108,
+    "sha256": "bcc17725d8b415462e2f899a3b0e2c79567e8a238d9ee6aba654e330c508146b"
+  },
+  "certificate_sha256": "285a091a913f1485ce16f280f06b2609dc1af6cca786e45b6f5356aa7e86fa61",
+  "artifacts": {
+    "prebuilt/app-release.apk": {
+      "bytes": 3947572,
+      "sha256": "17bfcd436ce851d2b78acc4fcba71e2f2fb61573657f0387bce7c8eb9793184a"
+    },
+    "prebuilt/app-release.apk.idsig": {
+      "bytes": 39370,
+      "sha256": "d056fa89f9a86af244ca5d8a27d7fc773a2b9f99998219fb34ab76a31af0605a"
+    }
+  },
+  "signature_schemes": [
+    "v2",
+    "v4"
+  ],
+  "apksigner": {
+    "build_tools_version": "36.1.0",
+    "jar_sha256": "71e18adf733f5e112d1f062dbe6b0c2eb439a4d7c773d083c42a703c66f56df1"
+  },
+  "signed_at_utc": "2026-10-17T15:44:50.705207+00:00"
+}

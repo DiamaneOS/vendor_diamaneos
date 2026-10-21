@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "package": "de.diamaneos.auditor",
+  "version_code": 9202,
+  "version_name": "92.2",
+  "source": {
+    "repository": "https://github.com/DiamaneOS/Auditor.git",
+    "commit": "1f9a27420c0c9a8478529332b7c23d2676d86ad1",
+    "tree": "d23a96dfd29d87e3234e859c9ee96b2bdcef7755"
+  },
+  "unsigned_apk": {
+    "bytes": 3174442,
+    "sha256": "e259a9eacfe9124e787c250acd73c5cca710181f1bfcaf35e12b9b7d1ea573a9"
+  },
+  "certificate_sha256": "427bfd360586b829475f37abffd2548d93db3618e45c994de416469ef04bc2ec",
+  "artifacts": {
+    "prebuilt/app-release.apk": {
+      "bytes": 3181310,
+      "sha256": "3dc89adebc493f81946abd9e7b576929ea3b8741c487d00f852232e8919a8980"
+    },
+    "prebuilt/app-release.apk.idsig": {
+      "bytes": 35274,
+      "sha256": "3ad1063a8d0cba0412d994183cf12dd21e01fe5563fc11a57633f2346900e1bc"
+    }
+  },
+  "signature_schemes": [
+    "v2",
+    "v4"
+  ],
+  "apksigner": {
+    "build_tools_version": "36.1.0",
+    "jar_sha256": "71e18adf733f5e112d1f062dbe6b0c2eb439a4d7c773d083c42a703c66f56df1"
+  },
+  "signed_at_utc": "2026-10-17T15:44:50.705207+00:00"
+}

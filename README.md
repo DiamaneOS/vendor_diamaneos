@@ -15,6 +15,9 @@ What every DiamaneOS product shares:
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
   and the shell's named families, with the script that builds it.
 - `media/`: the boot animation.
+- `apps/`: the App Store, Auditor and Camera, presigned builds of the
+  DiamaneOS app forks, each with its `provenance.json`. They replace
+  GrapheneOS's `external/` prebuilt projects, which the manifest leaves out.
 - `release/`: aconfig values added to GrapheneOS's release config.
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 - `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
@@ -38,5 +41,6 @@ Rules:
   (`releases.diamaneos.de`). Other builds leave it unset.
 
 Original code is Apache-2.0 (LICENSE). The fonts in `fonts/` keep their SIL
-Open Font License (`fonts/OFL.txt`), and `gallery/notices/` holds the licence
-texts of Glimpse's bundled libraries.
+Open Font License (`fonts/OFL.txt`), `gallery/notices/` holds the licence
+texts of Glimpse's bundled libraries, and each app in `apps/` keeps its MIT
+licence (`apps/*/LICENSE`).
