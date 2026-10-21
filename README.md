@@ -11,6 +11,7 @@ What every DiamaneOS product shares:
   otherwise provide (recovery runtime, compatibility matrix), the netd log
   level that keeps hardware addresses out of the log, and the eSIM reset choice.
 - `config/wifi.mk`: Android Wi-Fi services, for devices with Wi-Fi.
+- `config/euicc.mk`: the eUICC transport log level, for devices with an eUICC.
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
   and the shell's named families, with the script that builds it.
