@@ -27,6 +27,9 @@ What every DiamaneOS product shares:
 - `removed_packages/`: GrapheneOS packages DiamaneOS does not install.
 - `gallery/`: Gallery2 reduced to its crop screen while LineageOS's Glimpse is
   the gallery, and the notices of Glimpse's bundled libraries.
+- `tallytokens/`: the Tally token library (Soong module `tallytokens`), which
+  SystemUI, Launcher3, Settings and other apps link. Generated from the token
+  spec in the DiamaneOS design repository (`design/tokens/generate.py`).
 
 Switches in `product.mk`:
 
