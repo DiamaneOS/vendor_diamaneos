@@ -20,3 +20,10 @@ PRODUCT_COPY_FILES += \
 ifeq ($(TARGET_BUILD_VARIANT),user)
 PRODUCT_VENDOR_PROPERTIES += log.tag.wpa_supplicant=I
 endif
+
+# User builds keep hostapd at info level, like the supplicant: with Wi-Fi
+# verbose logging its debug lines carry the hotspot's and its clients'
+# addresses.
+ifeq ($(TARGET_BUILD_VARIANT),user)
+PRODUCT_VENDOR_PROPERTIES += log.tag.hostapd=I
+endif
