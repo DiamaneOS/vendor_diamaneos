@@ -4,7 +4,7 @@ Presigned Camera built from the DiamaneOS Camera source. The APK and its matchin
 
 Source revisions, artifact hashes and the APK certificate digest are recorded in [provenance.json](provenance.json).
 
-From version 9304 the Camera needs its CameraProcessor app: add
-`prebuilt/processor-release.apk` and its idsig, a second `android_app_import`
-named `CameraProcessor` (product_specific, preprocessed) and
-`required: ["CameraProcessor"]` on the Camera module.
+The Camera installs its CameraProcessor app (`prebuilt/processor-release.apk`
+and its idsig, module `CameraProcessor`), built from the `processor` module of
+the same source and signed with the Camera key. provenance.json records it
+under `processor`.

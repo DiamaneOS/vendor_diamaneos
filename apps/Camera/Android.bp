@@ -6,4 +6,16 @@ android_app_import {
     preprocessed: true,
 
     optional_uses_libs: ["androidx.camera.extensions.impl"],
+
+    required: ["CameraProcessor"],
+}
+
+// Camera's preview processor. Its preview service is guarded by a signature permission
+// the Camera holds, so both carry the Camera certificate.
+android_app_import {
+    name: "CameraProcessor",
+    product_specific: true,
+
+    apk: "prebuilt/processor-release.apk",
+    preprocessed: true,
 }
