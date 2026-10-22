@@ -52,3 +52,7 @@ PRODUCT_VENDOR_PROPERTIES += \
     ro.recovery.usb.adb.pid=D001 \
     ro.recovery.usb.fastboot.pid=4EE0
 
+
+# Release test build only: vold never marks the boot successful, so every boot completes and the
+# bootloader goes back to the old slot after its retries.
+PRODUCT_SYSTEM_PROPERTIES += persist.vold.dont_commit_checkpoint=1
