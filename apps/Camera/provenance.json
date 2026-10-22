@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
   "package": "app.grapheneos.camera",
-  "version_code": 9304,
-  "version_name": "93.4",
+  "version_code": 9305,
+  "version_name": "93.5",
   "source": {
     "repository": "https://github.com/DiamaneOS/Camera.git",
-    "commit": "483e275a34ea74016a99e7b7521c246dafb7943d",
-    "tree": "5cc70d3af4b4552eb09c20a961c84552a137224d",
+    "commit": "fdec8f79872941b48993ffab818f7cf925674f90",
+    "tree": "d46b66407d5515236cb1d8e837ef3c7b721ecf2c",
     "module": "app"
   },
   "unsigned_apk": {
     "bytes": 75274652,
-    "sha256": "6b0a87ef606322e67d1517b5a744e585cfd2735bf74216455199f36052c2d14b"
+    "sha256": "325e1e32336f18de2b97e95596f559a21d570664f83eaced02989a8f47e2f5bd"
   },
   "certificate_sha256": "285a091a913f1485ce16f280f06b2609dc1af6cca786e45b6f5356aa7e86fa61",
   "artifacts": {
     "prebuilt/app-release.apk": {
       "bytes": 75280212,
-      "sha256": "b3f19696fcdd25b21a2c07fc8ecd3e1e3993a6eacefc910fac41a513729e23a8"
+      "sha256": "663c803021d1ca2478936f07e81d00208db3bbc452f5e3841de877ad24cab936"
     },
     "prebuilt/app-release.apk.idsig": {
       "bytes": 604618,
-      "sha256": "c7f4e2a751bb159f3516526bd6de11696f15efc85da68b17ef54e83e1366a9d4"
+      "sha256": "d614e3e37fe61aa37947c95b5dfdf8215c54ee8e66936fb9236c6c8f82d5727c"
     }
   },
   "signature_schemes": [
@@ -32,31 +32,31 @@
     "build_tools_version": "36.1.0",
     "jar_sha256": "71e18adf733f5e112d1f062dbe6b0c2eb439a4d7c773d083c42a703c66f56df1"
   },
-  "signed_at_utc": "2026-10-21T13:51:19.463234+00:00",
+  "signed_at_utc": "2026-10-22T14:45:13.348749+00:00",
   "processor": {
     "module": "CameraProcessor",
-    "package": "app.grapheneos.camera.processor",
+    "package": "de.diamaneos.camera.processor",
     "version_code": 1,
     "version_name": "1",
     "source": {
       "repository": "https://github.com/DiamaneOS/Camera.git",
-      "commit": "483e275a34ea74016a99e7b7521c246dafb7943d",
-      "tree": "5cc70d3af4b4552eb09c20a961c84552a137224d",
+      "commit": "fdec8f79872941b48993ffab818f7cf925674f90",
+      "tree": "d46b66407d5515236cb1d8e837ef3c7b721ecf2c",
       "module": "processor"
     },
     "unsigned_apk": {
-      "bytes": 65575604,
-      "sha256": "93f281c8e91171c76d5070ca4f2d02ea3a4388f2268575b7817c216b0c95d983"
+      "bytes": 65575600,
+      "sha256": "a59b1adfd038cd236dda126aeafd5d479160b50bbb30ae1a186bfb63dcea97d5"
     },
     "certificate_sha256": "285a091a913f1485ce16f280f06b2609dc1af6cca786e45b6f5356aa7e86fa61",
     "artifacts": {
       "prebuilt/processor-release.apk": {
         "bytes": 65583524,
-        "sha256": "09b0a301aa818a44c790a209e780238ce663d9fc4422aaab343ed5364b5c7a1d"
+        "sha256": "ce9d12d7904b8aaf8e3b3bde069a846bfd9aac854576878b90b8417b741b864e"
       },
       "prebuilt/processor-release.apk.idsig": {
         "bytes": 522698,
-        "sha256": "cc341ca7db80d70ee2a815d4c77d40e1f113b1c4ac4e223e912100d515625516"
+        "sha256": "abf7a8a2a9446c8a2b1f2074a7158b7ed53a7dab4df959c808a332386ccff2da"
       }
     },
     "signature_schemes": [
@@ -67,6 +67,6 @@
       "build_tools_version": "36.1.0",
       "jar_sha256": "71e18adf733f5e112d1f062dbe6b0c2eb439a4d7c773d083c42a703c66f56df1"
     },
-    "signed_at_utc": "2026-10-21T13:51:19.463234+00:00"
+    "signed_at_utc": "2026-10-22T14:45:13.348749+00:00"
   }
 }
