@@ -22,7 +22,7 @@
     <!-- Network location screen: the proxy is DiamaneOS's relay to Apple's
          service. Turning it on is the user's choice for a transfer to the
          USA, so the text says where the data goes. -->
-    <string name="network_location_enabled_desc">Enable network location to determine your location better (such as when indoors) and more efficiently. Nearby wireless signal identifiers will be sent to Apple in the USA through a DiamaneOS proxy only when network location is being used. Details: diamaneos.de/legal</string>
+    <string name="network_location_enabled_desc">Enable network location to determine your location better (such as when indoors) and more efficiently. Nearby wireless signal identifiers will be sent to Apple in the USA through a DiamaneOS proxy only when network location is being used. No adequacy decision covers this transfer, so US authorities may be able to access the data without the protection EU law requires. Turning this on is your consent to it. You can turn it off later in Settings. Details: diamaneos.de/legal</string>
 
     <!-- Geocoder screen: GrapheneOS's text names its own server. DiamaneOS offers only
          OpenStreetMap's public service, which this switch turns on. -->

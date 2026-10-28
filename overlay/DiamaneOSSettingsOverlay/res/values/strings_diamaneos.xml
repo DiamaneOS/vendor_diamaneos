@@ -41,7 +41,7 @@ Duress PIN works the same way duress password does."</string>
 
 This method can be particularly useful when GNSS is unavailable or unreliable, such as indoors or in areas with poor satellite reception. Network location provides a quicker way to determine your location before a GNSS lock is acquired or when GNSS signals are weak.
 
-With an Apple option, the identifiers go to Apple in the USA, with no account or phone identifier. With the DiamaneOS Apple proxy, Apple sees the proxy’s address instead of yours."
+With an Apple option, the identifiers go to Apple in the USA, with no account or phone identifier. With the DiamaneOS Apple proxy, Apple sees the proxy’s address instead of yours. No adequacy decision covers this transfer, so US authorities may be able to access the data without the protection EU law requires. Choosing an Apple option is your consent to it. You can switch it off here at any time. Details: diamaneos.de/legal"
     </string>
     <string name="widevine_provisioning_footer">The provisioned certificate will be used for accessing DRM protected content. The phone asks Google in the USA for a device certificate only when an app plays protected video. With the DiamaneOS proxy, Google sees the proxy\'s address instead of yours.</string>
 </resources>
