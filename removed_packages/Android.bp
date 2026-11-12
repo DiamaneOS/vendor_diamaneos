@@ -12,6 +12,15 @@
 // audio-file preview and picking. The calendar storage (CalendarProvider)
 // stays.
 //
+// And one module of base_system.mk:
+//   DynamicSystemInstallationService  com.android.dynsystem, the installer of
+//             Dynamic System Updates. A locked phone starts a second system
+//             image only when it is signed with a key in the boot ramdisk, and
+//             DiamaneOS puts none there, so the installer could download an
+//             image and never start it. base_system.mk has a switch for this
+//             (PRODUCT_NO_DYNAMIC_SYSTEM_UPDATE), but reads it before this
+//             product configuration is loaded.
+//
 // This is an ETC module that installs nothing rather than a phony module:
 // make applies `overrides` only from apps, executables, shared libraries and
 // ETC modules (build/make core/main.mk module-overrides), and a Soong phony
@@ -25,6 +34,7 @@ prebuilt_etc {
     product_specific: true,
     overrides: [
         "Calendar",
+        "DynamicSystemInstallationService",
         "InfoApp",
         "Music",
     ],
