@@ -1,27 +1,27 @@
 {
   "schema_version": 1,
   "package": "app.grapheneos.apps",
-  "version_code": 3703,
-  "version_name": "37.3",
+  "version_code": 3705,
+  "version_name": "37.5",
   "source": {
     "repository": "https://github.com/DiamaneOS/AppStore.git",
-    "commit": "595292c2b027b7d05ba2e6788d53df5c1a4e2041",
-    "tree": "cb1358733a830b5f398e3f6c14661c8d19992b83",
+    "commit": "341292d7450e999a05cf8fef2bd713b6688cbe69",
+    "tree": "72559acf3cf0881dbae6e79832c7ce4990409d36",
     "module": "app"
   },
   "unsigned_apk": {
-    "bytes": 4095764,
-    "sha256": "3ebfccbde55ef226e9c2542b0f92583a7625eeaeacc409de3e04bdd758971d5a"
+    "bytes": 4112224,
+    "sha256": "cc70d910bfc95d4d4cd8fd0216da9c683922ec4c4f9c9b8dab440f11d3e8a45e"
   },
   "certificate_sha256": "559ffb104edd9386a39d512063cb7458c5ec0e29c9b52a91068ce950dd768a47",
   "artifacts": {
     "prebuilt/app-release.apk": {
-      "bytes": 4100728,
-      "sha256": "3b191cd4c7bd59bed4092f6a2136bf6549ad4a4e1860f02bd0d04aa043ba3d7c"
+      "bytes": 4117112,
+      "sha256": "65ae84c17c0eca0ccf3a267c32317838ca3214dea5473bbe528aaaa4da365a01"
     },
     "prebuilt/app-release.apk.idsig": {
       "bytes": 39370,
-      "sha256": "299c2a0a519242a2929a560d7108e921f8ad1a294adca5c9153aec8faeac553f"
+      "sha256": "c1897cd5b3caadfa48b8c6598a1d4498a566195373317dedf408db8e7f7d58ef"
     }
   },
   "signature_schemes": [
@@ -32,5 +32,5 @@
     "build_tools_version": "36.1.0",
     "jar_sha256": "71e18adf733f5e112d1f062dbe6b0c2eb439a4d7c773d083c42a703c66f56df1"
   },
-  "signed_at_utc": "2026-11-06T02:59:58.101517+00:00"
+  "signed_at_utc": "2026-11-14T07:41:08.930536+00:00"
 }
