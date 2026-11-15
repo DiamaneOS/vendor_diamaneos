@@ -20,4 +20,9 @@
     <string-array name="config_httpsTimeUrls" translatable="false">
         <item>https://time.diamaneos.de/generate_204</item>
     </string-array>
+
+    <!-- A double tap on an empty part of the lock screen can turn the screen off. Off until the
+         user turns it on in Settings (Settings.Secure.DOUBLE_TAP_TO_SLEEP). Also needs the
+         com.android.systemui.double_tap_to_sleep flag (release/aconfig). -->
+    <bool name="config_supportDoubleTapSleep">true</bool>
 </resources>

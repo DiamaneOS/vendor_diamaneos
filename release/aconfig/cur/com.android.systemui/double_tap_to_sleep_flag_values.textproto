@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The DiamaneOS Project
+
+# A double tap on an empty part of the lock screen turns the screen off. The
+# switch is in Settings (Lock screen) and off by default
+# (Settings.Secure.DOUBLE_TAP_TO_SLEEP). Fixed on: GrapheneOS leaves this
+# read-write flag at its default (off). Also needs config_supportDoubleTapSleep.
+flag_value {
+  package: "com.android.systemui"
+  name: "double_tap_to_sleep"
+  state: ENABLED
+  permission: READ_ONLY
+}

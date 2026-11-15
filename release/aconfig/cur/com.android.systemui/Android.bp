@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The DiamaneOS Project
+
+// Android's own SystemUI flags.
+aconfig_values {
+    name: "aconfig-values-diamaneos-cur-com.android.systemui-all",
+    package: "com.android.systemui",
+    srcs: [
+        "*_flag_values.textproto",
+    ],
+}
