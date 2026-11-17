@@ -90,13 +90,23 @@ pub struct Deadlines {
     pub hello: Duration,
     pub meta: Duration,
     pub io: Duration,
+    /// MOUNT: the VM's kernel mounts the filesystem and counts its free space once, which reads a whole FAT. A
+    /// 2 TB FAT32 card with 32 KiB clusters has 256 MiB per FAT, about 13 s from a slow card. Later STATFS calls
+    /// answer from the kernel's count and keep the short `meta` deadline. vold waits for all of a mount while it holds
+    /// its lock (system/vold fs/Fsvm.cpp), so this stays well under a minute.
+    pub mount: Duration,
 }
 
 impl Default for Deadlines {
     fn default() -> Self {
         // A 128 KiB read from a card takes milliseconds. These leave room for a slow card and a busy phone, and
         // stay below the FUSE request timeouts apps see.
-        Deadlines { hello: Duration::from_secs(10), meta: Duration::from_secs(5), io: Duration::from_secs(15) }
+        Deadlines {
+            hello: Duration::from_secs(10),
+            meta: Duration::from_secs(5),
+            io: Duration::from_secs(15),
+            mount: Duration::from_secs(30),
+        }
     }
 }
 
@@ -203,6 +213,33 @@ impl<T: Transport> Client<T> {
         match decode_hello(&p) {
             Ok(h) => Ok(h),
             Err(e) => self.fail(format!("hello: {e:?}")),
+        }
+    }
+
+    /// Reads the partition layout the VM found on its disk, checked against the size Android knows.
+    pub fn layout(&mut self, disk_bytes: u64) -> CallResult<layout::Layout> {
+        let budget = self.deadlines.hello;
+        let p = self.call(Request::default(), Op::Layout, layout::MAX_LAYOUT_PAYLOAD as u32, budget)?;
+        match layout::decode_layout(&p, disk_bytes) {
+            Ok(l) => Ok(l),
+            Err(e) => self.fail(format!("layout: {e:?}")),
+        }
+    }
+
+    /// Mounts partition `index` (0: the whole disk), which must still be at `start` and `length` sectors. Once per
+    /// VM. The reply must name a filesystem, and `expect_fs` when that is not 0.
+    pub fn mount(&mut self, index: u32, start: u64, length: u64, read_only: bool, expect_fs: u32) -> CallResult<Hello> {
+        let budget = self.deadlines.mount;
+        let req = Request { arg: index as u64, node: start, node2: length, flags: read_only as u16, ..Default::default() };
+        let p = self.call(req, Op::Mount, HELLO_SIZE as u32, budget)?;
+        match decode_hello(&p) {
+            Ok(h) if h.fs_kind == 0 => self.fail("mount: no filesystem".into()),
+            Ok(h) if expect_fs != 0 && h.fs_kind != expect_fs => {
+                self.fail(format!("mount: filesystem {} where the layout said {expect_fs}", h.fs_kind))
+            }
+            Ok(h) if read_only && !h.read_only => self.fail("mount: writable where read-only was asked".into()),
+            Ok(h) => Ok(h),
+            Err(e) => self.fail(format!("mount: {e:?}")),
         }
     }
 

@@ -15,14 +15,16 @@
  */
 
 /*
- * /init of the filesystem VM. It mounts the volume on the first virtio disk (a FAT or exFAT filesystem on the whole
- * disk or in one of its first four partitions, which this VM's kernel reads, not Android's) and serves it over vsock
- * with protocol version 2 (proto.h). Android checks every reply, so this program's job is to be correct, not to
- * defend Android: if a crafted filesystem takes over this VM's kernel, the VM is lost but Android is not.
+ * /init of the filesystem VM. Its first virtio disk is a whole SD card or USB disk, or an OBB image (Android's kernel
+ * reads none of their partition tables or filesystems). It serves protocol version 3 (proto.h) over vsock: LAYOUT
+ * reports the partitions read from the disk (table.c), MOUNT mounts one FAT or exFAT filesystem, once, and the file
+ * operations then serve it. Android checks every reply, so this program's job is to be correct, not to defend
+ * Android: if a crafted filesystem takes over this VM's kernel, the VM is lost but Android is not.
  *
  * Static, single threaded, PID 1. It never returns.
  */
 #include "proto.h"
+#include "table.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -45,8 +47,15 @@
 #define MAX_NODES 65536u
 #define HASH_SIZE 131072u /* power of two, at least twice MAX_NODES */
 
-static uint32_t fs_kind;
+#define DISK "/dev/vda"
+
+static uint32_t fs_kind; /* 0 until MOUNT succeeded */
 static int read_only;
+static uint32_t mounted_index;
+static uint64_t mounted_start, mounted_length;
+static uint64_t disk_sectors;
+static int layout_state; /* 0 not read, 1 read, negative errno */
+static struct fsvm_layout layout;
 
 static void logline(const char *what, const char *detail, int err)
 {
@@ -387,20 +396,45 @@ static int do_write(int s, const struct fsvm_req *q, const char *rel, const uint
 	return reply(s, q->id, 0, out, sizeof(out));
 }
 
+static int read_layout(void);
+static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro);
+
 static int handle(int s, struct fsvm_req *q, const char *name, const char *name2, const uint8_t *data)
 {
 	char p[PATH_MAX], p2[PATH_MAX], rel[PATH_MAX], rel2[PATH_MAX];
 	const char *base = path_of(q->node);
 	int r;
 
-	if (q->op != FSVM_HELLO && q->op != FSVM_STATFS && !base)
-		return reply(s, q->id, -ENOENT, NULL, 0);
-
 	switch (q->op) {
 	case FSVM_HELLO: {
 		struct fsvm_hello h = { FSVM_VERSION, fs_kind, read_only ? 1u : 0u, 0, 1 };
 		return reply(s, q->id, 0, &h, sizeof(h));
 	}
+	case FSVM_LAYOUT:
+		r = read_layout();
+		if (r)
+			return reply(s, q->id, r, NULL, 0);
+		return reply(s, q->id, 0, &layout, fsvm_layout_size(&layout));
+	case FSVM_MOUNT: {
+		if (q->arg > UINT32_MAX)
+			return reply(s, q->id, -EINVAL, NULL, 0);
+		r = do_mount((uint32_t)q->arg, q->node, q->node2, q->flags & 1);
+		if (r)
+			return reply(s, q->id, r, NULL, 0);
+		struct fsvm_hello h = { FSVM_VERSION, fs_kind, read_only ? 1u : 0u, 0, 1 };
+		return reply(s, q->id, 0, &h, sizeof(h));
+	}
+	default:
+		break;
+	}
+
+	/* Everything below needs the mounted volume. */
+	if (!fs_kind)
+		return reply(s, q->id, -EINVAL, NULL, 0);
+	if (q->op != FSVM_STATFS && !base)
+		return reply(s, q->id, -ENOENT, NULL, 0);
+
+	switch (q->op) {
 	case FSVM_LOOKUP:
 		if (child_path(rel, sizeof(rel), base, name))
 			return reply(s, q->id, -ENAMETOOLONG, NULL, 0);
@@ -534,9 +568,60 @@ static void serve(int s)
 	}
 }
 
-/* ---- Mounting ---- */
+/* ---- The disk and mounting ---- */
 
-static int try_mount(const char *dev)
+static int disk_fd = -1;
+
+static int disk_read(void *ctx, uint64_t off, void *buf, size_t len)
+{
+	(void)ctx;
+	uint8_t *p = buf;
+	while (len) {
+		ssize_t n = pread(disk_fd, p, len, (off_t)off);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			return -1;
+		p += n;
+		off += (uint64_t)n;
+		len -= (size_t)n;
+	}
+	return 0;
+}
+
+static int read_u64_file(const char *path, uint64_t *out)
+{
+	char buf[32];
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -errno;
+	ssize_t n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return -EIO;
+	buf[n] = 0;
+	char *end;
+	errno = 0;
+	unsigned long long v = strtoull(buf, &end, 10);
+	if (errno || end == buf)
+		return -EIO;
+	*out = v;
+	return 0;
+}
+
+/* Reads the partition layout once. Errors stay: a disk whose table was refused is not served. */
+static int read_layout(void)
+{
+	if (layout_state)
+		return layout_state < 0 ? layout_state : 0;
+	int r = fsvm_read_layout(disk_read, NULL, disk_sectors, &layout);
+	layout_state = r ? r : 1;
+	if (r)
+		logline("partition table refused", NULL, -r);
+	return r;
+}
+
+static int try_mount(const char *dev, int want_ro)
 {
 	static const struct {
 		const char *type;
@@ -546,37 +631,71 @@ static int try_mount(const char *dev)
 		{ "vfat", "utf8,shortname=mixed,errors=remount-ro", FSVM_FS_VFAT },
 		{ "exfat", "iocharset=utf8,errors=remount-ro", FSVM_FS_EXFAT },
 	};
-	unsigned long base = MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME;
+	unsigned long base = MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | (want_ro ? MS_RDONLY : 0);
 	for (unsigned i = 0; i < sizeof(fs) / sizeof(fs[0]); i++) {
 		if (!mount(dev, MNT, fs[i].type, base, fs[i].opts)) {
 			fs_kind = fs[i].kind;
+			read_only = want_ro;
 			return 0;
 		}
 		/* A read-only disk: Android passed the volume without write access. */
-		if ((errno == EROFS || errno == EACCES) && !mount(dev, MNT, fs[i].type, base | MS_RDONLY, fs[i].opts)) {
+		if (!want_ro && (errno == EROFS || errno == EACCES) &&
+		    !mount(dev, MNT, fs[i].type, base | MS_RDONLY, fs[i].opts)) {
 			fs_kind = fs[i].kind;
 			read_only = 1;
 			return 0;
 		}
 	}
-	return -1;
+	return -EIO;
 }
 
-static int mount_volume(void)
+/*
+ * Mounts partition `index` (0: the whole disk) once. It must be in the layout read from the disk at exactly `start`
+ * and `length`, and this kernel's partition device must agree. Then counts the free space once: the FAT driver reads
+ * its whole table for that, which belongs here, inside MOUNT's deadline, not in a later STATFS.
+ */
+static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro)
 {
-	/* The whole disk first (a card without a partition table), then the partitions this kernel found. */
-	static const char *const devs[] = { "/dev/vda", "/dev/vda1", "/dev/vda2", "/dev/vda3", "/dev/vda4" };
-	for (int wait = 0; wait < 50 && access("/dev/vda", F_OK); wait++)
-		usleep(100 * 1000);
-	for (unsigned i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
-		if (access(devs[i], F_OK))
-			continue;
-		if (!try_mount(devs[i])) {
-			logline("mounted", devs[i], 0);
+	if (fs_kind) {
+		if (index == mounted_index && start == mounted_start && length == mounted_length)
 			return 0;
+		return -EBUSY;
+	}
+	int r = read_layout();
+	if (r)
+		return r;
+	if (!fsvm_layout_find(&layout, index, start, length))
+		return -ENOENT;
+	char dev[32];
+	if (index == 0) {
+		snprintf(dev, sizeof(dev), "%s", DISK);
+	} else {
+		char path[64];
+		uint64_t s = 0, n = 0;
+		snprintf(dev, sizeof(dev), "%s%u", DISK, index);
+		snprintf(path, sizeof(path), "/sys/class/block/vda%u/start", index);
+		if (read_u64_file(path, &s))
+			return -ENOENT;
+		snprintf(path, sizeof(path), "/sys/class/block/vda%u/size", index);
+		if (read_u64_file(path, &n))
+			return -ENOENT;
+		if (s != start || n != length) {
+			logline("partition differs from the table read", dev, 0);
+			return -EINVAL;
 		}
 	}
-	return -1;
+	r = try_mount(dev, want_ro);
+	if (r) {
+		logline("no FAT or exFAT filesystem on", dev, errno);
+		return r;
+	}
+	mounted_index = index;
+	mounted_start = start;
+	mounted_length = length;
+	struct statfs sf;
+	(void)statfs(MNT, &sf);
+	logline("mounted", dev, 0);
+	return 0;
 }
 
 int main(void)
@@ -587,9 +706,12 @@ int main(void)
 	node_path[1] = strdup("");
 	if (node_path[1])
 		slot_insert(1);
-	if (mount_volume()) {
+	for (int wait = 0; wait < 50 && access(DISK, F_OK); wait++)
+		usleep(100 * 1000);
+	disk_fd = open(DISK, O_RDONLY | O_CLOEXEC);
+	if (disk_fd < 0 || read_u64_file("/sys/class/block/vda/size", &disk_sectors)) {
 		/* Nothing to serve. Android times out and does not mount the volume. */
-		logline("no FAT or exFAT filesystem", NULL, errno);
+		logline("no disk", NULL, errno);
 		for (;;)
 			pause();
 	}

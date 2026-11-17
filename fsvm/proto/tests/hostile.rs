@@ -59,7 +59,7 @@ fn attr(node: u64, kind: Kind, size: u64) -> Attr {
 }
 
 fn quick() -> Deadlines {
-    Deadlines { hello: Duration::from_millis(600), meta: Duration::from_millis(600), io: Duration::from_millis(600) }
+    Deadlines { hello: Duration::from_millis(600), meta: Duration::from_millis(600), io: Duration::from_millis(600), mount: Duration::from_millis(600) }
 }
 
 /// Runs `server` against a fresh client and returns the client.
@@ -308,13 +308,107 @@ fn random_replies_never_panic_or_hang() {
                 }
             }
         });
-        c.deadlines = Deadlines { hello: Duration::from_millis(150), meta: Duration::from_millis(150), io: Duration::from_millis(150) };
+        c.deadlines = Deadlines { hello: Duration::from_millis(150), meta: Duration::from_millis(150), io: Duration::from_millis(150), mount: Duration::from_millis(150) };
         let t = Instant::now();
         let _ = c.getattr(2);
         let _ = c.list(1);
         let _ = c.read(2, 0, 256);
         let _ = c.statfs();
         let _ = c.hello();
-        assert!(t.elapsed() < Duration::from_secs(2), "seed {seed}");
+        let _ = c.layout(1 << 30);
+        let _ = c.mount(1, 2048, 4096, true, FS_VFAT);
+        assert!(t.elapsed() < Duration::from_secs(3), "seed {seed}");
+    }
+}
+
+fn hello_payload(fs_kind: u32, read_only: bool) -> Vec<u8> {
+    let mut h = vec![0u8; HELLO_SIZE];
+    h[0..4].copy_from_slice(&VERSION.to_le_bytes());
+    h[4..8].copy_from_slice(&fs_kind.to_le_bytes());
+    h[8..12].copy_from_slice(&(read_only as u32).to_le_bytes());
+    h[16..24].copy_from_slice(&1u64.to_le_bytes());
+    h
+}
+
+const DISK_BYTES: u64 = 1 << 30;
+
+fn fat(index: u32, start: u64, length: u64) -> layout::RawPart {
+    layout::RawPart { index, start, length, mbr_type: 0x0c, fs_kind: FS_VFAT, serial: Some(0x1234_5678), ..Default::default() }
+}
+
+/// Serves one fixed LAYOUT payload, then answers MOUNT with `mount_reply`.
+fn layout_server(payload: Vec<u8>, mount_reply: Vec<u8>) -> Client<StreamTransport<UnixStream>> {
+    with_server(move |mut s| {
+        while let Some(r) = read_req(&mut s) {
+            match r.op {
+                x if x == Op::Layout as u16 => reply(&mut s, r.id, 0, &payload),
+                x if x == Op::Mount as u16 => reply(&mut s, r.id, 0, &mount_reply),
+                x if x == Op::Hello as u16 => reply(&mut s, r.id, 0, &hello_payload(0, false)),
+                _ => reply(&mut s, r.id, -errno::EINVAL, &[]),
+            }
+        }
+    })
+}
+
+#[test]
+fn honest_layout_and_mount() {
+    let sectors = DISK_BYTES / 512;
+    let p = layout::encode_layout(sectors, 1, &[fat(1, 2048, 100_000), fat(2, 200_000, 100_000)]);
+    let mut c = layout_server(p, hello_payload(FS_VFAT, false));
+    assert_eq!(c.hello().unwrap().fs_kind, 0);
+    let l = c.layout(DISK_BYTES).unwrap();
+    assert_eq!(l.parts.len(), 2);
+    assert_eq!(l.parts[1].fs_uuid.as_deref(), Some("1234-5678"));
+    assert_eq!(c.mount(2, 200_000, 100_000, false, FS_VFAT).unwrap().fs_kind, FS_VFAT);
+    assert!(!c.is_broken());
+}
+
+#[test]
+fn hostile_layouts_break_the_session() {
+    let sectors = DISK_BYTES / 512;
+    let overlap = layout::encode_layout(sectors, 1, &[fat(1, 2048, 100_000), fat(2, 50_000, 100_000)]);
+    let out_of_range = layout::encode_layout(sectors, 1, &[fat(1, 2048, sectors)]);
+    let other_disk = layout::encode_layout(sectors * 2, 1, &[fat(1, 2048, 100)]);
+    let mut hundreds = layout::encode_layout(sectors, 2, &[]);
+    hundreds[12..16].copy_from_slice(&500u32.to_le_bytes());
+    for (what, p) in [("overlap", overlap), ("out of range", out_of_range), ("other disk", other_disk), ("hundreds", hundreds)] {
+        let mut c = layout_server(p, hello_payload(FS_VFAT, false));
+        assert!(matches!(c.layout(DISK_BYTES), Err(CallError::Broken(_))), "{what}");
+        // Nothing more is asked of a VM that lied about the disk.
+        let t = Instant::now();
+        assert!(matches!(c.mount(1, 2048, 100, true, 0), Err(CallError::Broken(_))), "{what}");
+        assert!(t.elapsed() < Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn oversized_layout_is_refused_from_the_header() {
+    let mut c = with_server(|mut s| {
+        if let Some(r) = read_req(&mut s) {
+            let mut b = Vec::new();
+            b.extend_from_slice(&RSP_MAGIC.to_le_bytes());
+            b.extend_from_slice(&r.id.to_le_bytes());
+            b.extend_from_slice(&0i32.to_le_bytes());
+            b.extend_from_slice(&((layout::MAX_LAYOUT_PAYLOAD + 1) as u32).to_le_bytes());
+            let _ = s.write_all(&b);
+            thread::sleep(Duration::from_secs(5));
+        }
+    });
+    let t = Instant::now();
+    assert!(matches!(c.layout(DISK_BYTES), Err(CallError::Broken(_))));
+    assert!(t.elapsed() < Duration::from_millis(200));
+}
+
+#[test]
+fn hostile_mount_replies_break_the_session() {
+    let sectors = DISK_BYTES / 512;
+    for (what, reply_payload, ro) in [
+        ("no filesystem", hello_payload(0, false), false),
+        ("other filesystem", hello_payload(FS_EXFAT, false), false),
+        ("writable when read-only was asked", hello_payload(FS_VFAT, false), true),
+        ("short", hello_payload(FS_VFAT, false)[..10].to_vec(), false),
+    ] {
+        let mut c = layout_server(layout::encode_layout(sectors, 1, &[fat(1, 2048, 100)]), reply_payload);
+        assert!(matches!(c.mount(1, 2048, 100, ro, FS_VFAT), Err(CallError::Broken(_))), "{what}");
     }
 }

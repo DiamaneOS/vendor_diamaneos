@@ -12,55 +12,123 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! fsvmd: serves one removable volume (SD card, USB drive) to Android through FUSE, with the filesystem itself
-//! parsed only inside a protected VM. vold starts it for each public volume:
+//! fsvmd: SD cards, USB drives and OBB images for Android, with their partition tables and filesystems parsed only
+//! inside a protected VM. vold starts it in one of three modes:
 //!
 //! ```text
-//! fsvmd --volume <id> --gid <gid> [--read-only] [--memory-mib <n>]
+//! fsvmd --probe --disk-bytes <n>
+//! fsvmd --volume <id> --gid <gid> --disk-bytes <n> --partition <i> --start <s> --length <l> --fs <vfat|exfat|->
+//!       --meta-bytes <m> [--read-only]
+//! fsvmd --obb --volume <id> --gid <gid> --disk-bytes <n>
 //! ```
 //!
-//! with three descriptors: 3, the volume's block device (vold_device), 4, the /dev/fuse descriptor vold mounted at
-//! /mnt/media_rw/<uuid>, and 5, a pipe. fsvmd writes one byte `R` to the pipe once the VM serves the volume. If the
-//! VM does not come up, fsvmd exits without writing and vold does not mount the volume: there is no other path.
+//! Descriptors: 3 is the whole disk (a vold block device) or the OBB file, read-only for probe and OBB. 4 is the
+//! /dev/fuse descriptor vold mounted (not for probe). 5 is a pipe to vold.
+//!
+//! - Probe: the VM reads the partition table. fsvmd checks the layout (fsvm_proto::layout) and writes it to the pipe
+//!   in the line format below, then stops the VM. vold creates volumes from it, and adds the one adoptable storage
+//!   partition to Android's kernel from it.
+//! - Serve: the VM mounts one partition, which must still be where the probe found it, and fsvmd serves it through
+//!   FUSE. It writes one byte `R` to the pipe once the VM serves the volume.
+//! - OBB: the same for an app's OBB image, read-only, which must be a filesystem without a partition table.
+//!
+//! If the VM does not come up or anything it says is refused, fsvmd exits without writing and vold does not mount
+//! the volume: there is no other path.
+//!
+//! Probe output, ASCII, one record per line, fields separated by one space, at most 16 partitions:
+//!
+//! ```text
+//! LAYOUT 1 <none|mbr|gpt> <count>
+//! PART <index> <public|meta|expand> <start> <length> <vfat|exfat|-> <uuid|-> <part-guid|-> <meta-bytes> <label-hex|->
+//! END
+//! ```
 
 mod fs;
 mod vm;
 
-use anyhow::{bail, ensure, Context, Result};
-use fsvm_proto::{Client, Deadlines, StreamTransport, MAX_IO, PORT};
-use log::{error, info};
+use anyhow::{anyhow, bail, ensure, Context, Result};
+use fsvm_proto::layout::{self, Class, Table};
+use fsvm_proto::{Client, Deadlines, StreamTransport, FS_EXFAT, FS_VFAT, MAX_IO, PORT};
+use log::{error, info, warn};
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-const VOLUME_FD: i32 = 3;
+const DISK_FD: i32 = 3;
 const FUSE_FD: i32 = 4;
-const READY_FD: i32 = 5;
-const DEFAULT_MEMORY_MIB: i32 = 96;
+const PIPE_FD: i32 = 5;
 
+#[derive(Debug, PartialEq, Eq)]
+enum Mode {
+    Probe,
+    Serve,
+    Obb,
+}
+
+#[derive(Debug)]
 struct Args {
+    mode: Mode,
     volume: String,
     gid: u32,
     read_only: bool,
-    memory_mib: i32,
+    disk_bytes: u64,
+    partition: u32,
+    start: u64,
+    length: u64,
+    fs: u32,
+    meta_bytes: u64,
 }
 
 fn parse_args() -> Result<Args> {
-    let mut a = Args { volume: String::new(), gid: u32::MAX, read_only: false, memory_mib: DEFAULT_MEMORY_MIB };
+    let mut a = Args {
+        mode: Mode::Serve,
+        volume: String::new(),
+        gid: u32::MAX,
+        read_only: false,
+        disk_bytes: 0,
+        partition: u32::MAX,
+        start: 0,
+        length: 0,
+        fs: u32::MAX,
+        meta_bytes: 0,
+    };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
+        let mut val = || it.next().with_context(|| arg.clone());
         match arg.as_str() {
-            "--volume" => a.volume = it.next().context("--volume")?,
-            "--gid" => a.gid = it.next().context("--gid")?.parse()?,
+            "--probe" => a.mode = Mode::Probe,
+            "--obb" => a.mode = Mode::Obb,
+            "--volume" => a.volume = val()?,
+            "--gid" => a.gid = val()?.parse()?,
             "--read-only" => a.read_only = true,
-            "--memory-mib" => a.memory_mib = it.next().context("--memory-mib")?.parse()?,
+            "--disk-bytes" => a.disk_bytes = val()?.parse()?,
+            "--partition" => a.partition = val()?.parse()?,
+            "--start" => a.start = val()?.parse()?,
+            "--length" => a.length = val()?.parse()?,
+            "--meta-bytes" => a.meta_bytes = val()?.parse()?,
+            "--fs" => {
+                a.fs = match val()?.as_str() {
+                    "vfat" => FS_VFAT,
+                    "exfat" => FS_EXFAT,
+                    "-" => 0,
+                    other => bail!("--fs {other}"),
+                }
+            }
             _ => bail!("unknown argument {arg}"),
         }
     }
-    ensure!(!a.volume.is_empty() && a.gid != u32::MAX, "--volume and --gid are required");
-    ensure!((64..=512).contains(&a.memory_mib), "--memory-mib out of range");
+    ensure!(a.disk_bytes > 0 && a.disk_bytes % 512 == 0, "--disk-bytes must be a positive multiple of 512");
+    match a.mode {
+        Mode::Probe => {}
+        Mode::Serve => ensure!(
+            !a.volume.is_empty() && a.gid != u32::MAX && a.partition != u32::MAX && a.length > 0 && a.fs != u32::MAX,
+            "--volume, --gid, --partition, --start, --length and --fs are required"
+        ),
+        Mode::Obb => ensure!(!a.volume.is_empty() && a.gid != u32::MAX, "--volume and --gid are required"),
+    }
     Ok(a)
 }
 
@@ -76,41 +144,131 @@ fn check_no_capabilities() -> Result<()> {
     bail!("no CapEff in /proc/self/status")
 }
 
-/// Takes ownership of an inherited descriptor.
+/// Takes ownership of an inherited descriptor and marks it close-on-exec, so that the VM manager fsvmd starts gets
+/// only what fsvmd passes it over binder.
 fn inherited(fd: i32) -> Result<File> {
     // SAFETY: fcntl F_GETFD only reads the descriptor flags of `fd`.
     ensure!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0, "descriptor {fd} not inherited");
+    // SAFETY: F_SETFD only changes the descriptor flags of `fd`.
+    ensure!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == 0, "descriptor {fd}: F_SETFD");
     // SAFETY: vold hands these descriptors to fsvmd and nothing else in this process uses them.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-fn run() -> Result<()> {
-    check_no_capabilities()?;
-    let args = parse_args()?;
-    let volume = inherited(VOLUME_FD)?;
-    let fuse_dev = inherited(FUSE_FD)?;
-    let mut ready = inherited(READY_FD)?;
-    ensure!(volume.metadata()?.file_type().is_block_device(), "descriptor 3 is not a block device");
-    ensure!(fuse_dev.metadata()?.file_type().is_char_device(), "descriptor 4 is not /dev/fuse");
+/// The open flags of a descriptor. Probe and OBB disks must be read-only.
+fn access_mode(f: &File) -> Result<i32> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fcntl F_GETFL only reads the status flags of a descriptor this process owns.
+    let fl = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_GETFL) };
+    ensure!(fl >= 0, "F_GETFL: {}", std::io::Error::last_os_error());
+    Ok(fl & libc::O_ACCMODE)
+}
 
-    info!("volume {}: starting the filesystem VM", args.volume);
-    let vm = vm::Vm::start(volume, !args.read_only, args.memory_mib)?;
-    let stream = vm.connect(PORT, Duration::from_secs(15))?;
-    let mut client = Client::new(StreamTransport(stream), Deadlines::default());
-    let hello = client.hello().map_err(|e| anyhow::anyhow!("hello: {e:?}"))?;
-    let read_only = args.read_only || hello.read_only;
+type VmClient = Client<StreamTransport<UnixStream>>;
+
+/// Starts the VM, connects and checks the protocol version. A VM that cannot start is retried a few times: a
+/// protected VM start can be refused while memory is scattered, right after boot.
+fn start_vm(disk: &File, writable: bool, memory_mib: u32) -> Result<(vm::Vm, VmClient)> {
+    let mut last = anyhow!("not started");
+    for (attempt, wait) in [0u64, 1, 2].into_iter().enumerate() {
+        if wait > 0 {
+            std::thread::sleep(Duration::from_secs(wait));
+        }
+        let vm = match vm::Vm::start(disk.try_clone()?, writable, memory_mib) {
+            Ok(vm) => vm,
+            Err(e) => {
+                warn!("filesystem VM start {} failed: {e:?}", attempt + 1);
+                last = e;
+                continue;
+            }
+        };
+        let stream = vm.connect(PORT, Duration::from_secs(10))?;
+        let mut client = Client::new(StreamTransport(stream), Deadlines::default());
+        let hello = client.hello().map_err(|e| anyhow!("hello: {e:?}"))?;
+        ensure!(hello.fs_kind == 0, "a fresh VM claims a mounted filesystem");
+        return Ok((vm, client));
+    }
+    Err(last)
+}
+
+fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
+    ensure!(access_mode(&disk)? == libc::O_RDONLY, "the probe disk must be read-only");
+    let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB)?;
+    let l = client.layout(args.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
+    drop(vm);
+    if l.dropped_labels > 0 {
+        warn!("{} volume labels refused", l.dropped_labels);
+    }
+    info!("disk layout: {:?}, {} partitions", l.table, l.parts.len());
+    pipe.write_all(layout::probe_text(&l).as_bytes()).context("telling vold")?;
+    Ok(())
+}
+
+fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
+    let fuse_dev = inherited(FUSE_FD)?;
+    ensure!(fuse_dev.metadata()?.file_type().is_char_device(), "descriptor 4 is not /dev/fuse");
+    let obb = args.mode == Mode::Obb;
+    let read_only = args.read_only || obb;
+    if obb {
+        ensure!(access_mode(&disk)? == libc::O_RDONLY, "an OBB must be opened read-only");
+        ensure!(disk.metadata()?.file_type().is_file(), "descriptor 3 is not a file");
+        // The VM sees whole sectors. An OBB's signature footer after the image is not part of the filesystem.
+        ensure!(disk.metadata()?.len() & !511 == args.disk_bytes, "the OBB changed size");
+    }
+
+    // The memory follows the metadata the filesystem needs. For an OBB it is not known before the VM reads it, and
+    // OBB images are small.
+    let memory = if obb { layout::MIN_SERVE_MIB } else { layout::serve_memory_mib(args.fs, args.meta_bytes) };
+    info!("volume {}: starting the filesystem VM with {memory} MiB", args.volume);
+    let (vm, mut client) = start_vm(&disk, !read_only, memory)?;
+
+    // The partition must still be what the probe reported: same place, a filesystem Android may serve.
+    let l = client.layout(args.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
+    let part = if obb {
+        ensure!(l.table == Table::None && l.parts.len() == 1, "an OBB must be one filesystem without a partition table");
+        l.parts[0].clone()
+    } else {
+        l.parts
+            .iter()
+            .find(|p| p.index == args.partition && p.start == args.start && p.length == args.length)
+            .cloned()
+            .ok_or_else(|| anyhow!("partition {} is no longer where the probe found it", args.partition))?
+    };
+    ensure!(part.class == Class::Public, "partition {} is not a public volume", part.index);
+    ensure!(part.fs_kind != 0, "no FAT or exFAT filesystem on partition {}", part.index);
+    ensure!(obb || args.fs == 0 || part.fs_kind == args.fs, "the filesystem changed since the probe");
+    let hello = client
+        .mount(part.index, part.start, part.length, read_only, part.fs_kind)
+        .map_err(|e| anyhow!("mount: {e:?}"))?;
+    let read_only = read_only || hello.read_only;
     info!("volume {}: VM serves filesystem kind {}, read-only {}", args.volume, hello.fs_kind, read_only);
 
-    ready.write_all(b"R").context("telling vold")?;
-    drop(ready);
+    pipe.write_all(b"R").context("telling vold")?;
+    drop(pipe);
 
-    let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid);
+    let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb);
     let mut config = fuse::FuseConfig::new();
     config.dev_fuse(fuse_dev).max_read(MAX_IO).max_write(MAX_IO).num_threads(1);
     let r = config.enter_message_loop(filesystem);
     info!("volume {}: FUSE loop ended: {r:?}", args.volume);
     drop(vm);
     Ok(())
+}
+
+fn run() -> Result<()> {
+    check_no_capabilities()?;
+    let args = parse_args()?;
+    let disk = inherited(DISK_FD)?;
+    let pipe = inherited(PIPE_FD)?;
+    let ft = disk.metadata()?.file_type();
+    match args.mode {
+        Mode::Obb => ensure!(ft.is_file(), "descriptor 3 is not a file"),
+        _ => ensure!(ft.is_block_device(), "descriptor 3 is not a block device"),
+    }
+    match args.mode {
+        Mode::Probe => probe(&args, disk, pipe),
+        Mode::Serve | Mode::Obb => serve(&args, disk, pipe),
+    }
 }
 
 fn main() {

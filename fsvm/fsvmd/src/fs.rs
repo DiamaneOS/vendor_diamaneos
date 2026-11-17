@@ -73,18 +73,23 @@ pub struct FsvmFs {
     state: Mutex<State>,
     read_only: bool,
     gid: u32,
+    dir_mode: u32,
+    file_mode: u32,
 }
 
 impl FsvmFs {
-    pub fn new(client: Client<StreamTransport<UnixStream>>, root_guest: u64, read_only: bool, gid: u32) -> Self {
+    /// `obb`: an app's OBB image, read-only for its owner's group (vold mounted these with fmask and dmask 0227).
+    pub fn new(client: Client<StreamTransport<UnixStream>>, root_guest: u64, read_only: bool, gid: u32, obb: bool) -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(ROOT, Node { guest: root_guest, parent: ROOT, name: Vec::new(), kind: Kind::Dir, lookups: 1 });
         let mut by_guest = HashMap::new();
         by_guest.insert(root_guest, ROOT);
         FsvmFs {
             state: Mutex::new(State { client, nodes, by_guest, next_ino: ROOT + 1, listings: HashMap::new(), next_handle: 1 }),
-            read_only,
+            read_only: read_only || obb,
             gid,
+            dir_mode: if obb { 0o550 } else { 0o770 },
+            file_mode: if obb { 0o440 } else { 0o660 },
         }
     }
 
@@ -95,14 +100,14 @@ impl FsvmFs {
         st.st_ino = ino;
         st.st_uid = 0;
         st.st_gid = self.gid;
-        // As vold mounted cards before: group read and write, nothing for others, never executable.
+        // As vold mounted cards before: group read and write, nothing for others, never executable. OBBs: read only.
         match a.kind {
             Kind::Dir => {
-                st.st_mode = libc::S_IFDIR | 0o770;
+                st.st_mode = libc::S_IFDIR | self.dir_mode;
                 st.st_nlink = 2;
             }
             Kind::File => {
-                st.st_mode = libc::S_IFREG | 0o660;
+                st.st_mode = libc::S_IFREG | self.file_mode;
                 st.st_nlink = 1;
             }
         }

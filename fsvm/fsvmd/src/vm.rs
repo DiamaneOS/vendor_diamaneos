@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Starts the filesystem VM: a raw protected VM with our guest kernel and the fsvm initramfs from the
-//! virtualization APEX, the volume as its first disk, and a fresh instance disk in memory.
+//! virtualization APEX, the whole disk (or an OBB image) as its first disk, and a fresh instance disk in memory.
 
 use android_system_virtualizationservice::aidl::android::system::virtualizationservice::{
     CpuOptions::CpuOptions, CpuOptions::CpuTopology::CpuTopology, DiskImage::DiskImage,
@@ -56,7 +56,7 @@ fn memfd(name: &CStr) -> Result<File> {
 
 impl Vm {
     /// Starts the VM with `volume` as its first disk.
-    pub fn start(volume: File, writable: bool, memory_mib: i32) -> Result<Vm> {
+    pub fn start(volume: File, writable: bool, memory_mib: u32) -> Result<Vm> {
         let service = VirtualizationService::new().context("starting the VM manager")?;
         let manager = service.connect().context("connecting to the VM manager")?;
 
@@ -94,7 +94,7 @@ impl Vm {
                 },
             ],
             protectedVm: true,
-            memoryMib: memory_mib,
+            memoryMib: memory_mib as i32,
             cpuOptions: CpuOptions { cpuTopology: CpuTopology::CpuCount(1) },
             platformVersion: "~1.0".into(),
             ..Default::default()

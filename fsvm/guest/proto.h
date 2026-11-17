@@ -15,7 +15,7 @@
  */
 
 /*
- * The filesystem VM protocol, version 2, the guest's side. The definitions and limits mirror fsvm_proto
+ * The filesystem VM protocol, version 3, the guest's side. The definitions and limits mirror fsvm_proto
  * (proto/src/lib.rs), which is the reference. Little endian, one request and one reply.
  */
 #ifndef FSVM_PROTO_H
@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #define FSVM_PORT 5690u
-#define FSVM_VERSION 2u
+#define FSVM_VERSION 3u
 #define FSVM_REQ_MAGIC 0x32564d46u /* "FMV2" */
 #define FSVM_RSP_MAGIC 0x32524d46u /* "FMR2" */
 
@@ -45,6 +45,8 @@ enum {
 	FSVM_STATFS = 14,
 	FSVM_FSYNC = 15,
 	FSVM_FORGET = 16,
+	FSVM_LAYOUT = 17, /* the partitions this VM read from its disk (layout.rs) */
+	FSVM_MOUNT = 18,  /* arg: partition index (0: whole disk), node: start, node2: length, flags bit 0: read-only */
 };
 
 #define FSVM_MAX_IO (128u * 1024u)
@@ -56,6 +58,12 @@ enum {
 #define FSVM_KIND_DIR 2u
 #define FSVM_FS_VFAT 1u
 #define FSVM_FS_EXFAT 2u
+
+#define FSVM_TABLE_NONE 0u
+#define FSVM_TABLE_MBR 1u
+#define FSVM_TABLE_GPT 2u
+#define FSVM_MAX_LAYOUT_ENTRIES 16u
+#define FSVM_MAX_LABEL 47u
 
 struct fsvm_req {
 	uint32_t magic;
@@ -108,7 +116,33 @@ struct fsvm_dir_page {
 	uint32_t reserved;
 } __attribute__((packed));
 
+struct fsvm_layout_header {
+	uint64_t disk_sectors;
+	uint32_t table;
+	uint32_t count;
+	uint8_t reserved[16];
+} __attribute__((packed));
+
+struct fsvm_layout_entry {
+	uint32_t index;
+	uint32_t flags; /* bit 0: serial is valid */
+	uint64_t start;
+	uint64_t length;
+	uint8_t mbr_type;
+	uint8_t pad[3];
+	uint8_t type_guid[16];
+	uint8_t part_guid[16];
+	uint32_t fs_kind;
+	uint32_t serial;
+	uint64_t meta_bytes;
+	uint8_t label_len;
+	uint8_t label[FSVM_MAX_LABEL];
+	uint8_t reserved[4];
+} __attribute__((packed));
+
 _Static_assert(sizeof(struct fsvm_req) == 48, "request header");
+_Static_assert(sizeof(struct fsvm_layout_header) == 32, "layout header");
+_Static_assert(sizeof(struct fsvm_layout_entry) == 128, "layout entry");
 _Static_assert(sizeof(struct fsvm_rsp) == 16, "reply header");
 _Static_assert(sizeof(struct fsvm_attr) == 32, "attr");
 _Static_assert(sizeof(struct fsvm_hello) == 24, "hello");

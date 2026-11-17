@@ -15,11 +15,15 @@
 //! fsvmctl: a test client for the filesystem VM, through the same checking client fsvmd uses. Test builds only.
 //!
 //! ```text
-//! fsvmctl CID hello | ls PATH | cat PATH | put LOCAL PATH | mkdir PATH | rm PATH | stat
+//! fsvmctl CID [--disk-bytes N] [--part I] [--ro] layout | hello | ls PATH | cat PATH | put LOCAL PATH | mkdir PATH |
+//!         rm PATH | stat
 //! ```
-//! PATH is relative to the volume's root, "" or "/" for the root. `cat` writes the file to stdout.
+//! PATH is relative to the volume's root, "" or "/" for the root. `cat` writes the file to stdout. A fresh VM has
+//! nothing mounted: fsvmctl reads the layout (checked against `--disk-bytes`, the image size) and mounts partition
+//! `--part` (default: the first with a filesystem), read-only with `--ro`. `layout` only prints the checked layout.
 
 use fsvm_proto::client::CallError;
+use fsvm_proto::layout::guid_text;
 use fsvm_proto::{Client, Deadlines, Kind, StreamTransport, MAX_IO, PORT};
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
@@ -69,15 +73,51 @@ fn split(path: &str) -> (&str, &str) {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: fsvmctl CID hello|ls|cat|put|mkdir|rm|stat ...");
+        eprintln!("usage: fsvmctl CID [--disk-bytes N] [--part I] [--ro] layout|hello|ls|cat|put|mkdir|rm|stat ...");
         exit(2);
     }
     let cid: u32 = args[1].parse().unwrap_or_else(|_| exit(2));
+    let (mut disk_bytes, mut part, mut ro) = (0u64, None::<u32>, false);
+    while args.len() > 2 && args[2].starts_with("--") {
+        let flag = args.remove(2);
+        match flag.as_str() {
+            "--ro" => ro = true,
+            "--disk-bytes" => disk_bytes = args.remove(2).parse().unwrap_or_else(|_| exit(2)),
+            "--part" => part = Some(args.remove(2).parse().unwrap_or_else(|_| exit(2))),
+            _ => exit(2),
+        }
+    }
     let mut c = Client::new(StreamTransport(connect(cid)), Deadlines::default());
-    let hello = c.hello().unwrap_or_else(|e| die("hello", e));
+    let mut hello = c.hello().unwrap_or_else(|e| die("hello", e));
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
+    if arg(2) == "layout" || hello.fs_kind == 0 {
+        let t = std::time::Instant::now();
+        let l = c.layout(disk_bytes).unwrap_or_else(|e| die("layout", e));
+        if arg(2) == "layout" {
+            println!("table {:?}, {} partitions, {} labels refused, {} ms", l.table, l.parts.len(), l.dropped_labels, t.elapsed().as_millis());
+            for p in &l.parts {
+                println!(
+                    "part {} {:?} start {} length {} fs {} uuid {} label {:?} guid {} meta {}",
+                    p.index, p.class, p.start, p.length, p.fs_kind, p.fs_uuid.as_deref().unwrap_or("-"), p.label,
+                    p.part_guid.as_ref().map(guid_text).unwrap_or_else(|| "-".into()), p.meta_bytes
+                );
+            }
+            return;
+        }
+        let p = match part {
+            Some(i) => l.parts.iter().find(|p| p.index == i),
+            None => l.parts.iter().find(|p| p.fs_kind != 0),
+        }
+        .unwrap_or_else(|| {
+            eprintln!("no such partition with a filesystem");
+            exit(1)
+        });
+        let t = std::time::Instant::now();
+        hello = c.mount(p.index, p.start, p.length, ro, p.fs_kind).unwrap_or_else(|e| die("mount", e));
+        eprintln!("mounted partition {} in {} ms", p.index, t.elapsed().as_millis());
+    }
     match arg(2) {
         "hello" => println!("fs kind {} read-only {} root {}", hello.fs_kind, hello.read_only, hello.root),
         "stat" => {

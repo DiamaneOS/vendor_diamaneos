@@ -80,7 +80,10 @@ rust_binary {
 
 cc_binary {
     name: "fsvm_guest_init",
-    srcs: ["guest/fsvm_guest.c"],
+    srcs: [
+        "guest/fsvm_guest.c",
+        "guest/table.c",
+    ],
     static_executable: true,
     stl: "none",
     cflags: [
@@ -91,6 +94,22 @@ cc_binary {
     ],
     installable: false,
     compile_multilib: "64",
+}
+
+// The guest's partition table reader on hostile tables, on the host (guest/table_test.c).
+cc_test_host {
+    name: "fsvm_guest_table_test",
+    srcs: [
+        "guest/table.c",
+        "guest/table_test.c",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    test_suites: ["general-tests"],
 }
 
 python_binary_host {

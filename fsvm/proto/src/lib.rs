@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The protocol between fsvmd on Android and the filesystem VM, version 2.
+//! The protocol between fsvmd on Android and the filesystem VM, version 3.
 //!
 //! A protected VM mounts a removable filesystem (SD card, USB drive) with its own kernel and serves it over vsock.
 //! The VM is assumed hostile: a crafted filesystem may have taken over its kernel. So this crate decodes every reply
@@ -27,18 +27,23 @@
 //! Reply header (16 bytes): magic `FMR2`, id u32, status i32 (0, or a negative Linux errno), len u32. Then len
 //! payload bytes. An error reply carries no payload.
 //!
+//! A VM starts with nothing mounted. LAYOUT reports the partitions it read from the disk (phase 2: Android's kernel
+//! reads no partition table of an SD card or USB disk, see `layout`). MOUNT then mounts one of them, once per VM,
+//! and replies like HELLO. Every other operation needs a mounted volume.
+//!
 //! The guest's mirror of these definitions is `guest/proto.h`.
 
 #![forbid(unsafe_code)]
 
 pub mod client;
+pub mod layout;
 pub mod names;
 
 pub use client::{Client, Deadlines, StreamTransport, Transport};
 
 pub const REQ_MAGIC: u32 = u32::from_le_bytes(*b"FMV2");
 pub const RSP_MAGIC: u32 = u32::from_le_bytes(*b"FMR2");
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const PORT: u32 = 5690;
 
 pub const REQ_HEADER: usize = 48;
@@ -86,6 +91,8 @@ pub enum Op {
     Statfs = 14,
     Fsync = 15,
     Forget = 16,
+    Layout = 17,
+    Mount = 18,
 }
 
 /// The kinds of node a filesystem on a card can hold. FAT and exFAT have no links or special files.
@@ -147,6 +154,7 @@ pub enum ProtoError {
     BadLength { op: Op, len: u32 },
     BadAttr(&'static str),
     BadDirPage(&'static str),
+    BadLayout(layout::LayoutError),
     NotRunning,
 }
 
@@ -269,7 +277,7 @@ pub fn encode_attr(a: &Attr) -> [u8; ATTR_SIZE] {
     b
 }
 
-/// What the VM says about itself.
+/// What the VM says about itself. `fs_kind` is 0 while nothing is mounted (HELLO on a fresh VM).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hello {
     pub fs_kind: u32,
@@ -285,8 +293,11 @@ pub fn decode_hello(b: &[u8]) -> Result<Hello, ProtoError> {
         return Err(ProtoError::BadLength { op: Op::Hello, len: b.len() as u32 });
     }
     let fs_kind = le_u32(b, 4);
-    if fs_kind != FS_VFAT && fs_kind != FS_EXFAT {
+    if fs_kind != 0 && fs_kind != FS_VFAT && fs_kind != FS_EXFAT {
         return Err(ProtoError::BadAttr("filesystem kind"));
+    }
+    if le_u32(b, 8) & !1 != 0 || le_u32(b, 12) != 0 {
+        return Err(ProtoError::BadAttr("hello flags"));
     }
     let root = le_u64(b, 16);
     if root == 0 {
@@ -507,7 +518,15 @@ mod tests {
         h[4..8].copy_from_slice(&FS_EXFAT.to_le_bytes());
         h[16..24].copy_from_slice(&1u64.to_le_bytes());
         assert_eq!(decode_hello(&h).unwrap(), Hello { fs_kind: FS_EXFAT, read_only: false, root: 1 });
+        h[8] = 2;
+        assert!(decode_hello(&h).is_err());
+        h[8] = 0;
+        h[4] = 0;
+        assert_eq!(decode_hello(&h).unwrap().fs_kind, 0);
         h[4] = 9;
+        assert!(decode_hello(&h).is_err());
+        h[4] = 2;
+        h[0] = 2; // version 2
         assert!(decode_hello(&h).is_err());
         let mut s = [0u8; STATFS_SIZE];
         s[0..8].copy_from_slice(&100u64.to_le_bytes());

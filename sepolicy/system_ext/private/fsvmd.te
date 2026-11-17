@@ -12,7 +12,9 @@ allow vold fsvmd:process { sigkill signal };
 # /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the volume.
 allow fsvmd vold:fd use;
 allow fsvmd vold:fifo_file write;
-allow fsvmd vold_device:blk_file getattr;
+# The kernel checks a descriptor against its open mode when fsvmd inherits it and when fsvmd passes it on over binder,
+# so fsvmd holds read and write on the disk it was handed, though it never reads it itself. It cannot open one.
+allow fsvmd vold_device:blk_file { read write getattr };
 allow fsvmd fuse_device:chr_file { read write getattr };
 
 # The guest kernel and initramfs in the virtualization APEX.
@@ -25,7 +27,25 @@ tmpfs_domain(fsvmd)
 virtualizationservice_use(fsvmd)
 allow { fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fsvmd_tmpfs:file { read write getattr };
 # Only fsvmd's VM manager and crosvm get the volume, through the descriptor vold opened. crosvm reads and writes it
-# as the VM's raw disk. The VM manager only checks its label.
+# as the VM's raw disk. The VM manager checks its label and passes it on, which needs the open mode's permissions.
 allow { fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } vold:fd use;
-allow fsvmd_virtualizationmanager vold_device:blk_file getattr;
+allow fsvmd_virtualizationmanager vold_device:blk_file { read write getattr };
 allow fsvmd_virtmgr_crosvm vold_device:blk_file { read write getattr };
+
+# Phase 2: Android's kernel reads no partition table of an SD card or USB disk (CONFIG_BLK_NO_EXTERNAL_PART_SCAN).
+# vold, and only vold, adds a partition to it with BLKPG: the adoptable storage partition, and a public volume's
+# partition for the time of an fsck or format, at the range the filesystem VM read and fsvmd checked. The kernel
+# allows one such partition per disk at a time and refuses rescans and resizing.
+allowxperm vold vold_device:blk_file ioctl BLKPG;
+# blkid_untrusted holds ioctl on vold_device without an ioctl list, but no CAP_SYS_ADMIN, which BLKPG needs.
+neverallowxperm { domain -vold -blkid_untrusted } vold_device:blk_file ioctl BLKPG;
+neverallow blkid_untrusted self:global_capability_class_set sys_admin;
+
+# Phase 2: an app's OBB image is served from the filesystem VM, read-only, instead of a loop device and a FAT mount
+# in Android's kernel. vold opens the file below /data/media read-only and hands it over. fsvmd checks its size,
+# the VM manager its label, and crosvm reads it as the VM's raw disk. None of them may write it.
+allow fsvmd media_rw_data_file:file { read getattr };
+allow fsvmd_virtualizationmanager media_rw_data_file:file { read getattr };
+allow fsvmd_virtmgr_crosvm media_rw_data_file:file { read getattr };
+neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } media_rw_data_file:file { open write append };
+neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } vold_device:blk_file open;
