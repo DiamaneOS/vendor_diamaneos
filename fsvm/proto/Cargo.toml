@@ -1,0 +1,12 @@
+[package]
+name = "fsvm_proto"
+version = "0.1.0"
+edition = "2021"
+description = "Wire protocol and checking client between fsvmd on Android and the filesystem VM"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

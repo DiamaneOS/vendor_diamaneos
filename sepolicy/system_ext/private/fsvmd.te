@@ -1,0 +1,31 @@
+# DiamaneOS: fsvmd serves an SD card or USB drive to Android through FUSE, with the filesystem parsed only inside a
+# protected VM (fsvm/, system/vold fs/Fsvm.cpp). Each rule below is what that path needs and nothing more.
+type fsvmd, domain, coredomain;
+type fsvmd_exec, system_file_type, exec_type, file_type;
+type fsvmd_tmpfs, file_type;
+
+# vold starts fsvmd for each public FAT or exFAT volume and stops it after unmounting.
+domain_auto_trans(vold, fsvmd_exec, fsvmd)
+allow vold fsvmd:process { sigkill signal };
+
+# The descriptors vold hands over: the volume's block device (3), the /dev/fuse descriptor it mounted at
+# /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the volume.
+allow fsvmd vold:fd use;
+allow fsvmd vold:fifo_file write;
+allow fsvmd vold_device:blk_file getattr;
+allow fsvmd fuse_device:chr_file { read write getattr };
+
+# The guest kernel and initramfs in the virtualization APEX.
+allow fsvmd system_file:file { open read getattr };
+
+# The VM's instance disk is a memfd, read and written by fsvmd's own VM manager and crosvm.
+tmpfs_domain(fsvmd)
+
+# fsvmd starts the filesystem VM through its own VM manager and talks to it over vsock.
+virtualizationservice_use(fsvmd)
+allow { fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fsvmd_tmpfs:file { read write getattr };
+# Only fsvmd's VM manager and crosvm get the volume, through the descriptor vold opened. crosvm reads and writes it
+# as the VM's raw disk. The VM manager only checks its label.
+allow { fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } vold:fd use;
+allow fsvmd_virtualizationmanager vold_device:blk_file getattr;
+allow fsvmd_virtmgr_crosvm vold_device:blk_file { read write getattr };

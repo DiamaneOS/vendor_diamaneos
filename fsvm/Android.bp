@@ -1,0 +1,110 @@
+// Copyright (C) 2026 DiamaneOS
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// SD cards and USB drives mounted in a protected VM: fsvmd on Android, the VM's /init, and the protocol between them.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_library {
+    name: "libfsvm_proto",
+    crate_name: "fsvm_proto",
+    srcs: ["proto/src/lib.rs"],
+    edition: "2021",
+    host_supported: true,
+    system_ext_specific: true,
+}
+
+rust_test_host {
+    name: "fsvm_proto_test",
+    crate_name: "fsvm_proto",
+    srcs: ["proto/src/lib.rs"],
+    edition: "2021",
+    test_suites: ["general-tests"],
+}
+
+rust_test_host {
+    name: "fsvm_proto_hostile_test",
+    crate_name: "hostile",
+    srcs: ["proto/tests/hostile.rs"],
+    edition: "2021",
+    rustlibs: ["libfsvm_proto"],
+    test_suites: ["general-tests"],
+}
+
+rust_binary {
+    name: "fsvmd",
+    crate_name: "fsvmd",
+    srcs: ["fsvmd/src/main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    system_ext_specific: true,
+    rustlibs: [
+        "android.system.virtualizationservice-rust",
+        "libandroid_logger",
+        "libanyhow",
+        "libbinder_rs",
+        "libfsvm_proto",
+        "libfuse_rust",
+        "liblibc",
+        "liblog_rust",
+        "libvmclient",
+    ],
+}
+
+// Test client for the phone checks (scripts/fsprod-phone.sh), through the same checking client. In no product's
+// packages, so it never reaches an image.
+rust_binary {
+    name: "fsvmctl",
+    crate_name: "fsvmctl",
+    srcs: ["fsvmctl/src/main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    rustlibs: [
+        "libfsvm_proto",
+        "liblibc",
+    ],
+}
+
+cc_binary {
+    name: "fsvm_guest_init",
+    srcs: ["guest/fsvm_guest.c"],
+    static_executable: true,
+    stl: "none",
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    installable: false,
+    compile_multilib: "64",
+}
+
+python_binary_host {
+    name: "fsvm_mkinitrd",
+    main: "guest/mkinitrd.py",
+    srcs: ["guest/mkinitrd.py"],
+}
+
+// The initramfs. The virtualization APEX ships it as etc/fsvm_initrd.img, next to the guest kernel signed for it
+// (packages/modules/Virtualization guest/diamaneos, see README.md).
+genrule {
+    name: "fsvm_guest_initrd",
+    tools: ["fsvm_mkinitrd"],
+    device_first_srcs: [":fsvm_guest_init"],
+    out: ["fsvm_initrd.img"],
+    cmd: "$(location fsvm_mkinitrd) $(out) $(in)",
+}

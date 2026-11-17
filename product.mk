@@ -29,6 +29,13 @@ $(call inherit-product, vendor/diamaneos/config/common.mk)
 # System_ext policy for DiamaneOS features of the platform forks (sepolicy/).
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += vendor/diamaneos/sepolicy/system_ext/private
 
+# SD cards and USB drives served from a protected VM (fsvm/). Devices whose builds offer protected VMs set
+# DIAMANEOS_FS_IN_VM := true. Then vold no longer mounts FAT or exFAT in Android's kernel, with no fallback.
+ifeq ($(DIAMANEOS_FS_IN_VM),true)
+$(call soong_config_set_bool,diamaneos,fs_in_vm,true)
+PRODUCT_PACKAGES += fsvmd
+endif
+
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += \
     DiamaneOSDocumentsUIOverlay \
