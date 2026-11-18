@@ -273,3 +273,21 @@ cc_binary {
     installable: false,
     compile_multilib: "64",
 }
+
+// fsvmd's FUSE side on the host's real FUSE driver, mounted with vold's options in a user namespace, against an
+// in-memory filesystem VM (fsvmd/tests/fuse_host.rs). Prints SKIPPED where the host has no user namespaces.
+rust_test_host {
+    name: "fsvmd_fuse_test",
+    crate_name: "fsvmd_fuse_test",
+    srcs: ["fsvmd/tests/fuse_host.rs"],
+    edition: "2021",
+    test_harness: false,
+    rustlibs: [
+        "libanyhow",
+        "libfsvm_proto",
+        "libfuse_rust",
+        "liblibc",
+        "liblog_rust",
+    ],
+    test_suites: ["general-tests"],
+}

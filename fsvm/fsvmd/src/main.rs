@@ -49,7 +49,7 @@ mod vm;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use fsvm_proto::layout::{self, Class, Table};
-use fsvm_proto::{Client, Deadlines, StreamTransport, FS_EXFAT, FS_VFAT, MAX_IO, PORT};
+use fsvm_proto::{Client, Deadlines, StreamTransport, FS_EXFAT, FS_VFAT, PORT};
 use log::{error, info, warn};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -416,11 +416,9 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     drop(pipe);
 
     let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, Box::new(served));
-    let mut config = fuse::FuseConfig::new();
-    config.dev_fuse(fuse_dev).max_read(MAX_IO).max_write(MAX_IO).num_threads(1);
     let closer = filesystem.closer();
     watch_sigterm(filesystem.closer())?;
-    let r = config.enter_message_loop(filesystem);
+    let r = fs::serve_fuse(fuse_dev, filesystem);
     info!("volume {}: FUSE loop ended: {r:?}", args.volume);
     // vold unmounted the volume. Everything is written back and the filesystem unmounted in the VM (marked clean),
     // and the VM stopped, before this process ends. vold waits for this (fs/Fsvm.cpp Stop) and learns from the exit

@@ -572,6 +572,17 @@ impl Closer {
     }
 }
 
+/// Serves FUSE on vold's /dev/fuse until the mount goes. The loop's read buffer, the max_write the kernel learns in
+/// INIT (FileSystem::max_buffer_size) and vold's `max_read=131072` mount option (fs/Fsvm.cpp) are all MAX_IO, the
+/// most one protocol READ or WRITE carries. The buffer is taken from the filesystem itself, so the two cannot differ.
+pub fn serve_fuse<F: FileSystem + Sync + Send>(dev_fuse: std::fs::File, fs: F) -> fuse::Result<()> {
+    let io = fs.max_buffer_size();
+    assert_eq!(io, MAX_IO, "the FUSE buffer must hold one protocol READ or WRITE");
+    let mut config = fuse::FuseConfig::new();
+    config.dev_fuse(dev_fuse).max_read(io).max_write(io).num_threads(1);
+    config.enter_message_loop(fs)
+}
+
 pub struct DirIter {
     entries: Vec<(CString, Kind, u64)>,
     offset: u64,
@@ -601,6 +612,13 @@ impl FileSystem for FsvmFs {
 
     fn init(&self, _capable: FsOptions) -> io::Result<FsOptions> {
         Ok(FsOptions::empty())
+    }
+
+    /// The max_write crosvm's INIT reply gives the kernel. It must equal the buffer the FUSE loop reads /dev/fuse
+    /// with (serve_fuse): the kernel refuses every read smaller than its header room plus max_write with EINVAL
+    /// (fs/fuse/dev.c, fuse_dev_do_read). crosvm's default of 1 MiB ended each card's FUSE loop right after INIT.
+    fn max_buffer_size(&self) -> u32 {
+        MAX_IO
     }
 
     fn lookup(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
