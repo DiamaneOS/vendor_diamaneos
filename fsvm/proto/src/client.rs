@@ -269,6 +269,51 @@ impl<T: Transport> Client<T> {
         }
     }
 
+    /// Mounts writable, as fsvmd serves cards: a volume marked dirty is mounted read-only at once and checked
+    /// afterwards (`check_poll`, `check_switch`), and HELLO's `check_pending` says so. Nothing is checked before the
+    /// mount, so the mount keeps to its own deadline.
+    pub fn mount_check_later(&mut self, index: u32, start: u64, length: u64, expect_fs: u32) -> CallResult<Hello> {
+        let budget = self.deadlines.mount;
+        let req = Request { arg: index as u64, node: start, node2: length, flags: 2, ..Default::default() };
+        let p = self.call(req, Op::Mount, HELLO_SIZE as u32, budget)?;
+        match decode_hello(&p) {
+            Ok(h) if h.fs_kind == 0 => self.fail("mount: no filesystem".into()),
+            Ok(h) if expect_fs != 0 && h.fs_kind != expect_fs => {
+                self.fail(format!("mount: filesystem {} where the layout said {expect_fs}", h.fs_kind))
+            }
+            Ok(h) => Ok(h),
+            Err(e) => self.fail(format!("mount: {e:?}")),
+        }
+    }
+
+    /// Starts the check after the mount, or tells how it goes and how long it ran.
+    pub fn check_poll(&mut self) -> CallResult<(CheckState, Duration)> {
+        let budget = self.deadlines.meta;
+        let p = self.call(Request { arg: 0, ..Default::default() }, Op::Check, 8, budget)?;
+        if p.len() != 8 {
+            return self.fail(format!("check reply {} bytes", p.len()));
+        }
+        let state = match le_u32(&p, 0) {
+            0 => CheckState::Running,
+            1 => CheckState::Passed,
+            2 => CheckState::Errors,
+            3 => CheckState::Failed,
+            4 => CheckState::None,
+            s => return self.fail(format!("check state {s}")),
+        };
+        Ok((state, Duration::from_millis(le_u32(&p, 4) as u64)))
+    }
+
+    /// The switch after the check: unmounted, repaired within `repair` if the check found errors, marked clean and
+    /// mounted writable. An errno means the volume stays read-only. `budget` covers the repair, the unmount and the
+    /// mount with its free-space count.
+    pub fn check_switch(&mut self, repair: Duration, budget: Duration) -> CallResult<()> {
+        let repair_ms = repair.as_millis().min(u32::MAX as u128) as u32;
+        let p = self.call(Request { arg: 1, len: repair_ms, ..Default::default() }, Op::Check, 0, budget)?;
+        debug_assert!(p.is_empty());
+        Ok(())
+    }
+
     pub fn lookup(&mut self, parent: u64, name: &[u8]) -> CallResult<Attr> {
         let name = match names::check_name(name) {
             Ok(_) => name,

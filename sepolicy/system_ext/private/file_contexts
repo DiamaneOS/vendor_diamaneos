@@ -1,5 +1,5 @@
 # DiamaneOS: fsvmd (fsvm/).
 /(system_ext|system/system_ext)/bin/fsvmd    u:object_r:fsvmd_exec:s0
-/dev/socket/fsvmd    u:object_r:fsvmd_socket:s0
+/dev/socket/fsvmd_(probe|[0-5]|obb_[0-3])    u:object_r:fsvmd_socket:s0
 /(system_ext|system/system_ext)/bin/fsvmd_launcher    u:object_r:fsvmd_launcher_exec:s0
 /(system_ext|system/system_ext)/bin/fsvmd_obb    u:object_r:fsvmd_obb_exec:s0

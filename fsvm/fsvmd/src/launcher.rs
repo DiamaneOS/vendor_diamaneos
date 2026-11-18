@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The fsvmd service (`fsvmd_launcher`, started by init from fsvmd.rc): vold asks it over `/dev/socket/fsvmd` for
-//! one fsvmd process per probe, volume or OBB image. init runs the service as the system user without capabilities,
-//! and every fsvmd it starts inherits exactly that, so vold changes no ids and needs neither setuid nor setgid. The
-//! service is a binary and an SELinux domain of its own (`fsvmd_launcher`), and each fsvmd enters `fsvmd` on exec,
-//! so a fsvmd cannot signal or trace the service.
+//! The fsvmd services (`fsvmd_launcher --slot <slot>`, started by init from fsvmd.rc): one service per slot, one
+//! probe, six served volumes and four OBB images, each with a user of its own from the vendor's OEM range
+//! (config.fs). vold asks a free slot's service over `/dev/socket/fsvmd_<slot>` for one fsvmd, and the service
+//! starts it. init runs the service as its slot's user without capabilities, and the fsvmd it starts inherits exactly
+//! that, so vold changes no ids and needs neither setuid nor setgid, no fsvmd runs as the system user, and no two
+//! share a user: one fsvmd cannot signal or trace another. The service is a binary and an SELinux domain of its own
+//! (`fsvmd_launcher`), and each fsvmd enters `fsvmd` (or `fsvmd_obb`) on exec, so a fsvmd cannot signal or trace the
+//! service either.
 //!
 //! One request per connection, one SOCK_SEQPACKET message: `FSVMD1\0`, one digit whose bits say which descriptors
 //! follow (1: descriptor 3, the disk or OBB file, 2: descriptor 4, /dev/fuse, 4: descriptor 5, the pipe to vold) and
@@ -24,14 +27,16 @@
 //! message each: `P <pid>` once fsvmd runs, `X <status>` when it ended (its exit code, or 128 plus the signal), or
 //! `E <errno>` when it could not be started. vold may send `T` (stop), `K` (kill) or `W` (write back now). When
 //! vold closes the connection, for example because vold itself ended, its fsvmd is asked to stop and killed 3 s
-//! later. The service signals only its own children, through pidfds, so a pid that was reused can never be hit. OBB
-//! images are served by `fsvmd_obb`, everything else by `fsvmd`.
+//! later. The service signals only its own child, through a pidfd, so a pid that was reused can never be hit. A slot
+//! runs one fsvmd at a time, and refuses a second request with `E EBUSY` (vold then asks the next slot). The OBB
+//! slots run `fsvmd_obb` and take only OBB requests, the probe slot only probes, the volume slots only volumes.
 
 use anyhow::{bail, ensure, Context, Result};
 use log::{info, warn};
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The fsvmd binary the service runs for each request, and the one for OBB images (its own domain, no card access,
@@ -42,24 +47,57 @@ const SOCKET_ENV: &str = "ANDROID_SOCKET_fsvmd";
 const MAGIC: &[u8] = b"FSVMD1";
 const MAX_REQUEST: usize = 4096;
 const MAX_ARGS: usize = 32;
-/// vold allows 6 served volumes, 4 OBB images and one probe per disk at a time. This only bounds a broken vold.
-const MAX_CHILDREN: usize = 24;
+/// One fsvmd per slot (run_on's `max_children`): vold allows one probe, 6 served volumes and 4 OBB images at a time,
+/// one slot each.
+const MAX_CHILDREN: usize = 1;
+/// The slots, as fsvmd.rc and config.fs name them.
+pub const SLOTS: &[&str] = &["probe", "0", "1", "2", "3", "4", "5", "obb_0", "obb_1", "obb_2", "obb_3"];
 /// After vold went away, fsvmd gets this long for its orderly stop (it writes back in up to 1.8 s) before a kill.
 const VOLD_GONE_GRACE: Duration = Duration::from_secs(3);
 /// vold sends its request right after connecting.
 const REQUEST_WITHIN: Duration = Duration::from_secs(5);
 
-static CHILDREN: AtomicUsize = AtomicUsize::new(0);
 
-/// Runs the service on init's socket, for ever: requests from root (vold) only.
-pub fn run() -> Result<()> {
-    let fd: RawFd = std::env::var(SOCKET_ENV).context("no socket from init")?.parse().context("socket from init")?;
-    // SAFETY: init created this socket for the service, and nothing else in this process uses it.
-    run_on(unsafe { OwnedFd::from_raw_fd(fd) }, FSVMD, 0)
+/// Which requests a slot takes (checked in `handle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    Probe,
+    Volume,
+    Obb,
+    /// The host tests: anything.
+    #[allow(dead_code)]
+    Any,
 }
 
-/// Accepts requests on `listener` from `allowed_uid` and runs `exe` for each.
-pub fn run_on(listener: OwnedFd, exe: &'static str, allowed_uid: u32) -> Result<()> {
+pub fn slot_kind(slot: &str) -> Result<SlotKind> {
+    ensure!(SLOTS.contains(&slot), "unknown slot {slot}");
+    Ok(if slot == "probe" {
+        SlotKind::Probe
+    } else if slot.starts_with("obb_") {
+        SlotKind::Obb
+    } else {
+        SlotKind::Volume
+    })
+}
+
+/// Runs a slot's service on init's socket, for ever: requests from root (vold) only. The service runs as its slot's
+/// own user (fsvmd.rc), never as root or the system user.
+pub fn run(slot: &str) -> Result<()> {
+    let kind = slot_kind(slot)?;
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    ensure!(uid != 0 && uid != 1000, "the fsvmd_{slot} service runs as uid {uid}, not its slot's own user");
+    let env = format!("{SOCKET_ENV}_{slot}");
+    let fd: RawFd = std::env::var(&env).context("no socket from init")?.parse().context("socket from init")?;
+    let exe = if kind == SlotKind::Obb { FSVMD_OBB } else { FSVMD };
+    // SAFETY: init created this socket for the service, and nothing else in this process uses it.
+    run_on(unsafe { OwnedFd::from_raw_fd(fd) }, exe, kind, 0, MAX_CHILDREN)
+}
+
+/// Accepts requests of `kind` on `listener` from `allowed_uid` and runs `exe` for each, at most `max_children` at a
+/// time.
+pub fn run_on(listener: OwnedFd, exe: &'static str, kind: SlotKind, allowed_uid: u32, max_children: usize) -> Result<()> {
+    let limit = Limit::new(max_children);
     let fd = listener.as_raw_fd();
     // SAFETY: F_SETFD only changes the descriptor flags of the socket.
     ensure!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == 0, "F_SETFD on the socket");
@@ -98,8 +136,9 @@ pub fn run_on(listener: OwnedFd, exe: &'static str, allowed_uid: u32) -> Result<
                 continue;
             }
         }
+        let limit = limit.clone();
         std::thread::spawn(move || {
-            if let Err(e) = handle(conn, exe) {
+            if let Err(e) = handle(conn, exe, kind, &limit) {
                 warn!("request: {e:?}");
             }
         });
@@ -123,39 +162,52 @@ fn peer_uid(conn: &OwnedFd) -> Result<u32> {
     Ok(cred.uid)
 }
 
+/// The running children of one service and how many it may run.
+#[derive(Clone)]
+pub struct Limit {
+    running: Arc<AtomicUsize>,
+    max: usize,
+}
+
+impl Limit {
+    pub fn new(max: usize) -> Self {
+        Limit { running: Arc::new(AtomicUsize::new(0)), max }
+    }
+}
+
 /// Keeps the count of running children, released when dropped.
-struct Slot;
+struct Slot(Arc<AtomicUsize>);
 
 impl Slot {
-    fn take() -> Option<Slot> {
-        if CHILDREN.fetch_add(1, Ordering::SeqCst) >= MAX_CHILDREN {
-            CHILDREN.fetch_sub(1, Ordering::SeqCst);
+    fn take(limit: &Limit) -> Option<Slot> {
+        if limit.running.fetch_add(1, Ordering::SeqCst) >= limit.max {
+            limit.running.fetch_sub(1, Ordering::SeqCst);
             return None;
         }
-        Some(Slot)
+        Some(Slot(limit.running.clone()))
     }
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        CHILDREN.fetch_sub(1, Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-/// Serves one connection: one request, then the child's life. `exe` is FSVMD, except in the host test.
-pub fn handle(conn: OwnedFd, exe: &str) -> Result<()> {
+/// Serves one connection: one request, then the child's life. `exe` is FSVMD or FSVMD_OBB, except in the host test.
+pub fn handle(conn: OwnedFd, exe: &str, kind: SlotKind, limit: &Limit) -> Result<()> {
     ensure!(wait_readable(&conn, REQUEST_WITHIN)?, "no request");
     let (data, fds) = receive(&conn)?;
-    let (mask, argv) = match parse(&data, fds.len(), exe) {
+    let (mask, argv) = match parse(&data, fds.len(), exe).and_then(|r| fits(kind, &r.1).map(|_| r)) {
         Ok(r) => r,
         Err(e) => {
             send(&conn, &format!("E {}", libc::EINVAL));
             return Err(e);
         }
     };
-    let Some(_slot) = Slot::take() else {
+    let Some(_slot) = Slot::take(limit) else {
         send(&conn, &format!("E {}", libc::EBUSY));
-        bail!("{MAX_CHILDREN} fsvmd processes running already");
+        bail!("this slot runs a fsvmd already");
     };
     let pid = match spawn(&argv, mask, &fds) {
         Ok(pid) => pid,
@@ -230,14 +282,28 @@ pub fn parse(data: &[u8], fds: usize, exe: &str) -> Result<(u8, Vec<CString>)> {
     ensure!(mask.count_ones() as usize == fds, "{fds} descriptors for bits {mask}");
     let args = &fields[2..];
     ensure!(!args.is_empty() && args.len() <= MAX_ARGS, "{} arguments", args.len());
-    ensure!(!args.iter().any(|a| *a == b"--launcher"), "a request for the service itself");
-    // An OBB image is served by fsvmd_obb, everything else by fsvmd.
-    let exe = if exe == FSVMD && args[0] == b"--obb" { FSVMD_OBB } else { exe };
+    ensure!(!args.iter().any(|a| *a == b"--launcher" || *a == b"--slot"), "a request for the service itself");
+    // An OBB image is served by fsvmd_obb from an OBB slot, everything else by fsvmd.
+    ensure!(!(exe == FSVMD && args[0] == b"--obb"), "an OBB request on a card slot");
+    ensure!(!(exe == FSVMD_OBB && args[0] != b"--obb"), "a card request on an OBB slot");
     let mut argv = vec![CString::new(exe)?];
     for a in args {
         argv.push(CString::new(*a)?);
     }
     Ok((mask, argv))
+}
+
+/// Whether a request fits the slot: probes on the probe slot, volumes on the volume slots, OBB images on the OBB slots.
+pub fn fits(kind: SlotKind, argv: &[CString]) -> Result<()> {
+    let first = argv.get(1).map(|a| a.as_bytes()).unwrap_or_default();
+    let ok = match kind {
+        SlotKind::Any => true,
+        SlotKind::Probe => first == b"--probe",
+        SlotKind::Obb => first == b"--obb",
+        SlotKind::Volume => first != b"--probe" && first != b"--obb",
+    };
+    ensure!(ok, "a {} request on a {kind:?} slot", String::from_utf8_lossy(first));
+    Ok(())
 }
 
 /// Forks and runs `argv` with the descriptors in the slots `mask` names as 3, 4 and 5, and no others above 2.
@@ -468,7 +534,7 @@ mod tests {
     }
 
     fn run_service(conn: OwnedFd) -> std::thread::JoinHandle<Result<()>> {
-        std::thread::spawn(move || handle(conn, "/bin/sh"))
+        std::thread::spawn(move || handle(conn, "/bin/sh", SlotKind::Any, &Limit::new(8)))
     }
 
     #[test]
@@ -580,7 +646,7 @@ mod tests {
         let listener = unsafe { OwnedFd::from_raw_fd(fd) };
         // SAFETY: getuid has no preconditions.
         let me = unsafe { libc::getuid() };
-        std::thread::spawn(move || run_on(listener, "/bin/sh", me));
+        std::thread::spawn(move || run_on(listener, "/bin/sh", SlotKind::Any, me, 1));
         let mut vold = None;
         for _ in 0..50 {
             let c = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
@@ -592,8 +658,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let vold = vold.expect("the service never listened");
-        request(&vold, 0, &["-c", "exit 0"], &[]);
+        request(&vold, 0, &["-c", "sleep 1"], &[]);
         assert!(answer(&vold).starts_with("P "));
+        // One fsvmd per slot: a second request while the first runs is refused, so vold asks the next slot.
+        let mut second = None;
+        for _ in 0..50 {
+            let c = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+            if unsafe { libc::connect(c, (&addr as *const libc::sockaddr_un).cast(), len) } == 0 {
+                second = Some(unsafe { OwnedFd::from_raw_fd(c) });
+                break;
+            }
+            unsafe { libc::close(c) };
+        }
+        let second = second.expect("second connection");
+        request(&second, 0, &["-c", "exit 0"], &[]);
+        assert_eq!(answer(&second), format!("E {}", libc::EBUSY));
         assert_eq!(answer(&vold), "X 0");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -626,12 +705,30 @@ mod tests {
         assert_eq!(mask, 5);
         assert_eq!(argv.len(), 4);
         assert_eq!(argv[0].to_str().unwrap(), FSVMD);
-        // OBB images run fsvmd_obb.
-        let (_, argv) = parse(b"FSVMD1\x005\x00--obb\x00--volume\x00obb:1\x00", 2, FSVMD).unwrap();
+        // OBB images run fsvmd_obb on an OBB slot, never fsvmd, and an OBB slot runs nothing else.
+        assert!(parse(b"FSVMD1\x005\x00--obb\x00--volume\x00obb:1\x00", 2, FSVMD).is_err());
+        let (_, argv) = parse(b"FSVMD1\x005\x00--obb\x00--volume\x00obb:1\x00", 2, FSVMD_OBB).unwrap();
         assert_eq!(argv[0].to_str().unwrap(), FSVMD_OBB);
+        assert!(parse(b"FSVMD1\x005\x00--volume\x00public:179,1\x00", 2, FSVMD_OBB).is_err());
+        assert!(parse(b"FSVMD1\x000\x00--slot\x00probe\x00", 0, FSVMD).is_err());
+        // Each slot takes its own kind of request.
+        let argv = |a: &[&str]| -> Vec<CString> {
+            std::iter::once(FSVMD).chain(a.iter().copied()).map(|s| CString::new(s).unwrap()).collect()
+        };
+        assert!(fits(SlotKind::Probe, &argv(&["--probe"])).is_ok());
+        assert!(fits(SlotKind::Probe, &argv(&["--volume", "x"])).is_err());
+        assert!(fits(SlotKind::Volume, &argv(&["--volume", "x"])).is_ok());
+        assert!(fits(SlotKind::Volume, &argv(&["--probe"])).is_err());
+        assert!(fits(SlotKind::Volume, &argv(&["--obb"])).is_err());
+        assert!(fits(SlotKind::Obb, &argv(&["--obb"])).is_ok());
+        assert!(fits(SlotKind::Obb, &argv(&["--probe"])).is_err());
+        assert_eq!(slot_kind("probe").unwrap(), SlotKind::Probe);
+        assert_eq!(slot_kind("3").unwrap(), SlotKind::Volume);
+        assert_eq!(slot_kind("obb_2").unwrap(), SlotKind::Obb);
+        assert!(slot_kind("6").is_err() && slot_kind("../x").is_err());
         // No request at all.
         let (vold, svc) = pair();
         drop(vold);
-        assert!(handle(svc, "/bin/sh").is_err());
+        assert!(handle(svc, "/bin/sh", SlotKind::Any, &Limit::new(8)).is_err());
     }
 }

@@ -50,6 +50,14 @@ fn guest_replies_decode_as_expected() {
     let l = decode_layout(&load(&dir, "mbr_unknown_filesystem"), DISK_BYTES, 512).unwrap();
     assert_eq!((l.parts[0].fs_kind, l.parts[0].fs_uuid.clone()), (0, None));
     assert_eq!(decode_layout(&load(&dir, "exfat_bad_label"), DISK_BYTES, 512).unwrap().parts[0].label, "");
+    assert!(!l.parts[0].damaged);
+    // Damaged FAT and exFAT boot sectors decode as damaged, never as blank, and read "bad" for vold.
+    for name in ["mbr_damaged_fat32", "mbr_damaged_exfat", "whole_disk_damaged_fat32", "whole_disk_damaged_exfat"] {
+        let l = decode_layout(&load(&dir, name), DISK_BYTES, 512).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(l.parts.len(), 1, "{name}");
+        assert!(l.parts[0].damaged && l.parts[0].fs_kind == 0, "{name}");
+        assert!(probe_text(&l).contains(" bad - "), "{name}");
+    }
 
     // Logical partitions in an extended partition, numbered as Linux numbers them.
     let l = decode_layout(&load(&dir, "mbr_logical"), DISK_BYTES, 512).unwrap();

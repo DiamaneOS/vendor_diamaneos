@@ -17,7 +17,7 @@
 //! Android's own, and owner, group and mode come from vold's settings, never from the card.
 
 use fsvm_proto::client::{CallError, CallResult};
-use fsvm_proto::{Attr, Client, Kind, StreamTransport, MAX_IO, MAX_OPEN_LISTING_BYTES};
+use fsvm_proto::{Attr, CheckState, Client, Hello, Kind, StreamTransport, MAX_IO, MAX_OPEN_LISTING_BYTES};
 use fuse::filesystem::{
     Context, DirEntry, DirectoryIterator, Entry, FileSystem, FsOptions, OpenOptions, SetattrValid, ZeroCopyReader,
     ZeroCopyWriter,
@@ -86,8 +86,8 @@ const MAX_DEPTH: usize = 2048;
 
 /// Starts a new VM for the same volume when the session broke (a missed deadline, a VM that stopped).
 pub trait Session: Send {
-    /// Returns the new client, the root node and whether the volume is now read-only.
-    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, u64, bool)>;
+    /// Returns the new client and what the new VM said at its mount (root node, read-only, check pending).
+    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, Hello)>;
     /// Stops the VM and waits up to `within` for its end.
     fn stop_vm(&mut self, within: Duration);
 }
@@ -111,11 +111,15 @@ struct State {
     generation: u64,
     /// Set once the filesystem was written back and unmounted in the VM before a stop: nothing is served after.
     closed: bool,
+    /// The volume is served read-only until the VM's check after the mount passes (Checker).
+    check_pending: bool,
 }
 
 pub struct FsvmFs {
     state: Arc<Mutex<State>>,
     closing: Arc<AtomicBool>,
+    /// The switch after the check runs (the volume is briefly unmounted in the VM): an orderly stop waits for it.
+    switching: Arc<AtomicBool>,
     read_only: Arc<AtomicBool>,
     gid: u32,
     dir_mode: u32,
@@ -130,6 +134,7 @@ impl FsvmFs {
         read_only: bool,
         gid: u32,
         obb: bool,
+        check_pending: bool,
         session: Box<dyn Session>,
     ) -> Self {
         let mut nodes = HashMap::new();
@@ -154,8 +159,10 @@ impl FsvmFs {
                 next_handle: 1,
                 generation: 0,
                 closed: false,
+                check_pending,
             })),
             closing: Arc::new(AtomicBool::new(false)),
+            switching: Arc::new(AtomicBool::new(false)),
             read_only,
             gid,
             dir_mode: if obb { 0o550 } else { 0o770 },
@@ -165,7 +172,20 @@ impl FsvmFs {
 
     /// A handle that outlives the FUSE loop, for the orderly stop (Closer::close).
     pub fn closer(&self) -> Closer {
-        Closer { state: self.state.clone(), closing: self.closing.clone() }
+        Closer { state: self.state.clone(), closing: self.closing.clone(), switching: self.switching.clone() }
+    }
+
+    /// Runs the VM's check after the mount for a volume served read-only until it passes, outside vold's lock and
+    /// without a time limit, then the switch to writable. `done(true)` once writable, `done(false)` when it stays
+    /// read-only (vold then reports it so and SystemUI says why). Ends with the volume.
+    pub fn spawn_checker(&self, done: Box<dyn Fn(bool) + Send>) {
+        let checker = Checker {
+            state: self.state.clone(),
+            read_only: self.read_only.clone(),
+            switching: self.switching.clone(),
+            done,
+        };
+        std::thread::spawn(move || checker.run());
     }
 
     #[allow(clippy::useless_conversion)]
@@ -275,13 +295,17 @@ impl State {
         self.restarts.push(now);
         warn!("filesystem VM session broken ({why}), starting a new VM");
         match self.session.restart() {
-            Ok((client, root, read_only)) => {
+            Ok((client, hello)) => {
+                let root = hello.root;
                 self.generation += 1;
                 self.client = client;
                 self.root_guest = root;
-                if read_only {
+                if hello.read_only {
                     self.read_only.store(true, Ordering::Relaxed);
                 }
+                // The new VM found the volume marked dirty (the old one ended with it mounted writable): read-only
+                // again until its own check passes.
+                self.check_pending = hello.check_pending;
                 self.by_guest.clear();
                 for (&ino, n) in self.nodes.iter_mut() {
                     n.guest = if ino == ROOT { Some(root) } else { None };
@@ -471,6 +495,7 @@ impl State {
 pub struct Closer {
     state: Arc<Mutex<State>>,
     closing: Arc<AtomicBool>,
+    switching: Arc<AtomicBool>,
 }
 
 /// How an orderly stop ended.
@@ -502,7 +527,9 @@ impl Closer {
         }
         let start = Instant::now();
         let deadline = start + max;
-        let until = start + lock_wait;
+        // The switch after the check holds the lock while the VM unmounts, repairs and mounts again. Stopping the VM
+        // in the middle could leave a repair half done, so it gets the whole time.
+        let until = start + if self.switching.load(Ordering::SeqCst) { max } else { lock_wait };
         let mut guard = loop {
             match self.state.try_lock() {
                 Ok(g) => break g,
@@ -569,6 +596,74 @@ impl Closer {
         // The VM ends before fsvmd does, so nothing holds its disk any more when vold takes it back.
         guard.session.stop_vm(VM_END);
         result
+    }
+}
+
+/// The read-only check runs as long as it takes. Errors it found are repaired only when it took at most this long,
+/// so the repair (as long as the check, plus writes) stays short: apps wait for it and an eject waits for it.
+const REPAIR_AFTER_CHECK_MAX: Duration = Duration::from_secs(20);
+/// What the repair may take in the VM, and the whole switch (unmount, repair, mount, free-space count).
+const REPAIR_MAX: Duration = Duration::from_secs(15);
+const SWITCH_MAX: Duration = Duration::from_secs(45);
+const CHECK_POLL: Duration = Duration::from_secs(1);
+
+struct Checker {
+    state: Arc<Mutex<State>>,
+    read_only: Arc<AtomicBool>,
+    switching: Arc<AtomicBool>,
+    done: Box<dyn Fn(bool) + Send>,
+}
+
+impl Checker {
+    fn run(self) {
+        loop {
+            std::thread::sleep(CHECK_POLL);
+            let mut s = match self.state.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            if s.closed {
+                return;
+            }
+            if !s.check_pending {
+                continue;
+            }
+            match s.client.check_poll() {
+                Ok((CheckState::Running, _)) => {}
+                Ok((state @ (CheckState::Passed | CheckState::Errors), ran)) => {
+                    if state == CheckState::Errors && ran > REPAIR_AFTER_CHECK_MAX {
+                        warn!("the check found errors after {ran:?}: the volume stays read-only, it needs a computer");
+                        s.check_pending = false;
+                        (self.done)(false);
+                        continue;
+                    }
+                    info!("the check {} after {ran:?}, switching to writable", if state == CheckState::Errors { "found errors to repair" } else { "passed" });
+                    self.switching.store(true, Ordering::SeqCst);
+                    let r = s.client.check_switch(REPAIR_MAX, SWITCH_MAX);
+                    self.switching.store(false, Ordering::SeqCst);
+                    match r {
+                        Ok(()) => {
+                            info!("checked, the volume is writable now");
+                            s.check_pending = false;
+                            self.read_only.store(false, Ordering::SeqCst);
+                            (self.done)(true);
+                        }
+                        Err(CallError::Broken(why)) => s.recover(&why),
+                        Err(e) => {
+                            warn!("the switch after the check failed ({}): the volume stays read-only", e.errno());
+                            s.check_pending = false;
+                            (self.done)(false);
+                        }
+                    }
+                }
+                Ok((CheckState::Failed | CheckState::None, _)) | Err(CallError::Errno(_)) => {
+                    warn!("the check did not run or did not finish: the volume stays read-only");
+                    s.check_pending = false;
+                    (self.done)(false);
+                }
+                Err(CallError::Broken(why)) => s.recover(&why),
+            }
+        }
     }
 }
 

@@ -68,9 +68,18 @@ rust_binary {
     name: "fsvmd",
     defaults: ["fsvmd_defaults"],
     required: [
+        "de.diamaneos.fsvmd.xml",
         "fsvmd_launcher",
         "fsvmd_obb",
     ],
+}
+
+// The two VM permissions for the fsvmd users (config.fs), which are not the system user.
+prebuilt_etc {
+    name: "de.diamaneos.fsvmd.xml",
+    src: "fsvmd/etc/de.diamaneos.fsvmd.xml",
+    sub_dir: "permissions",
+    system_ext_specific: true,
 }
 
 // The same program for OBB images only, under its own name and label (fsvmd_obb.te): no card access, and its VMs
@@ -288,6 +297,20 @@ rust_test_host {
         "libfuse_rust",
         "liblibc",
         "liblog_rust",
+    ],
+    test_suites: ["general-tests"],
+}
+
+// fsvmd's seccomp filter: what it decides, evaluated as the kernel would (fsvmd/src/seccomp.rs). The host FUSE test
+// above runs the FUSE thread under it.
+rust_test_host {
+    name: "fsvmd_seccomp_test",
+    crate_name: "fsvmd_seccomp_test",
+    srcs: ["fsvmd/src/seccomp.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libanyhow",
+        "liblibc",
     ],
     test_suites: ["general-tests"],
 }

@@ -378,6 +378,30 @@ int main(int argc, char **argv)
 	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == 0 && l.e[0].label_len == 0);
 	CHECK(fsvm_layout_find(&l, 1, 2048, 4096) == NULL);
 
+	CHECK(!(l.e[0].flags & FSVM_LAYOUT_DAMAGED));
+
+	/* Damaged boot sectors: no filesystem found, but marked, so that Android never offers to format them. */
+	reset("mbr_damaged_fat32");
+	mbr(0, 0, 0x0c, 2048, 4096);
+	make_fat32(2048, 5, NULL);
+	disk[2048 * 512 + 13] = 3; /* sectors per cluster not a power of two */
+	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == 0 && (l.e[0].flags & FSVM_LAYOUT_DAMAGED));
+	CHECK(fsvm_layout_find(&l, 1, 2048, 4096) == NULL);
+	reset("mbr_damaged_exfat");
+	mbr(0, 0, 0x07, 2048, 4096);
+	make_exfat(2048, 7, NULL, 0);
+	disk[2048 * 512 + 108] = 13; /* bytes per sector shift out of range */
+	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == 0 && (l.e[0].flags & FSVM_LAYOUT_DAMAGED));
+	reset("whole_disk_damaged_fat32");
+	make_fat32(0, 5, NULL);
+	disk[16] = 0; /* no FAT copies */
+	CHECK(run(&l) == 0 && l.h.table == FSVM_TABLE_NONE && l.h.count == 1 && l.e[0].index == 0);
+	CHECK(l.e[0].fs_kind == 0 && (l.e[0].flags & FSVM_LAYOUT_DAMAGED) && l.e[0].length == DISK_SECTORS);
+	reset("whole_disk_damaged_exfat");
+	make_exfat(0, 7, NULL, 0);
+	disk[109] = 30; /* sectors per cluster shift out of range */
+	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == 0 && (l.e[0].flags & FSVM_LAYOUT_DAMAGED));
+
 	/* A USB disk with 4096-byte logical blocks: its GPT counts 4096-byte LBAs, the layout 512-byte sectors. */
 	reset("gpt_4k_blocks");
 	sector_size = 4096;

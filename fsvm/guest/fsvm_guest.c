@@ -61,6 +61,7 @@
 static uint32_t fs_kind; /* 0 until MOUNT succeeded */
 static int read_only;
 static int was_dirty; /* the mounted filesystem was marked dirty before this VM mounted it */
+static int check_pending; /* mounted read-only until the check after the mount passes (FSVM_CHECK) */
 static uint32_t mounted_index;
 static uint64_t mounted_start, mounted_length;
 static char mounted_dev[32];
@@ -440,8 +441,9 @@ static int do_readdir(int s, const struct fsvm_req *q, const char *rel)
  * as with the kernel's FAT driver. Handle ids carry a generation like node ids. ---- */
 
 #define MAX_HANDLES 1024u
-static int handle_fd[MAX_HANDLES + 1];
+static int handle_fd[MAX_HANDLES + 1]; /* 0: free, -1: closed while the volume is mounted again (FSVM_CHECK) */
 static uint32_t handle_gen[MAX_HANDLES + 1];
+static char *handle_path[MAX_HANDLES + 1]; /* to open the file again after the switch */
 
 /* The descriptor of a valid handle, or -1. */
 static int handle_lookup(uint64_t h)
@@ -474,6 +476,8 @@ static int handle_open(const char *rel, int write, uint64_t *out)
 			fd = high;
 		}
 		handle_fd[slot] = fd;
+		free(handle_path[slot]);
+		handle_path[slot] = strdup(rel);
 		*out = (uint64_t)handle_gen[slot] << 32 | slot;
 		return 0;
 	}
@@ -488,15 +492,61 @@ static int handle_close(uint64_t h)
 	close(handle_fd[slot]);
 	handle_fd[slot] = 0;
 	handle_gen[slot]++;
+	free(handle_path[slot]);
+	handle_path[slot] = NULL;
 	return 0;
 }
 
 /* Before an unmount: every open file goes, so the filesystem can be unmounted. */
 static void handle_close_all(void)
 {
-	for (uint32_t slot = 1; slot <= MAX_HANDLES; slot++)
+	for (uint32_t slot = 1; slot <= MAX_HANDLES; slot++) {
+		if (!handle_fd[slot])
+			continue;
 		if (handle_fd[slot] > 0)
-			handle_close((uint64_t)handle_gen[slot] << 32 | slot);
+			close(handle_fd[slot]);
+		handle_fd[slot] = 0;
+		handle_gen[slot]++;
+		free(handle_path[slot]);
+		handle_path[slot] = NULL;
+	}
+}
+
+/* The switch after the check: open files are closed for the unmount and kept by path (-1). */
+static void handle_suspend_all(void)
+{
+	for (uint32_t slot = 1; slot <= MAX_HANDLES; slot++)
+		if (handle_fd[slot] > 0) {
+			close(handle_fd[slot]);
+			handle_fd[slot] = -1;
+		}
+}
+
+/* ...and opened again, read-only as before, once the volume is mounted again. A file the repair removed stays
+ * closed: its handle answers EBADF, which fsvmd turns into EIO. */
+static void handle_resume_all(void)
+{
+	char p[PATH_MAX];
+	for (uint32_t slot = 1; slot <= MAX_HANDLES; slot++) {
+		if (handle_fd[slot] != -1)
+			continue;
+		int fd = handle_path[slot] && !full_path(p, sizeof(p), handle_path[slot], NULL) ?
+				 open(p, O_RDONLY | O_NOFOLLOW | O_CLOEXEC) :
+				 -1;
+		if (fd == 0) {
+			int high = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+			close(fd);
+			fd = high;
+		}
+		if (fd < 0) {
+			handle_fd[slot] = 0;
+			handle_gen[slot]++;
+			free(handle_path[slot]);
+			handle_path[slot] = NULL;
+			continue;
+		}
+		handle_fd[slot] = fd;
+	}
 }
 
 static int read_fd(int s, const struct fsvm_req *q, int fd)
@@ -592,8 +642,10 @@ static int do_write(int s, const struct fsvm_req *q, const char *rel, const uint
 }
 
 static int read_layout(void);
-static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms);
+static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms, int later);
 static int do_unmount(void);
+static int check_poll(struct fsvm_check *c);
+static int check_switch(uint32_t repair_ms);
 
 /* Dirty plus Writeback from /proc/meminfo, in bytes: what this VM still has to write to its disk. */
 static uint64_t dirty_bytes(void)
@@ -619,7 +671,7 @@ static uint64_t dirty_bytes(void)
 
 static uint32_t hello_flags(void)
 {
-	return (read_only ? 1u : 0u) | (was_dirty ? 2u : 0u);
+	return (read_only ? 1u : 0u) | (was_dirty ? 2u : 0u) | (check_pending ? 4u : 0u);
 }
 
 static int handle(int s, struct fsvm_req *q, const char *name, const char *name2, const uint8_t *data)
@@ -642,6 +694,15 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 			out[i] = (uint8_t)(b >> (8 * i));
 		return reply(s, q->id, 0, out, sizeof(out));
 	}
+	case FSVM_CHECK: {
+		if (q->arg == 1)
+			return reply(s, q->id, check_switch(q->len), NULL, 0);
+		struct fsvm_check c;
+		r = check_poll(&c);
+		if (r)
+			return reply(s, q->id, r, NULL, 0);
+		return reply(s, q->id, 0, &c, sizeof(c));
+	}
 	case FSVM_LAYOUT:
 		r = read_layout();
 		if (r)
@@ -650,7 +711,7 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 	case FSVM_MOUNT: {
 		if (q->arg > UINT32_MAX)
 			return reply(s, q->id, -EINVAL, NULL, 0);
-		r = do_mount((uint32_t)q->arg, q->node, q->node2, q->flags & 1, q->len);
+		r = do_mount((uint32_t)q->arg, q->node, q->node2, q->flags & 1, q->len, q->flags & 2);
 		if (r)
 			return reply(s, q->id, r, NULL, 0);
 		struct fsvm_hello h = { FSVM_VERSION, fs_kind, hello_flags(), 0, 1 };
@@ -1081,6 +1142,202 @@ static int check_volume(const char *dev, uint32_t kind, uint32_t budget_ms)
 	return -EIO;
 }
 
+/* ---- The check after the mount (FSVM_CHECK) ----
+ *
+ * A writable mount of a volume marked dirty is read-only at once. The check runs here while the volume is served
+ * read-only, without writing (fsck_msdos -n -f, fsck.exfat -n), for as long as it takes: it is not bound to vold's
+ * lock or anyone's watchdog. When it ended, fsvmd asks for the switch: the volume is unmounted, repaired if the check
+ * found errors (within the time fsvmd gives), marked clean and mounted writable. Open files are opened again by
+ * path. An unmount (eject) during the read-only check stops it: nothing was written, the volume keeps its mark.
+ */
+
+static pid_t check_pid;
+static int64_t check_start_ms, check_end_ms;
+static int check_state = FSVM_CHECK_NONE;
+
+#define CHECK_OUT "/fsck.out"
+
+/* Whether fsck_msdos -n -f found nothing but the dirty mark: the one question it answered "no" is marking the
+ * file system clean. Any other question (a repair it was not allowed to make) means errors. */
+static int fat_only_dirty(void)
+{
+	char buf[16384];
+	int fd = open(CHECK_OUT, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	ssize_t n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0 || n == (ssize_t)sizeof(buf) - 1)
+		return 0;
+	buf[n] = 0;
+	int mark = 0, other = 0;
+	for (char *line = buf; line && *line;) {
+		char *end = strchr(line, '\n');
+		if (end)
+			*end = 0;
+		size_t len = strlen(line);
+		if (len >= 4 && !strcmp(line + len - 4, "? no")) {
+			if (!strcmp(line, "MARK FILE SYSTEM CLEAN? no"))
+				mark = 1;
+			else
+				other = 1;
+		}
+		line = end ? end + 1 : NULL;
+	}
+	return mark && !other;
+}
+
+static void check_start(void)
+{
+	char *fat[] = { "/bin/fsck_msdos", "-n", "-f", mounted_dev, NULL };
+	char *exf[] = { "/bin/fsck.exfat", "-n", mounted_dev, NULL };
+	char **argv = fs_kind == FSVM_FS_EXFAT ? exf : fat;
+	check_start_ms = now_ms();
+	check_state = FSVM_CHECK_RUNNING;
+	if (access(argv[0], X_OK)) {
+		check_state = FSVM_CHECK_FAILED;
+		return;
+	}
+	pid_t pid = fork();
+	if (pid < 0) {
+		check_state = FSVM_CHECK_FAILED;
+		return;
+	}
+	if (pid == 0) {
+		int out = open(CHECK_OUT, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+		if (out >= 0) {
+			dup2(out, 1);
+			dup2(out, 2);
+		}
+		execv(argv[0], argv);
+		_exit(127);
+	}
+	check_pid = pid;
+	logline("checking the volume while it is served read-only", mounted_dev, 0);
+}
+
+/* Starts the check on the first call, then reports how it goes. */
+static int check_poll(struct fsvm_check *c)
+{
+	if (!fs_kind)
+		return -EINVAL;
+	if (check_pending && check_state == FSVM_CHECK_NONE)
+		check_start();
+	if (check_pid > 0) {
+		int st = 0;
+		pid_t r = waitpid(check_pid, &st, WNOHANG);
+		if (r == check_pid || r < 0) {
+			check_pid = 0;
+			check_end_ms = now_ms();
+			int code = r == check_pid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+			if (code == 127 || code < 0)
+				check_state = FSVM_CHECK_FAILED;
+			else if (code == 0 || (fs_kind == FSVM_FS_VFAT && code == 8 && fat_only_dirty()))
+				check_state = FSVM_CHECK_PASSED;
+			else if (fs_kind == FSVM_FS_EXFAT && code != 4)
+				check_state = FSVM_CHECK_FAILED; /* exFAT: 4 is errors left, anything else did not check */
+			else
+				check_state = FSVM_CHECK_ERRORS;
+			logline(check_state == FSVM_CHECK_PASSED ? "check passed" :
+				check_state == FSVM_CHECK_ERRORS ? "check found errors" : "check did not run",
+				mounted_dev, 0);
+		}
+	}
+	c->state = check_pending ? (uint32_t)check_state : FSVM_CHECK_NONE;
+	int64_t until = check_pid > 0 || !check_end_ms ? now_ms() : check_end_ms;
+	c->elapsed_ms = check_pending && check_start_ms ? (uint32_t)(until - check_start_ms) : 0;
+	return 0;
+}
+
+static void check_stop(void)
+{
+	if (check_pid > 0) {
+		kill(check_pid, SIGKILL);
+		waitpid(check_pid, NULL, 0);
+		check_pid = 0;
+		logline("check stopped, the volume keeps its dirty mark", mounted_dev, 0);
+	}
+	check_pending = 0;
+	check_state = FSVM_CHECK_NONE;
+}
+
+/* After a check without repairs: the marks the check would have cleared. FAT: Linux's state byte (clear_fat_state)
+ * and on FAT32 the clean bit of the second entry in every FAT. exFAT: VolumeFlags bit 1, which the boot region's
+ * checksum leaves out. Only while the volume is not mounted. */
+static int mark_clean(const char *dev, uint32_t kind)
+{
+	uint8_t b[512];
+	int fd = open(dev, O_RDWR | O_CLOEXEC);
+	if (fd < 0)
+		return -errno;
+	int r = 0;
+	if (pread(fd, b, sizeof(b), 0) != (ssize_t)sizeof(b) || b[510] != 0x55 || b[511] != 0xAA) {
+		r = -EIO;
+	} else if (kind == FSVM_FS_EXFAT) {
+		uint8_t v = b[106] & (uint8_t)~2u;
+		if (pwrite(fd, &v, 1, 106) != 1)
+			r = -EIO;
+	} else if (!(b[22] | b[23])) {
+		uint32_t bps = (uint32_t)(b[11] | b[12] << 8), reserved = (uint32_t)(b[14] | b[15] << 8);
+		uint32_t fats = b[16], fat_sectors = (uint32_t)b[36] | (uint32_t)b[37] << 8 | (uint32_t)b[38] << 16 |
+						     (uint32_t)b[39] << 24;
+		for (uint32_t i = 0; i < fats && !r; i++) {
+			off_t at = ((off_t)reserved + (off_t)i * fat_sectors) * bps + 4;
+			uint8_t e[4];
+			if (pread(fd, e, 4, at) != 4) {
+				r = -EIO;
+				break;
+			}
+			e[3] |= 0x08; /* 0x08000000: cleanly unmounted */
+			if (pwrite(fd, e, 4, at) != 4)
+				r = -EIO;
+		}
+	}
+	if (!r && fsync(fd))
+		r = -EIO;
+	close(fd);
+	if (!r && kind != FSVM_FS_EXFAT)
+		clear_fat_state(dev);
+	return r;
+}
+
+static int check_switch(uint32_t repair_ms)
+{
+	if (!fs_kind || !check_pending || (check_state != FSVM_CHECK_PASSED && check_state != FSVM_CHECK_ERRORS))
+		return -EINVAL;
+	char dev[32];
+	snprintf(dev, sizeof(dev), "%s", mounted_dev);
+	uint32_t kind = fs_kind;
+	handle_suspend_all();
+	if (umount(MNT)) {
+		int e = errno;
+		handle_resume_all();
+		logline("unmount for the switch", MNT, e);
+		return -e;
+	}
+	fs_kind = 0;
+	int r = 0;
+	if (check_state == FSVM_CHECK_ERRORS)
+		r = check_volume(dev, kind, repair_ms ? repair_ms : 1);
+	else
+		r = mark_clean(dev, kind);
+	/* 0: repaired or clean, mounted writable. Otherwise read-only again, with its marks. */
+	int ro = r != 0;
+	if (try_mount(dev, ro) && (ro || try_mount(dev, 1))) {
+		logline("no filesystem after the switch", dev, errno);
+		check_pending = 0;
+		return -EIO;
+	}
+	struct statfs sf;
+	(void)statfs(MNT, &sf);
+	handle_resume_all();
+	check_pending = read_only;
+	check_state = read_only ? FSVM_CHECK_FAILED : FSVM_CHECK_NONE;
+	was_dirty = read_only;
+	logline(read_only ? "check did not pass, served read-only" : "checked, now writable", dev, 0);
+	return read_only ? (r == 1 ? -ETIMEDOUT : -EIO) : 0;
+}
+
 /*
  * Mounts partition `index` (0: the whole disk) once. It must be in the layout read from the disk at exactly `start`
  * and `length`, and this kernel's partition device must agree. A writable mount is checked first, within
@@ -1108,7 +1365,7 @@ static void add_own_partition(const char *dev, uint32_t index, uint64_t start, u
 		usleep(50 * 1000); /* devtmpfs makes the node */
 }
 
-static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms)
+static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms, int later)
 {
 	if (fs_kind) {
 		if (index == mounted_index && start == mounted_start && length == mounted_length)
@@ -1143,7 +1400,12 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 		}
 	}
 	was_dirty = volume_dirty(dev, e->fs_kind);
-	if (!want_ro) {
+	if (!want_ro && was_dirty && later) {
+		/* Read-only at once, checked afterwards (FSVM_CHECK), writable only once the check passed. Nothing is
+		 * written to the volume before then. */
+		want_ro = 1;
+		check_pending = 1;
+	} else if (!want_ro && !later) {
 		r = check_volume(dev, e->fs_kind, check_ms);
 		if (r < 0)
 			return r;
@@ -1152,6 +1414,7 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	}
 	r = try_mount(dev, want_ro);
 	if (r) {
+		check_pending = 0;
 		logline("no FAT or exFAT filesystem on", dev, errno);
 		return r;
 	}
@@ -1170,11 +1433,16 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
  * served afterwards. 0, or a negative errno when the filesystem could not be written back or unmounted (fsvmd then
  * still stops the VM: it has nothing better).
  */
+static void check_stop(void);
+
 static int do_unmount(void)
 {
 	if (!fs_kind)
 		return 0;
 	int r = 0;
+	/* A check still running only reads (-n): it ends, nothing was written, the volume keeps its dirty mark and is
+	 * checked at its next mount. */
+	check_stop();
 	handle_close_all();
 	int d = open(MNT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (d < 0 || syncfs(d))
@@ -1243,14 +1511,58 @@ static void selftest(int want)
 		logline("selftest result", r ? "layout refused" : "nothing to mount", 0);
 		return;
 	}
+	/* fsvm.checklater=1: as fsvmd mounts cards now (MOUNT flags bit 1), a dirty volume read-only first, then the
+	 * check, a handle open across the switch, and the switch. */
+	char cmd[1024] = "";
+	int cfd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+	if (cfd >= 0) {
+		ssize_t n = read(cfd, cmd, sizeof(cmd) - 1);
+		cmd[n > 0 ? n : 0] = 0;
+		close(cfd);
+	}
+	int later = strstr(cmd, "fsvm.checklater=1") != NULL;
 	int64_t t0 = now_ms();
-	r = do_mount(pick->index, pick->start, pick->length, 0, 20000);
-	snprintf(line, sizeof(line), "%d after %lld ms, read-only %d, was dirty %d", r, (long long)(now_ms() - t0),
-		 read_only, was_dirty);
+	r = do_mount(pick->index, pick->start, pick->length, 0, later ? 0 : 20000, later);
+	snprintf(line, sizeof(line), "%d after %lld ms, read-only %d, was dirty %d, check pending %d", r,
+		 (long long)(now_ms() - t0), read_only, was_dirty, check_pending);
 	logline("selftest mount", line, 0);
 	if (r) {
 		logline("selftest result", "mount failed", 0);
 		return;
+	}
+	if (check_pending) {
+		/* The window: no write reaches the volume. */
+		int fd = open(MNT "/fsvm-window.txt", O_CREAT | O_WRONLY | O_CLOEXEC, 0660);
+		snprintf(line, sizeof(line), "%d errno %d", fd >= 0, fd >= 0 ? 0 : errno);
+		logline("selftest write while checking", line, 0);
+		if (fd >= 0)
+			close(fd);
+		/* A file open across the switch, read-only as everything in the window. */
+		uint64_t h = 0;
+		DIR *rd = opendir(MNT);
+		struct dirent *de0;
+		char first[256] = "";
+		while (rd && (de0 = readdir(rd)))
+			if (de0->d_type == DT_REG) {
+				snprintf(first, sizeof(first), "%s", de0->d_name);
+				break;
+			}
+		if (rd)
+			closedir(rd);
+		int have = first[0] && !handle_open(first, 0, &h);
+		struct fsvm_check c = { 0, 0 };
+		while (!check_poll(&c) && c.state == FSVM_CHECK_RUNNING)
+			usleep(100 * 1000);
+		snprintf(line, sizeof(line), "state %u after %u ms", c.state, c.elapsed_ms);
+		logline("selftest check", line, 0);
+		int sr = check_switch(20000);
+		uint8_t one;
+		int readable = have && handle_lookup(h) > 0 && pread(handle_lookup(h), &one, 1, 0) >= 0;
+		snprintf(line, sizeof(line), "%d read-only %d, open file %s", sr, read_only,
+			 !have ? "none" : readable ? "readable" : "lost");
+		logline("selftest switch", line, 0);
+		if (have)
+			handle_close(h);
 	}
 	int ok = 1;
 	if (!read_only) {

@@ -24,7 +24,7 @@
 //! | offset | field |
 //! | --- | --- |
 //! | 0 | index u32: 0 for a filesystem on the whole disk, else the partition number |
-//! | 4 | flags u32: bit 0 the filesystem serial below is valid |
+//! | 4 | flags u32: bit 0 the filesystem serial below is valid, bit 1 a FAT or exFAT boot sector that fails the VM's checks (damaged, no filesystem found) |
 //! | 8 | start u64, in 512-byte sectors |
 //! | 16 | length u64, in 512-byte sectors |
 //! | 24 | MBR type byte, then 3 zero bytes |
@@ -121,6 +121,9 @@ pub struct Part {
     pub length: u64,
     /// The filesystem the VM found: 0 none or unknown, FS_VFAT, FS_EXFAT.
     pub fs_kind: u32,
+    /// No filesystem found, but a FAT or exFAT boot sector that fails the VM's checks. vold never offers to format
+    /// such a partition (the user, 2026-11-17).
+    pub damaged: bool,
     /// The volume UUID as blkid printed it ("6FFF-FAB8"), from the serial.
     pub fs_uuid: Option<String>,
     pub label: String,
@@ -231,7 +234,7 @@ pub fn decode_layout(b: &[u8], disk_bytes: u64, block_size: u32) -> Result<Layou
         let serial = le_u32(e, 64);
         let meta_bytes = le_u64(e, 68);
         let label_len = e[76] as usize;
-        if flags & !1 != 0 || !is_zero(&e[25..28]) || !is_zero(&e[124..128]) || label_len > MAX_LABEL_BYTES {
+        if flags & !3 != 0 || !is_zero(&e[25..28]) || !is_zero(&e[124..128]) || label_len > MAX_LABEL_BYTES {
             return Err(LayoutError::Reserved);
         }
         if !is_zero(&e[77 + label_len..124]) {
@@ -290,8 +293,12 @@ pub fn decode_layout(b: &[u8], disk_bytes: u64, block_size: u32) -> Result<Layou
             (Class::AndroidMeta | Class::AndroidExpand, 0) => 0,
             _ => return Err(LayoutError::FsKind(index)),
         };
-        // A filesystem on the whole disk is only reported when the VM found one.
-        if table == Table::None && fs_kind == 0 {
+        let damaged = flags & 2 != 0;
+        if damaged && (class != Class::Public || fs_kind != 0) {
+            return Err(LayoutError::FsKind(index));
+        }
+        // A filesystem on the whole disk is only reported when the VM found one, sound or damaged.
+        if table == Table::None && fs_kind == 0 && !damaged {
             return Err(LayoutError::FsKind(index));
         }
         if fs_kind == 0 && (flags & 1 != 0 || serial != 0 || meta_bytes != 0 || label_len != 0) {
@@ -322,7 +329,7 @@ pub fn decode_layout(b: &[u8], disk_bytes: u64, block_size: u32) -> Result<Layou
             }
         };
         let fs_uuid = (flags & 1 != 0).then(|| format!("{:04X}-{:04X}", serial >> 16, serial & 0xffff));
-        parts.push(Part { index, class, start, length, fs_kind, fs_uuid, label, part_guid, meta_bytes });
+        parts.push(Part { index, class, start, length, fs_kind, damaged, fs_uuid, label, part_guid, meta_bytes });
     }
 
     // Adoptable storage as vold makes it: at most one metadata and one storage partition.
@@ -346,7 +353,7 @@ pub fn decode_layout(b: &[u8], disk_bytes: u64, block_size: u32) -> Result<Layou
 ///
 /// ```text
 /// LAYOUT 1 <none|mbr|gpt> <count>
-/// PART <index> <public|meta|expand> <start> <length> <vfat|exfat|-> <uuid|-> <part-guid|-> <meta-bytes> <label-hex|->
+/// PART <index> <public|meta|expand> <start> <length> <vfat|exfat|bad|-> <uuid|-> <part-guid|-> <meta-bytes> <label-hex|->
 /// END
 /// ```
 pub fn probe_text(l: &Layout) -> String {
@@ -366,6 +373,7 @@ pub fn probe_text(l: &Layout) -> String {
         let fs = match p.fs_kind {
             crate::FS_VFAT => "vfat",
             crate::FS_EXFAT => "exfat",
+            _ if p.damaged => "bad",
             _ => "-",
         };
         let guid = p.part_guid.as_ref().map(guid_text).unwrap_or_else(|| "-".into());
@@ -394,6 +402,7 @@ pub struct RawPart {
     pub type_guid: [u8; 16],
     pub part_guid: [u8; 16],
     pub fs_kind: u32,
+    pub damaged: bool,
     pub serial: Option<u32>,
     pub meta_bytes: u64,
     pub label: Vec<u8>,
@@ -408,7 +417,7 @@ pub fn encode_layout(disk_sectors: u64, table: u32, parts: &[RawPart]) -> Vec<u8
     for p in parts {
         let mut e = [0u8; LAYOUT_ENTRY];
         e[0..4].copy_from_slice(&p.index.to_le_bytes());
-        e[4..8].copy_from_slice(&(p.serial.is_some() as u32).to_le_bytes());
+        e[4..8].copy_from_slice(&(p.serial.is_some() as u32 | (p.damaged as u32) << 1).to_le_bytes());
         e[8..16].copy_from_slice(&p.start.to_le_bytes());
         e[16..24].copy_from_slice(&p.length.to_le_bytes());
         e[24] = p.mbr_type;
@@ -626,8 +635,11 @@ mod tests {
         // Unknown table kinds and flags.
         assert_eq!(decode_layout(&encode_layout(DISK, 3, &[]), DISK * 512, 512), Err(LayoutError::TableKind(3)));
         let mut b = encode_layout(DISK, 1, &[fat_part(1, 2048, 100)]);
-        b[LAYOUT_HEADER + 4] = 2;
+        b[LAYOUT_HEADER + 4] = 4;
         assert_eq!(decode_layout(&b, DISK * 512, 512), Err(LayoutError::Reserved));
+        // Bit 1 (damaged) only goes with no filesystem found.
+        b[LAYOUT_HEADER + 4] = 2;
+        assert_eq!(decode_layout(&b, DISK * 512, 512), Err(LayoutError::FsKind(1)));
     }
 
     #[test]
@@ -682,6 +694,26 @@ mod tests {
         );
         let none = decode_layout(&encode_layout(DISK, 0, &[]), DISK * 512, 512).unwrap();
         assert_eq!(probe_text(&none), "LAYOUT 1 none 0\nEND\n");
+    }
+
+    #[test]
+    fn damaged_boot_sectors() {
+        // A damaged FAT on a partition and on the whole disk reads as "bad" for vold, which never formats it.
+        let part = RawPart { damaged: true, fs_kind: 0, serial: None, meta_bytes: 0, label: Vec::new(), ..fat_part(1, 2048, 4096) };
+        let l = decode_layout(&encode_layout(DISK, 1, &[part.clone()]), DISK * 512, 512).unwrap();
+        assert!(l.parts[0].damaged);
+        assert_eq!(probe_text(&l), "LAYOUT 1 mbr 1\nPART 1 public 2048 4096 bad - - 0 -\nEND\n");
+        let whole = RawPart { index: 0, start: 0, length: DISK, damaged: true, ..Default::default() };
+        let l = decode_layout(&encode_layout(DISK, 0, &[whole]), DISK * 512, 512).unwrap();
+        assert_eq!(probe_text(&l), "LAYOUT 1 none 1\nPART 0 public 0 134217728 bad - - 0 -\nEND\n");
+        // Damaged with a filesystem, damaged adoptable storage, and unknown flags are refused.
+        let both = RawPart { fs_kind: crate::FS_VFAT, ..part };
+        assert!(decode_layout(&encode_layout(DISK, 1, &[both]), DISK * 512, 512).is_err());
+        let meta = RawPart { damaged: true, ..gpt(2, 6144, 2048, GPT_ANDROID_META, 2) };
+        assert!(decode_layout(&encode_layout(DISK, 2, &[meta]), DISK * 512, 512).is_err());
+        let mut b = encode_layout(DISK, 1, &[fat_part(1, 2048, 4096)]);
+        b[LAYOUT_HEADER + 4] |= 4;
+        assert!(decode_layout(&b, DISK * 512, 512).is_err());
     }
 
     #[test]

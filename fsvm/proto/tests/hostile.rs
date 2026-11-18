@@ -438,3 +438,76 @@ fn hostile_mount_replies_break_the_session() {
         assert!(matches!(c.mount(1, 2048, 100, ro, FS_VFAT, Duration::ZERO), Err(CallError::Broken(_))), "{what}");
     }
 }
+
+/// The check after the mount (protocol 6): an honest VM, then hostile answers to CHECK.
+#[test]
+fn check_after_mount() {
+    let sectors = DISK_BYTES / 512;
+    let layout_payload = layout::encode_layout(sectors, 1, &[fat(1, 2048, 100_000)]);
+    // Honest: mounted read-only with the check pending, running twice, then passed, then the switch works.
+    let p = layout_payload.clone();
+    let mut c = with_server(move |mut s| {
+        let mut polls = 0;
+        while let Some(r) = read_req(&mut s) {
+            match r.op {
+                x if x == Op::Layout as u16 => reply(&mut s, r.id, 0, &p),
+                x if x == Op::Mount as u16 => {
+                    let mut h = hello_payload(FS_VFAT, true);
+                    h[8] = 1 | 2 | 4;
+                    reply(&mut s, r.id, 0, &h)
+                }
+                x if x == Op::Check as u16 && r.len == 0 => {
+                    polls += 1;
+                    let state: u32 = if polls < 3 { 0 } else { 1 };
+                    let mut b = state.to_le_bytes().to_vec();
+                    b.extend_from_slice(&1234u32.to_le_bytes());
+                    reply(&mut s, r.id, 0, &b)
+                }
+                x if x == Op::Check as u16 => reply(&mut s, r.id, 0, &[]),
+                _ => reply(&mut s, r.id, -errno::EINVAL, &[]),
+            }
+        }
+    });
+    c.layout(DISK_BYTES, 512).unwrap();
+    let h = c.mount_check_later(1, 2048, 100_000, FS_VFAT).unwrap();
+    assert!(h.check_pending && h.read_only && h.was_dirty);
+    assert_eq!(c.check_poll().unwrap().0, CheckState::Running);
+    assert_eq!(c.check_poll().unwrap().0, CheckState::Running);
+    let (state, ran) = c.check_poll().unwrap();
+    assert_eq!((state, ran), (CheckState::Passed, Duration::from_millis(1234)));
+    c.check_switch(Duration::from_secs(15), Duration::from_secs(1)).unwrap();
+    assert!(!c.is_broken());
+
+    // Hostile: an unknown state, a short reply, a payload on the switch, pending while writable.
+    let bad_state = 9u32.to_le_bytes().iter().chain(0u32.to_le_bytes().iter()).copied().collect::<Vec<u8>>();
+    for (what, poll_reply) in [("state 9", bad_state), ("short", vec![1u8, 0, 0, 0])] {
+        let mut c = with_server(move |mut s| {
+            while let Some(r) = read_req(&mut s) {
+                reply(&mut s, r.id, 0, &poll_reply)
+            }
+        });
+        assert!(matches!(c.check_poll(), Err(CallError::Broken(_))), "{what}");
+    }
+    let mut c = with_server(|mut s| {
+        while let Some(r) = read_req(&mut s) {
+            reply(&mut s, r.id, 0, &[1])
+        }
+    });
+    assert!(matches!(c.check_switch(Duration::ZERO, Duration::from_secs(1)), Err(CallError::Broken(_))));
+    let mut c = with_server(|mut s| {
+        while let Some(r) = read_req(&mut s) {
+            let mut h = hello_payload(FS_VFAT, false);
+            h[8] = 4; // pending, but writable
+            reply(&mut s, r.id, 0, &h)
+        }
+    });
+    assert!(matches!(c.mount_check_later(1, 2048, 100_000, FS_VFAT), Err(CallError::Broken(_))));
+    // A switch that fails is an errno, the session stays.
+    let mut c = with_server(|mut s| {
+        while let Some(r) = read_req(&mut s) {
+            reply(&mut s, r.id, -errno::EIO, &[])
+        }
+    });
+    assert!(matches!(c.check_switch(Duration::ZERO, Duration::from_secs(1)), Err(CallError::Errno(e)) if e == errno::EIO));
+    assert!(!c.is_broken());
+}

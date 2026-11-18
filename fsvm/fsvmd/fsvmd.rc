@@ -1,13 +1,95 @@
-# DiamaneOS: vold asks this service for one fsvmd per probe, SD card or USB volume, or OBB image (system/vold
-# fs/Fsvm.cpp, fsvmd/src/launcher.rs). It runs as the system user without capabilities, and so does every fsvmd it
-# starts, so vold changes no ids. Only vold may connect to its socket (fsvmd.te). It is kept clear of the low memory
-# killer: its death ends every served card. SYS_NICE only stays in the bounding set: the VM manager and crosvm carry
-# it as a file capability, and the kernel refuses to execute them without it there (EPERM). The service drops it from
-# every other set at its start (launcher_main.rs).
-service fsvmd /system_ext/bin/fsvmd_launcher
+# DiamaneOS: one fsvmd service per slot, each with its own user (fsvm/config.fs): one probe, six served volumes and
+# four OBB images at a time, as vold's caps (system/vold fs/Fsvm.cpp). vold asks a free slot's service over its
+# socket for one fsvmd (fsvmd/src/launcher.rs), and the service starts it as its own user, so no fsvmd shares a user
+# with another and vold changes no ids. Only vold may connect to the sockets (fsvmd.te). The services are kept clear
+# of the low memory killer: a service's death ends its card. SYS_NICE only stays in the bounding set: the VM manager
+# and crosvm carry it as a file capability, and the kernel refuses to execute them without it there (EPERM). Each
+# service drops it from every other set at its start (launcher_main.rs). The OBB slots run fsvmd_obb.
+
+service fsvmd_probe /system_ext/bin/fsvmd_launcher --slot probe
     class core
-    user system
-    group system
+    user vendor_fsvmd_probe
+    group vendor_fsvmd_probe
     capabilities SYS_NICE
-    socket fsvmd seqpacket 0600 root root
+    socket fsvmd_probe seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_0 /system_ext/bin/fsvmd_launcher --slot 0
+    class core
+    user vendor_fsvmd_0
+    group vendor_fsvmd_0
+    capabilities SYS_NICE
+    socket fsvmd_0 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_1 /system_ext/bin/fsvmd_launcher --slot 1
+    class core
+    user vendor_fsvmd_1
+    group vendor_fsvmd_1
+    capabilities SYS_NICE
+    socket fsvmd_1 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_2 /system_ext/bin/fsvmd_launcher --slot 2
+    class core
+    user vendor_fsvmd_2
+    group vendor_fsvmd_2
+    capabilities SYS_NICE
+    socket fsvmd_2 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_3 /system_ext/bin/fsvmd_launcher --slot 3
+    class core
+    user vendor_fsvmd_3
+    group vendor_fsvmd_3
+    capabilities SYS_NICE
+    socket fsvmd_3 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_4 /system_ext/bin/fsvmd_launcher --slot 4
+    class core
+    user vendor_fsvmd_4
+    group vendor_fsvmd_4
+    capabilities SYS_NICE
+    socket fsvmd_4 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_5 /system_ext/bin/fsvmd_launcher --slot 5
+    class core
+    user vendor_fsvmd_5
+    group vendor_fsvmd_5
+    capabilities SYS_NICE
+    socket fsvmd_5 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_0 /system_ext/bin/fsvmd_launcher --slot obb_0
+    class core
+    user vendor_fsvmd_obb_0
+    group vendor_fsvmd_obb_0
+    capabilities SYS_NICE
+    socket fsvmd_obb_0 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_1 /system_ext/bin/fsvmd_launcher --slot obb_1
+    class core
+    user vendor_fsvmd_obb_1
+    group vendor_fsvmd_obb_1
+    capabilities SYS_NICE
+    socket fsvmd_obb_1 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_2 /system_ext/bin/fsvmd_launcher --slot obb_2
+    class core
+    user vendor_fsvmd_obb_2
+    group vendor_fsvmd_obb_2
+    capabilities SYS_NICE
+    socket fsvmd_obb_2 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_3 /system_ext/bin/fsvmd_launcher --slot obb_3
+    class core
+    user vendor_fsvmd_obb_3
+    group vendor_fsvmd_obb_3
+    capabilities SYS_NICE
+    socket fsvmd_obb_3 seqpacket 0600 root root
     oom_score_adjust -600

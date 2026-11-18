@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #define FSVM_PORT 5690u
-#define FSVM_VERSION 5u
+#define FSVM_VERSION 6u
 #define FSVM_REQ_MAGIC 0x32564d46u /* "FMV2" */
 #define FSVM_RSP_MAGIC 0x32524d46u /* "FMR2" */
 
@@ -47,13 +47,30 @@ enum {
 	FSVM_FORGET = 16,
 	FSVM_LAYOUT = 17, /* the partitions this VM read from its disk (layout.rs) */
 	FSVM_MOUNT = 18,  /* arg: partition index (0: whole disk), node: start, node2: length, flags bit 0: read-only,
-			   * len: milliseconds the filesystem check may take (0: no check) */
+			   * bit 1: check later (a volume marked dirty is mounted read-only at once and checked through
+			   * FSVM_CHECK), len: milliseconds the filesystem check before the mount may take (0: no check) */
 	FSVM_UNMOUNT = 19, /* write everything back and unmount (the filesystem is marked clean), before a stop */
 	FSVM_DIRTY = 20,   /* the bytes still to be written to the disk (u64): dirty plus under write back */
 	FSVM_OPEN = 21,    /* node, flags bit 0: for writing. Answers a handle (u64) that READ, WRITE and FSYNC take in
 			    * node2, and that keeps serving the file after it was unlinked or renamed over */
 	FSVM_CLOSE = 22,   /* node2: the handle */
+	FSVM_CHECK = 23,   /* the check after a mount (MOUNT flags bit 1). arg 0: start it or ask how it goes, answers
+			    * struct fsvm_check. arg 1: the switch once it ended, len: milliseconds a repair may take.
+			    * Unmounts, repairs when needed, marks the volume clean and mounts it writable: 0, or an errno
+			    * and the volume stays read-only */
 };
+/* FSVM_CHECK arg 0 states */
+enum {
+	FSVM_CHECK_RUNNING = 0,
+	FSVM_CHECK_PASSED = 1,  /* no error, only the dirty mark: the switch marks it clean */
+	FSVM_CHECK_ERRORS = 2,  /* errors the switch repairs */
+	FSVM_CHECK_FAILED = 3,  /* the checker did not run or did not finish: stays read-only */
+	FSVM_CHECK_NONE = 4,    /* no check pending */
+};
+struct fsvm_check {
+	uint32_t state;
+	uint32_t elapsed_ms; /* how long the read-only check ran */
+} __attribute__((packed));
 /* FSVM_FSYNC flags bit 0: data only (fdatasync). */
 #define FSVM_FSYNC_DATA 1u
 
@@ -69,6 +86,8 @@ enum {
 #define FSVM_KIND_DIR 2u
 #define FSVM_FS_VFAT 1u
 #define FSVM_FS_EXFAT 2u
+/* Layout entry flags bit 1: no filesystem found, but a FAT or exFAT boot sector that fails the checks (damaged). */
+#define FSVM_LAYOUT_DAMAGED 2u
 
 #define FSVM_TABLE_NONE 0u
 #define FSVM_TABLE_MBR 1u
@@ -108,7 +127,8 @@ struct fsvm_attr {
 struct fsvm_hello {
 	uint32_t version;
 	uint32_t fs_kind;
-	uint32_t flags; /* bit 0: mounted read-only, bit 1: the filesystem was marked dirty when mounted */
+	uint32_t flags; /* bit 0: mounted read-only, bit 1: the filesystem was marked dirty when mounted,
+			 * bit 2: read-only until the check after the mount passes (FSVM_CHECK) */
 	uint32_t reserved;
 	uint64_t root;
 } __attribute__((packed));
@@ -136,7 +156,7 @@ struct fsvm_layout_header {
 
 struct fsvm_layout_entry {
 	uint32_t index;
-	uint32_t flags; /* bit 0: serial is valid */
+	uint32_t flags; /* bit 0: serial is valid, bit 1: FSVM_LAYOUT_DAMAGED */
 	uint64_t start;
 	uint64_t length;
 	uint8_t mbr_type;

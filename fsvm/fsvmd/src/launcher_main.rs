@@ -66,13 +66,21 @@ fn check_capabilities(status: &str) -> Result<()> {
     Ok(())
 }
 
+/// `--slot <slot>`, the one argument fsvmd.rc passes.
+fn slot() -> Result<String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    ensure!(args.len() == 2 && args[0] == "--slot", "usage: fsvmd_launcher --slot <slot>");
+    Ok(args[1].clone())
+}
+
 fn main() {
     android_logger::init_once(
         android_logger::Config::default().with_tag("fsvmd_launcher").with_max_level(log::LevelFilter::Info),
     );
     let started = drop_capabilities()
         .and_then(|_| check_capabilities(&std::fs::read_to_string("/proc/self/status")?))
-        .and_then(|_| launcher::run());
+        .and_then(|_| slot())
+        .and_then(|slot| launcher::run(&slot));
     if let Err(e) = started {
         error!("{e:?}");
         std::process::exit(1);

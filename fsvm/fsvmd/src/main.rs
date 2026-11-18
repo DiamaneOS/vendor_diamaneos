@@ -45,6 +45,7 @@
 //! ```
 
 mod fs;
+mod seccomp;
 mod vm;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -244,10 +245,8 @@ const SERVE_BUDGET: Duration = Duration::from_secs(34);
 /// waits 26 s for fsvmd to end on its own (fs/Fsvm.cpp kSyncMs).
 const CLOSE_LOCK_WAIT: Duration = Duration::from_secs(2);
 const CLOSE_MAX: Duration = Duration::from_secs(20);
-/// At most this long for a writable mount's filesystem check, within the budget. A check that does not finish leaves
-/// the volume read-only for that mount, and vold reports it as mounted read-only (SystemUI says why).
-const CHECK_MAX: Duration = Duration::from_secs(18);
-/// Kept for the mount itself and the first free-space count.
+/// Kept for the mount itself and the first free-space count. A volume marked dirty is checked after the mount, read-
+/// only until the check passes (fs::FsvmFs::spawn_checker), so nothing of the check counts against vold's lock.
 const MOUNT_MIN: Duration = Duration::from_secs(8);
 
 fn left(deadline: Instant) -> Result<Duration> {
@@ -267,7 +266,7 @@ fn start_vm(disk: &File, writable: bool, memory_mib: u32, deadline: Instant) -> 
             }
             std::thread::sleep(Duration::from_secs(wait));
         }
-        let vm = match vm::Vm::start(disk.try_clone()?, writable, memory_mib) {
+        let vm = match vm::Vm::start(manager()?, disk.try_clone()?, writable, memory_mib) {
             Ok(vm) => vm,
             Err(e) => {
                 warn!("filesystem VM start {} failed: {e:?}", attempt + 1);
@@ -345,11 +344,13 @@ impl Served {
         ensure!(self.obb || self.fs == 0 || part.fs_kind == self.fs, "the filesystem changed since the probe");
         let remaining = left(deadline)?;
         ensure!(remaining > MOUNT_MIN, "no time left to mount");
-        let check = if self.read_only { Duration::ZERO } else { CHECK_MAX.min(remaining - MOUNT_MIN) };
-        client.deadlines.mount = remaining - check;
-        let hello = client
-            .mount(part.index, part.start, part.length, self.read_only, part.fs_kind, check)
-            .map_err(|e| anyhow!("mount: {e:?}"))?;
+        client.deadlines.mount = remaining;
+        let hello = if self.read_only {
+            client.mount(part.index, part.start, part.length, true, part.fs_kind, Duration::ZERO)
+        } else {
+            client.mount_check_later(part.index, part.start, part.length, part.fs_kind)
+        }
+        .map_err(|e| anyhow!("mount: {e:?}"))?;
         client.deadlines = Deadlines::default();
         self.vm = Some(vm);
         Ok((client, hello))
@@ -357,9 +358,8 @@ impl Served {
 }
 
 impl fs::Session for Served {
-    fn restart(&mut self) -> Result<(VmClient, u64, bool)> {
-        let (client, hello) = self.bring_up(SERVE_BUDGET)?;
-        Ok((client, hello.root, hello.read_only))
+    fn restart(&mut self) -> Result<(VmClient, fsvm_proto::Hello)> {
+        self.bring_up(SERVE_BUDGET)
     }
 
     fn stop_vm(&mut self, within: Duration) {
@@ -406,16 +406,35 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     let read_only = served.read_only || hello.read_only;
     info!("volume {}: VM serves filesystem kind {}, read-only {}", args.volume, hello.fs_kind, read_only);
     if hello.was_dirty {
-        warn!("volume {}: the filesystem was not cleanly unmounted before (the VM checked it)", args.volume);
+        warn!("volume {}: the filesystem was not cleanly unmounted before (the VM checks it)", args.volume);
     }
 
-    // R: served as asked. r: asked writable and served read-only by the VM (its check did not finish, or its driver
-    // found an error), which vold reports as mounted read-only.
-    let ready: &[u8] = if read_only && !served.read_only { b"r" } else { b"R" };
+    // R: served as asked. c: asked writable, served read-only while the VM checks it, then W (writable now) or F (it
+    // stays read-only) follow on the same pipe. r: asked writable and served read-only by the VM (a write-protected
+    // card, or its driver found an error). vold reports r and F as mounted read-only.
+    let ready: &[u8] = if hello.check_pending {
+        b"c"
+    } else if read_only && !served.read_only {
+        b"r"
+    } else {
+        b"R"
+    };
     pipe.write_all(ready).context("telling vold")?;
-    drop(pipe);
+    if hello.check_pending {
+        warn!("volume {}: marked dirty, served read-only while the VM checks it", args.volume);
+    }
 
-    let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, Box::new(served));
+    let filesystem =
+        fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, hello.check_pending, Box::new(served));
+    if !obb {
+        // The pipe stays open for the check's end (also for a check a new VM starts after a broken session).
+        let pipe = std::sync::Mutex::new(pipe);
+        filesystem.spawn_checker(Box::new(move |writable| {
+            let _ = pipe.lock().map(|mut p| p.write_all(if writable { b"W" } else { b"F" }));
+        }));
+    } else {
+        drop(pipe);
+    }
     let closer = filesystem.closer();
     watch_sigterm(filesystem.closer())?;
     let r = fs::serve_fuse(fuse_dev, filesystem);
@@ -430,6 +449,13 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
         },
         c => exit_for(c),
     }
+}
+
+/// The VM manager, started before the seccomp filter (run).
+static MANAGER: std::sync::OnceLock<vm::Manager> = std::sync::OnceLock::new();
+
+fn manager() -> Result<&'static vm::Manager> {
+    MANAGER.get().ok_or_else(|| anyhow!("no VM manager"))
 }
 
 fn run() -> Result<()> {
@@ -448,6 +474,14 @@ fn run() -> Result<()> {
         Mode::Obb => ensure!(ft.is_file(), "descriptor 3 is not a file"),
         _ => ensure!(ft.is_block_device(), "descriptor 3 is not a block device"),
     }
+    // The VM manager first, then the filter: it and crosvm start without it (they need exec and their file
+    // capability), fsvmd itself never starts another program after this. Nothing vold handed over reaches the VM
+    // manager but over binder: /dev/fuse (taken later, in serve) is close-on-exec before it starts.
+    // SAFETY: F_SETFD only changes the descriptor flags of FUSE_FD, which vold handed to this process or left closed.
+    unsafe { libc::fcntl(FUSE_FD, libc::F_SETFD, libc::FD_CLOEXEC) };
+    let _ = MANAGER.set(vm::Manager::spawn()?);
+    let how = seccomp::install_for_fsvmd()?;
+    info!("seccomp filter on ({how} anything else)");
     match args.mode {
         Mode::Probe => probe(&args, disk, pipe),
         Mode::Serve | Mode::Obb => serve(&args, disk, pipe),

@@ -37,11 +37,24 @@ const INITRD: &str = "/apex/com.android.virt/etc/fsvm_initrd.img";
 /// The instance disk pvmfw needs for a protected VM. The VM keeps no state, so a fresh one each start.
 const INSTANCE_SIZE: i64 = 10 << 20;
 
+/// fsvmd's VM manager: started once, before fsvmd's seccomp filter (seccomp.rs), so that neither it nor the crosvm it
+/// starts inherits the filter, and kept for fsvmd's life. Every VM fsvmd starts (the first, and new ones after a
+/// broken session) comes from it.
+pub struct Manager {
+    _service: VirtualizationService,
+    manager: Strong<dyn IVirtualizationService>,
+}
+
+impl Manager {
+    pub fn spawn() -> Result<Manager> {
+        let service = VirtualizationService::new().context("starting the VM manager")?;
+        let manager = service.connect().context("connecting to the VM manager")?;
+        Ok(Manager { _service: service, manager })
+    }
+}
+
 pub struct Vm {
     instance: VmInstance,
-    // Keeps the VM manager process alive for as long as the VM runs.
-    _service: VirtualizationService,
-    _manager: Strong<dyn IVirtualizationService>,
 }
 
 fn memfd(name: &CStr) -> Result<File> {
@@ -56,9 +69,8 @@ fn memfd(name: &CStr) -> Result<File> {
 
 impl Vm {
     /// Starts the VM with `volume` as its first disk.
-    pub fn start(volume: File, writable: bool, memory_mib: u32) -> Result<Vm> {
-        let service = VirtualizationService::new().context("starting the VM manager")?;
-        let manager = service.connect().context("connecting to the VM manager")?;
+    pub fn start(m: &Manager, volume: File, writable: bool, memory_mib: u32) -> Result<Vm> {
+        let manager = &m.manager;
 
         let instance_image = memfd(c"fsvm-instance")?;
         instance_image.set_len(INSTANCE_SIZE as u64)?;
@@ -103,7 +115,7 @@ impl Vm {
             .context("creating the VM")?;
         instance.start(None).context("starting the VM")?;
         info!("filesystem VM started, CID {}, {} MiB", instance.cid(), memory_mib);
-        Ok(Vm { instance, _service: service, _manager: manager })
+        Ok(Vm { instance })
     }
 
     /// Connects to the VM's server, retrying while it boots.

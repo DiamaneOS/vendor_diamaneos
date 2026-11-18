@@ -21,12 +21,19 @@
 //! FUSE loop right after INIT: the kernel was told max_write 1 MiB and refused the loop's 128 KiB reads with EINVAL.
 //! This test fails that way on the old code.
 //!
+//! The thread serving FUSE runs under fsvmd's seccomp filter (fsvmd/src/seccomp.rs), with calls outside its list
+//! reported to a supervisor thread (SECCOMP_RET_USER_NOTIF) and let through: the test fails and names them, so the
+//! list covers the FUSE and protocol path. `--trace` runs with an empty list and prints every call made.
+//!
 //! No test harness: the namespaces need a process of one thread, so main() starts itself again inside them. Without
 //! user namespaces or /dev/fuse on the host it prints SKIPPED and exits 0, and the build log shows it.
 
 #[allow(dead_code)]
 #[path = "../src/fs.rs"]
 mod fs;
+#[allow(dead_code)]
+#[path = "../src/seccomp.rs"]
+mod seccomp;
 
 use fsvm_proto::{encode_attr, encode_dir_page, Attr, Client, Deadlines, Kind, StreamTransport, MAX_IO, RSP_MAGIC};
 use std::collections::HashMap;
@@ -61,6 +68,7 @@ fn main() {
     let gid_map = format!("0 {gid} 1");
     let mut cmd = Command::new(std::env::current_exe().expect("own path"));
     cmd.env(CHILD, "1");
+    cmd.args(std::env::args().skip(1));
     // SAFETY: the closure runs in the forked child before exec and only makes system calls on memory prepared
     // before the fork.
     unsafe {
@@ -118,7 +126,7 @@ fn check(ok: bool, what: &str) -> Result<(), String> {
 struct NoRestart;
 
 impl fs::Session for NoRestart {
-    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, u64, bool)> {
+    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
         anyhow::bail!("the test VM does not restart")
     }
     fn stop_vm(&mut self, _within: Duration) {}
@@ -157,11 +165,39 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
     let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
     std::thread::spawn(move || FakeVm::new().serve(vm_end));
     let client = Client::new(StreamTransport(our_end), Deadlines::default());
-    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, false, 0, false, Box::new(NoRestart));
+    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, false, 0, false, false, Box::new(NoRestart));
     let (done_tx, done_rx) = mpsc::channel();
+    let trace = std::env::args().any(|a| a == "--trace");
+    // The listener goes over an atomic, not a channel: with an empty list (--trace) every system call of the FUSE
+    // thread waits for the supervisor, which must not need one of them to start.
+    let listener_fd = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0));
+    let lfd = listener_fd.clone();
     std::thread::spawn(move || {
+        // fsvmd's filter on this thread only, everything outside the list reported to the supervisor.
+        let list: &[(libc::c_long, &str)] = if trace { &[] } else { seccomp::ALLOWED };
+        let filter = seccomp::build_with(std::process::id(), &[], seccomp::RET_USER_NOTIF, list);
+        match seccomp::install(&filter, seccomp::SECCOMP_FILTER_FLAG_NEW_LISTENER) {
+            Ok(fd) => lfd.store(fd as i32, std::sync::atomic::Ordering::SeqCst),
+            Err(_) => {
+                lfd.store(-1, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        }
         let _ = done_tx.send(format!("{:?}", fs::serve_fuse(dev, filesystem)));
     });
+    let listener = loop {
+        match listener_fd.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => std::thread::sleep(Duration::from_millis(5)),
+            -1 => return Err("seccomp: the filter could not be installed".into()),
+            fd => break fd,
+        }
+    };
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<i64, u32>::new()));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let supervisor = {
+        let (seen, stop) = (seen.clone(), stop.clone());
+        std::thread::spawn(move || supervise(listener, &seen, &stop))
+    };
 
     let r = exercise(mnt, &done_rx);
     // SAFETY: plain system call on a valid string.
@@ -172,8 +208,130 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
     let end = done_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "the FUSE loop did not end after the unmount")?;
     check(end.contains("code: 19"), &format!("the FUSE loop ended with {end}, not ENODEV after the unmount"))?;
     println!("fsvmd_fuse_test: loop ended after the unmount: {end}");
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = supervisor.join();
+    let seen = seen.lock().unwrap();
+    let names: Vec<String> = seen.iter().map(|(nr, n)| format!("{} x{n}", syscall_name(*nr))).collect();
+    if trace {
+        println!("fsvmd_fuse_test: TRACE {} calls: {}", names.len(), names.join(", "));
+        return Ok(());
+    }
+    check(seen.is_empty(), &format!("calls outside fsvmd's seccomp list: {}", names.join(", ")))?;
+    println!("fsvmd_fuse_test: the FUSE thread kept to fsvmd's seccomp list");
     Ok(())
 }
+
+#[repr(C)]
+#[allow(dead_code)]
+struct NotifData {
+    nr: i32,
+    arch: u32,
+    ip: u64,
+    args: [u64; 6],
+}
+#[repr(C)]
+#[allow(dead_code)]
+struct Notif {
+    id: u64,
+    pid: u32,
+    flags: u32,
+    data: NotifData,
+}
+#[repr(C)]
+#[allow(dead_code)]
+struct NotifResp {
+    id: u64,
+    val: i64,
+    error: i32,
+    flags: u32,
+}
+const NOTIF_RECV: u64 = 0xC050_2100; // SECCOMP_IOCTL_NOTIF_RECV
+const NOTIF_SEND: u64 = 0xC018_2101; // SECCOMP_IOCTL_NOTIF_SEND
+const FLAG_CONTINUE: u32 = 1; // SECCOMP_USER_NOTIF_FLAG_CONTINUE
+
+type Seen = std::sync::Mutex<std::collections::BTreeMap<i64, u32>>;
+
+/// Records every call the filter reported and lets it run (the test checks the list, it does not enforce it).
+fn supervise(listener: i32, seen: &Seen, stop: &std::sync::atomic::AtomicBool) {
+    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+        let mut p = libc::pollfd { fd: listener, events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll on one pollfd of the listener this process owns.
+        if unsafe { libc::poll(&mut p, 1, 200) } != 1 {
+            continue;
+        }
+        // SAFETY: the kernel fills a zeroed struct seccomp_notif.
+        let mut n: Notif = unsafe { std::mem::zeroed() };
+        // SAFETY: NOTIF_RECV writes one struct seccomp_notif into `n`.
+        if unsafe { libc::ioctl(listener, NOTIF_RECV as _, &mut n) } != 0 {
+            continue;
+        }
+        *seen.lock().unwrap().entry(n.data.nr as i64).or_default() += 1;
+        let r = NotifResp { id: n.id, val: 0, error: 0, flags: FLAG_CONTINUE };
+        // SAFETY: NOTIF_SEND reads one struct seccomp_notif_resp.
+        unsafe { libc::ioctl(listener, NOTIF_SEND as _, &r) };
+    }
+}
+
+/// Names for the calls a trace shows (the host's numbers).
+fn syscall_name(nr: i64) -> String {
+    let known: &[(libc::c_long, &str)] = &[
+        (libc::SYS_read, "read"),
+        (libc::SYS_write, "write"),
+        (libc::SYS_readv, "readv"),
+        (libc::SYS_writev, "writev"),
+        (libc::SYS_pread64, "pread64"),
+        (libc::SYS_pwrite64, "pwrite64"),
+        (libc::SYS_close, "close"),
+        (libc::SYS_futex, "futex"),
+        (libc::SYS_mmap, "mmap"),
+        (libc::SYS_munmap, "munmap"),
+        (libc::SYS_mremap, "mremap"),
+        (libc::SYS_madvise, "madvise"),
+        (libc::SYS_mprotect, "mprotect"),
+        (libc::SYS_brk, "brk"),
+        (libc::SYS_poll, "poll"),
+        (libc::SYS_ppoll, "ppoll"),
+        (libc::SYS_sendto, "sendto"),
+        (libc::SYS_recvfrom, "recvfrom"),
+        (libc::SYS_sendmsg, "sendmsg"),
+        (libc::SYS_recvmsg, "recvmsg"),
+        (libc::SYS_setsockopt, "setsockopt"),
+        (libc::SYS_getsockopt, "getsockopt"),
+        (libc::SYS_clock_gettime, "clock_gettime"),
+        (libc::SYS_clock_nanosleep, "clock_nanosleep"),
+        (libc::SYS_nanosleep, "nanosleep"),
+        (libc::SYS_sigaltstack, "sigaltstack"),
+        (libc::SYS_rt_sigprocmask, "rt_sigprocmask"),
+        (libc::SYS_rt_sigaction, "rt_sigaction"),
+        (libc::SYS_exit, "exit"),
+        (libc::SYS_exit_group, "exit_group"),
+        (libc::SYS_gettid, "gettid"),
+        (libc::SYS_getpid, "getpid"),
+        (libc::SYS_sched_yield, "sched_yield"),
+        (libc::SYS_getrandom, "getrandom"),
+        (libc::SYS_fcntl, "fcntl"),
+        (libc::SYS_ioctl, "ioctl"),
+        (libc::SYS_openat, "openat"),
+        (libc::SYS_fstat, "fstat"),
+        (libc::SYS_statx, "statx"),
+        (libc::SYS_newfstatat, "newfstatat"),
+        (libc::SYS_lseek, "lseek"),
+        (libc::SYS_dup, "dup"),
+        (libc::SYS_dup3, "dup3"),
+        (libc::SYS_prctl, "prctl"),
+        (libc::SYS_set_robust_list, "set_robust_list"),
+        (334, "rseq"),
+        (libc::SYS_clone, "clone"),
+        (435, "clone3"),
+        (libc::SYS_socket, "socket"),
+        (libc::SYS_connect, "connect"),
+        (libc::SYS_getcpu, "getcpu"),
+        (libc::SYS_sched_getaffinity, "sched_getaffinity"),
+        (libc::SYS_prlimit64, "prlimit64"),
+    ];
+    known.iter().find(|(n, _)| *n as i64 == nr).map(|(_, s)| s.to_string()).unwrap_or_else(|| format!("#{nr}"))
+}
+
 
 fn pattern(len: usize, seed: u8) -> Vec<u8> {
     (0..len).map(|i| (i as u32).wrapping_mul(2654435761).rotate_left(seed as u32 % 31) as u8 ^ seed).collect()

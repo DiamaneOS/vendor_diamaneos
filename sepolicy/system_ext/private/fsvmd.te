@@ -5,10 +5,11 @@ type fsvmd_exec, system_file_type, exec_type, file_type;
 type fsvmd_tmpfs, file_type;
 type fsvmd_socket, file_type, coredomain_socket;
 
-# init runs the fsvmd service (fsvmd_launcher, fsvmd.rc) as the system user without capabilities, in a domain of its
-# own. vold asks it over its socket for one fsvmd per probe, volume or OBB image, and the service starts it
-# (fsvmd/src/launcher.rs), so vold changes no ids and holds neither setuid nor setgid. vold stops fsvmd through the
-# service. Only vold may connect, and a fsvmd can neither signal nor trace the service.
+# init runs one fsvmd service per slot (fsvmd_launcher --slot, fsvmd.rc), each as a user of its own from the vendor's
+# OEM range (config.fs) without capabilities, all in one domain of their own. vold asks a free slot's service over its
+# socket for one fsvmd, and the service starts it (fsvmd/src/launcher.rs), so vold changes no ids and holds neither
+# setuid nor setgid, and no two fsvmd share a user. vold stops fsvmd through the service. Only vold may connect, and a
+# fsvmd can neither signal nor trace the service.
 type fsvmd_launcher, domain, coredomain;
 type fsvmd_launcher_exec, system_file_type, exec_type, file_type;
 init_daemon_domain(fsvmd_launcher)
@@ -67,10 +68,10 @@ allow fsvmd_virtualizationmanager vold_device:blk_file { read write getattr };
 allow fsvmd_virtmgr_crosvm vold_device:blk_file { read write getattr };
 
 # Phase 2: Android's kernel reads no partition table of an SD card or USB disk (CONFIG_BLK_NO_EXTERNAL_PART_SCAN).
-# vold, and only vold, adds a partition to it with BLKPG: the adoptable storage partition, a public volume's
-# partition next to it on a mixed card (so that the VM gets only that range), and a public volume's partition for a
-# format, at the range the filesystem VM read and fsvmd checked. The kernel allows two such partitions per disk at a
-# time and refuses rescans and resizing.
+# Each partition's VM, a format and adoptable storage get a device-mapper range of the card instead (vold fs/Fsvm.cpp
+# CreateRange, through libdm as for dm-crypt), labelled vold_device by its node in /dev/block/vold. vold, and only
+# vold, still uses BLKPG on such a disk, to remove partitions a kernel without the option read itself or an older
+# vold added. The kernel refuses rescans and resizing there.
 allowxperm vold vold_device:blk_file ioctl BLKPG;
 # blkid_untrusted holds ioctl on vold_device without an ioctl list, but no CAP_SYS_ADMIN, which BLKPG needs. The
 # kernel's own nodes of a USB disk carry block_device (init holds ioctl on every device node).

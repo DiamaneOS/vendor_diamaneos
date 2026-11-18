@@ -44,8 +44,8 @@ pub use client::{Client, Deadlines, StreamTransport, Transport};
 pub const REQ_MAGIC: u32 = u32::from_le_bytes(*b"FMV2");
 pub const RSP_MAGIC: u32 = u32::from_le_bytes(*b"FMR2");
 /// 4: UNMOUNT, DIRTY, the data-only FSYNC flag and the dirty flag in HELLO. 5: OPEN and CLOSE, and file handles in
-/// READ, WRITE and FSYNC.
-pub const VERSION: u32 = 5;
+/// READ, WRITE and FSYNC. 6: the check after the mount (MOUNT flags bit 1, CHECK, HELLO's check flag).
+pub const VERSION: u32 = 6;
 pub const PORT: u32 = 5690;
 
 pub const REQ_HEADER: usize = 48;
@@ -113,6 +113,25 @@ pub enum Op {
     Open = 21,
     /// Closes the handle in `node2`.
     Close = 22,
+    /// The check after a mount (MOUNT flags bit 1). `arg` 0: starts it or tells how it goes (8 bytes: state u32,
+    /// milliseconds it ran u32). `arg` 1: the switch once it ended (`len`: milliseconds a repair may take), which
+    /// unmounts, repairs if needed, marks the volume clean and mounts it writable, or answers an errno and leaves it
+    /// read-only.
+    Check = 23,
+}
+
+/// How the check after a mount goes (CHECK `arg` 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckState {
+    Running,
+    /// No error but the dirty mark: the switch marks the volume clean.
+    Passed,
+    /// Errors the switch repairs.
+    Errors,
+    /// The checker did not run or did not finish: the volume stays read-only.
+    Failed,
+    /// No check pending.
+    None,
 }
 
 /// The kinds of node a filesystem on a card can hold. FAT and exFAT have no links or special files.
@@ -309,6 +328,8 @@ pub struct Hello {
     pub read_only: bool,
     /// The filesystem was marked dirty when the VM mounted it (it was not cleanly unmounted before).
     pub was_dirty: bool,
+    /// Mounted read-only until the check after the mount passes (CHECK).
+    pub check_pending: bool,
     pub root: u64,
 }
 
@@ -323,14 +344,20 @@ pub fn decode_hello(b: &[u8]) -> Result<Hello, ProtoError> {
     if fs_kind != 0 && fs_kind != FS_VFAT && fs_kind != FS_EXFAT {
         return Err(ProtoError::BadAttr("filesystem kind"));
     }
-    if le_u32(b, 8) & !3 != 0 || le_u32(b, 12) != 0 {
+    if le_u32(b, 8) & !7 != 0 || le_u32(b, 12) != 0 {
         return Err(ProtoError::BadAttr("hello flags"));
     }
     let root = le_u64(b, 16);
     if root == 0 {
         return Err(ProtoError::BadAttr("root node 0"));
     }
-    Ok(Hello { fs_kind, read_only: le_u32(b, 8) & 1 != 0, was_dirty: le_u32(b, 8) & 2 != 0, root })
+    let flags = le_u32(b, 8);
+    let check_pending = flags & 4 != 0;
+    // Pending means read-only until the check passed.
+    if check_pending && flags & 1 == 0 {
+        return Err(ProtoError::BadAttr("hello flags"));
+    }
+    Ok(Hello { fs_kind, read_only: flags & 1 != 0, was_dirty: flags & 2 != 0, check_pending, root })
 }
 
 /// Filesystem totals, checked.
@@ -547,10 +574,19 @@ mod tests {
         h[0..4].copy_from_slice(&VERSION.to_le_bytes());
         h[4..8].copy_from_slice(&FS_EXFAT.to_le_bytes());
         h[16..24].copy_from_slice(&1u64.to_le_bytes());
-        assert_eq!(decode_hello(&h).unwrap(), Hello { fs_kind: FS_EXFAT, read_only: false, was_dirty: false, root: 1 });
+        assert_eq!(
+            decode_hello(&h).unwrap(),
+            Hello { fs_kind: FS_EXFAT, read_only: false, was_dirty: false, check_pending: false, root: 1 }
+        );
         h[8] = 2;
         assert!(decode_hello(&h).unwrap().was_dirty);
+        // Check pending only with read-only, unknown flags refused.
         h[8] = 4;
+        assert!(decode_hello(&h).is_err());
+        h[8] = 5;
+        let p = decode_hello(&h).unwrap();
+        assert!(p.check_pending && p.read_only);
+        h[8] = 8;
         assert!(decode_hello(&h).is_err());
         h[8] = 0;
         h[4] = 0;

@@ -167,9 +167,24 @@ static int is_fat(const uint8_t *b)
 }
 
 /*
+ * A boot sector that says it is FAT or exFAT, whether or not it passes the checks above: the signature, a jump
+ * instruction and the FAT type string, or exFAT's name. One that does not pass them is damaged: the user is never
+ * offered to format it (vold "could not be opened"), unlike a partition with nothing recognisable on it.
+ */
+static int looks_fat_or_exfat(const uint8_t *b)
+{
+	if (b[510] != 0x55 || b[511] != 0xAA)
+		return 0;
+	if (!memcmp(b + 3, "EXFAT   ", 8))
+		return 1;
+	return (b[0] == 0xEB || b[0] == 0xE9) && (!memcmp(b + 54, "FAT", 3) || !memcmp(b + 82, "FAT32", 5));
+}
+
+/*
  * Fills the filesystem fields of `e` from the partition at byte offset `off` with `bytes` bytes. Leaves fs_kind 0
- * when the boot sector was read and nothing is recognised. Returns -EIO when the boot sector could not be read.
- * A label that cannot be read is only left out.
+ * when the boot sector was read and nothing is recognised, and then marks a FAT or exFAT boot sector that fails the
+ * checks as damaged (flags bit 1). Returns -EIO when the boot sector could not be read. A label that cannot be read
+ * is only left out.
  */
 static int probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, struct fsvm_layout_entry *e)
 {
@@ -182,8 +197,10 @@ static int probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, st
 	if (is_exfat(b)) {
 		uint32_t heap = le32(b + 88), clusters = le32(b + 92), root = le32(b + 96);
 		unsigned bps_shift = b[108], spc_shift = b[109];
-		if (bps_shift < 9 || bps_shift > 12 || spc_shift > 25 - bps_shift)
+		if (bps_shift < 9 || bps_shift > 12 || spc_shift > 25 - bps_shift) {
+			e->flags |= FSVM_LAYOUT_DAMAGED;
 			return 0;
+		}
 		e->fs_kind = FSVM_FS_EXFAT;
 		e->serial = le32(b + 100);
 		e->flags |= 1;
@@ -208,8 +225,11 @@ static int probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, st
 		return 0;
 	}
 
-	if (!is_fat(b))
+	if (!is_fat(b)) {
+		if (looks_fat_or_exfat(b))
+			e->flags |= FSVM_LAYOUT_DAMAGED;
 		return 0;
+	}
 	uint32_t bps = le16(b + 11), spc = b[13], reserved = le16(b + 14), fats = b[16];
 	uint32_t root_entries = le16(b + 17), fat16 = le16(b + 22);
 	int is32 = fat16 == 0;
@@ -417,9 +437,27 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned
 		int r = probe_fs(rd, ctx, 0, disk_sectors * SECTOR, e);
 		if (r)
 			return r;
-		if (!e->fs_kind)
+		if (!e->fs_kind && !(e->flags & FSVM_LAYOUT_DAMAGED))
 			l->h.count = 0;
 		return 0;
+	}
+	/* A FAT boot sector on the whole disk that fails the checks, where no MBR entry is in use: damaged, never
+	 * blank. */
+	if (looks_fat_or_exfat(b)) {
+		int used = 0, mbr = 1;
+		for (int i = 0; i < 4; i++) {
+			const uint8_t *q = b + 446 + 16 * i;
+			if (q[0] != 0x00 && q[0] != 0x80)
+				mbr = 0;
+			if (q[4])
+				used = 1;
+		}
+		if (!(mbr && used)) {
+			struct fsvm_layout_entry *e;
+			add_entry(l, 0, 0, disk_sectors, &e);
+			e->flags |= FSVM_LAYOUT_DAMAGED;
+			return 0;
+		}
 	}
 	if (b[510] != 0x55 || b[511] != 0xAA) {
 		/*
