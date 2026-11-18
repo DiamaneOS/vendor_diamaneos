@@ -115,7 +115,7 @@ fn main() {
             exit(1)
         });
         let t = std::time::Instant::now();
-        hello = c.mount(p.index, p.start, p.length, ro, p.fs_kind).unwrap_or_else(|e| die("mount", e));
+        hello = c.mount(p.index, p.start, p.length, ro, p.fs_kind, std::time::Duration::from_secs(20)).unwrap_or_else(|e| die("mount", e));
         eprintln!("mounted partition {} in {} ms", p.index, t.elapsed().as_millis());
     }
     match arg(2) {

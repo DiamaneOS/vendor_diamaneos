@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""mkinitrd.py OUT INIT: the filesystem VM's initramfs, a newc cpio archive with /init and the empty directories it
-mounts on. Fixed owners, modes and times, so the same binary always gives the same bytes and the same signature."""
+"""mkinitrd.py OUT INIT [NAME=BINARY ...]: the filesystem VM's initramfs, a newc cpio archive with /init, the empty
+directories it mounts on (dev, proc, sys, mnt) and the checkers in /bin (fsck_msdos=..., fsck.exfat=...). Fixed
+owners, modes and times, so the same binaries always give the same bytes and the same signature."""
 
 import sys
 
@@ -34,12 +35,21 @@ def main():
     out, init = sys.argv[1], sys.argv[2]
     with open(init, "rb") as f:
         init_data = f.read()
-    archive = b"".join([
-        entry("dev", 0o040755, ino=1),
-        entry("mnt", 0o040755, ino=2),
-        entry("init", 0o100755, init_data, ino=3),
-        entry("TRAILER!!!", 0, ino=0),
-    ])
+    entries = [
+        entry("bin", 0o040755, ino=1),
+        entry("dev", 0o040755, ino=2),
+        entry("mnt", 0o040755, ino=3),
+        entry("proc", 0o040555, ino=4),
+        entry("sys", 0o040555, ino=5),
+        entry("init", 0o100755, init_data, ino=6),
+    ]
+    for i, arg in enumerate(sorted(sys.argv[3:])):
+        name, path = arg.split("=", 1)
+        assert name and "/" not in name, name
+        with open(path, "rb") as f:
+            entries.append(entry("bin/" + name, 0o100755, f.read(), ino=7 + i))
+    entries.append(entry("TRAILER!!!", 0, ino=0))
+    archive = b"".join(entries)
     archive += b"\0" * (-len(archive) % 512)
     with open(out, "wb") as f:
         f.write(archive)

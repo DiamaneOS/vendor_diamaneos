@@ -55,7 +55,7 @@ use std::io::Write;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DISK_FD: i32 = 3;
 const FUSE_FD: i32 = 4;
@@ -166,12 +166,30 @@ fn access_mode(f: &File) -> Result<i32> {
 
 type VmClient = Client<StreamTransport<UnixStream>>;
 
-/// Starts the VM, connects and checks the protocol version. A VM that cannot start is retried a few times: a
-/// protected VM start can be refused while memory is scattered, right after boot.
-fn start_vm(disk: &File, writable: bool, memory_mib: u32) -> Result<(vm::Vm, VmClient)> {
+/// vold waits 23 s for a probe and 33 s for a mount, and holds its lock meanwhile (system/vold fs/Fsvm.cpp), so
+/// fsvmd finishes within these, whatever the VM does.
+const PROBE_BUDGET: Duration = Duration::from_secs(20);
+const SERVE_BUDGET: Duration = Duration::from_secs(30);
+/// At most this long for a writable mount's filesystem check, within the budget.
+const CHECK_MAX: Duration = Duration::from_secs(14);
+/// Kept for the mount itself and the first free-space count.
+const MOUNT_MIN: Duration = Duration::from_secs(8);
+
+fn left(deadline: Instant) -> Result<Duration> {
+    let now = Instant::now();
+    ensure!(now < deadline, "out of time");
+    Ok(deadline - now)
+}
+
+/// Starts the VM, connects and checks the protocol version, all before `deadline`. A VM that cannot start is retried
+/// a few times: a protected VM start can be refused while memory is scattered, right after boot.
+fn start_vm(disk: &File, writable: bool, memory_mib: u32, deadline: Instant) -> Result<(vm::Vm, VmClient)> {
     let mut last = anyhow!("not started");
     for (attempt, wait) in [0u64, 1, 2].into_iter().enumerate() {
         if wait > 0 {
+            if left(deadline)? <= Duration::from_secs(wait + 5) {
+                break;
+            }
             std::thread::sleep(Duration::from_secs(wait));
         }
         let vm = match vm::Vm::start(disk.try_clone()?, writable, memory_mib) {
@@ -182,8 +200,10 @@ fn start_vm(disk: &File, writable: bool, memory_mib: u32) -> Result<(vm::Vm, VmC
                 continue;
             }
         };
-        let stream = vm.connect(PORT, Duration::from_secs(10))?;
-        let mut client = Client::new(StreamTransport(stream), Deadlines::default());
+        let stream = vm.connect(PORT, left(deadline)?.min(Duration::from_secs(8)))?;
+        let mut deadlines = Deadlines::default();
+        deadlines.hello = deadlines.hello.min(left(deadline)?);
+        let mut client = Client::new(StreamTransport(stream), deadlines);
         let hello = client.hello().map_err(|e| anyhow!("hello: {e:?}"))?;
         ensure!(hello.fs_kind == 0, "a fresh VM claims a mounted filesystem");
         return Ok((vm, client));
@@ -193,7 +213,9 @@ fn start_vm(disk: &File, writable: bool, memory_mib: u32) -> Result<(vm::Vm, VmC
 
 fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     ensure!(access_mode(&disk)? == libc::O_RDONLY, "the probe disk must be read-only");
-    let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB)?;
+    let deadline = Instant::now() + PROBE_BUDGET;
+    let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB, deadline)?;
+    client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
     let l = client.layout(args.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
     drop(vm);
     if l.dropped_labels > 0 {
@@ -204,54 +226,101 @@ fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     Ok(())
 }
 
+/// One served volume: what it takes to bring a VM up for it, first at mount and again when a session breaks.
+struct Served {
+    disk: File,
+    obb: bool,
+    read_only: bool,
+    memory: u32,
+    disk_bytes: u64,
+    partition: u32,
+    start: u64,
+    length: u64,
+    fs: u32,
+    volume: String,
+    vm: Option<vm::Vm>,
+}
+
+impl Served {
+    /// Starts a VM, checks the partition is still where the probe found it, checks and mounts it.
+    fn bring_up(&mut self, budget: Duration) -> Result<(VmClient, fsvm_proto::Hello)> {
+        // The old VM goes first, so that its memory is free for the new one.
+        self.vm = None;
+        let deadline = Instant::now() + budget;
+        info!("volume {}: starting the filesystem VM with {} MiB", self.volume, self.memory);
+        let (vm, mut client) = start_vm(&self.disk, !self.read_only, self.memory, deadline)?;
+        client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
+        let l = client.layout(self.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
+        let part = if self.obb {
+            ensure!(l.table == Table::None && l.parts.len() == 1, "an OBB must be one filesystem without a partition table");
+            l.parts[0].clone()
+        } else {
+            l.parts
+                .iter()
+                .find(|p| p.index == self.partition && p.start == self.start && p.length == self.length)
+                .cloned()
+                .ok_or_else(|| anyhow!("partition {} is no longer where the probe found it", self.partition))?
+        };
+        ensure!(part.class == Class::Public, "partition {} is not a public volume", part.index);
+        ensure!(part.fs_kind != 0, "no FAT or exFAT filesystem on partition {}", part.index);
+        ensure!(self.obb || self.fs == 0 || part.fs_kind == self.fs, "the filesystem changed since the probe");
+        let remaining = left(deadline)?;
+        ensure!(remaining > MOUNT_MIN, "no time left to mount");
+        let check = if self.read_only { Duration::ZERO } else { CHECK_MAX.min(remaining - MOUNT_MIN) };
+        client.deadlines.mount = remaining - check;
+        let hello = client
+            .mount(part.index, part.start, part.length, self.read_only, part.fs_kind, check)
+            .map_err(|e| anyhow!("mount: {e:?}"))?;
+        client.deadlines = Deadlines::default();
+        self.vm = Some(vm);
+        Ok((client, hello))
+    }
+}
+
+impl fs::Session for Served {
+    fn restart(&mut self) -> Result<(VmClient, u64, bool)> {
+        let (client, hello) = self.bring_up(SERVE_BUDGET)?;
+        Ok((client, hello.root, hello.read_only))
+    }
+}
+
 fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     let fuse_dev = inherited(FUSE_FD)?;
     ensure!(fuse_dev.metadata()?.file_type().is_char_device(), "descriptor 4 is not /dev/fuse");
     let obb = args.mode == Mode::Obb;
-    let read_only = args.read_only || obb;
     if obb {
         ensure!(access_mode(&disk)? == libc::O_RDONLY, "an OBB must be opened read-only");
         ensure!(disk.metadata()?.file_type().is_file(), "descriptor 3 is not a file");
         // The VM sees whole sectors. An OBB's signature footer after the image is not part of the filesystem.
         ensure!(disk.metadata()?.len() & !511 == args.disk_bytes, "the OBB changed size");
     }
-
     // The memory follows the metadata the filesystem needs. For an OBB it is not known before the VM reads it, and
     // OBB images are small.
-    let memory = if obb { layout::MIN_SERVE_MIB } else { layout::serve_memory_mib(args.fs, args.meta_bytes) };
-    info!("volume {}: starting the filesystem VM with {memory} MiB", args.volume);
-    let (vm, mut client) = start_vm(&disk, !read_only, memory)?;
-
-    // The partition must still be what the probe reported: same place, a filesystem Android may serve.
-    let l = client.layout(args.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
-    let part = if obb {
-        ensure!(l.table == Table::None && l.parts.len() == 1, "an OBB must be one filesystem without a partition table");
-        l.parts[0].clone()
-    } else {
-        l.parts
-            .iter()
-            .find(|p| p.index == args.partition && p.start == args.start && p.length == args.length)
-            .cloned()
-            .ok_or_else(|| anyhow!("partition {} is no longer where the probe found it", args.partition))?
+    let mut served = Served {
+        disk,
+        obb,
+        read_only: args.read_only || obb,
+        memory: if obb { layout::MIN_SERVE_MIB } else { layout::serve_memory_mib(args.fs, args.meta_bytes) },
+        disk_bytes: args.disk_bytes,
+        partition: args.partition,
+        start: args.start,
+        length: args.length,
+        fs: args.fs,
+        volume: args.volume.clone(),
+        vm: None,
     };
-    ensure!(part.class == Class::Public, "partition {} is not a public volume", part.index);
-    ensure!(part.fs_kind != 0, "no FAT or exFAT filesystem on partition {}", part.index);
-    ensure!(obb || args.fs == 0 || part.fs_kind == args.fs, "the filesystem changed since the probe");
-    let hello = client
-        .mount(part.index, part.start, part.length, read_only, part.fs_kind)
-        .map_err(|e| anyhow!("mount: {e:?}"))?;
-    let read_only = read_only || hello.read_only;
+    let (client, hello) = served.bring_up(SERVE_BUDGET)?;
+    let read_only = served.read_only || hello.read_only;
     info!("volume {}: VM serves filesystem kind {}, read-only {}", args.volume, hello.fs_kind, read_only);
 
     pipe.write_all(b"R").context("telling vold")?;
     drop(pipe);
 
-    let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb);
+    let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, Box::new(served));
     let mut config = fuse::FuseConfig::new();
     config.dev_fuse(fuse_dev).max_read(MAX_IO).max_write(MAX_IO).num_threads(1);
     let r = config.enter_message_loop(filesystem);
     info!("volume {}: FUSE loop ended: {r:?}", args.volume);
-    drop(vm);
     Ok(())
 }
 

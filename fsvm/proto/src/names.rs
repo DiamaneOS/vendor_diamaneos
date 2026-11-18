@@ -43,7 +43,8 @@ pub fn is_forbidden(c: char) -> bool {
         '\u{80}'..='\u{9F}' |           // C1 controls
         '/' | '\\' | ':' |
         '\u{61C}' |                     // Arabic letter mark
-        '\u{200B}'..='\u{200F}' |       // zero-width space, joiners, LRM, RLM
+        '\u{200B}' |                    // zero-width space
+        '\u{200E}' | '\u{200F}' |       // LRM, RLM
         '\u{2028}' | '\u{2029}' |       // line and paragraph separator
         '\u{202A}'..='\u{202E}' |       // bidi embeddings and overrides
         '\u{2060}'..='\u{2064}' |       // word joiner and invisible operators
@@ -66,8 +67,14 @@ pub fn check_name(raw: &[u8]) -> Result<&str, NameError> {
         return Err(NameError::DotOrDotDot);
     }
     let mut units = 0usize;
-    for c in name.chars() {
+    let last = name.chars().count().saturating_sub(1);
+    for (i, c) in name.chars().enumerate() {
         if is_forbidden(c) {
+            return Err(NameError::Forbidden(c));
+        }
+        // The zero-width non-joiner and joiner belong inside Persian and Indic words and emoji sequences, as other
+        // filesystems show them. At either end of a name they only hide something.
+        if matches!(c, '\u{200C}' | '\u{200D}') && (i == 0 || i == last) {
             return Err(NameError::Forbidden(c));
         }
         units += c.len_utf16();
@@ -128,7 +135,7 @@ mod tests {
         assert_eq!(check_name(b"a\x7fb"), Err(NameError::Forbidden('\x7f')));
         assert_eq!(check_name(&[0xff, 0xfe]), Err(NameError::NotUtf8));
         assert_eq!(check_name(&[b'a', 0xc0, 0x80]), Err(NameError::NotUtf8)); // overlong NUL
-        for c in ['\u{85}', '\u{9B}', '\u{61C}', '\u{200B}', '\u{200D}', '\u{200E}', '\u{2028}', '\u{2029}', '\u{202A}',
+        for c in ['\u{85}', '\u{9B}', '\u{61C}', '\u{200B}', '\u{200E}', '\u{2028}', '\u{2029}', '\u{202A}',
                   '\u{202E}', '\u{2060}', '\u{2066}', '\u{2069}', '\u{FEFF}', '\u{FFFB}'] {
             let n = format!("photo{c}gpj.exe");
             assert_eq!(check_name(n.as_bytes()), Err(NameError::Forbidden(c)), "{c:?}");
@@ -136,6 +143,21 @@ mod tests {
         // A leading or trailing dot alone is fine, only "." and ".." are refused.
         assert!(check_name(b".hidden").is_ok());
         assert!(check_name(b"...").is_ok());
+    }
+
+    #[test]
+    fn joiners_only_inside_names() {
+        // Persian with a zero-width non-joiner, a family emoji with zero-width joiners.
+        for n in ["\u{0645}\u{06CC}\u{200C}\u{062E}\u{0648}\u{0627}\u{0647}\u{0645}.txt", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}.jpg"] {
+            assert_eq!(check_name(n.as_bytes()), Ok(n), "{n:?}");
+        }
+        for n in ["\u{200C}a", "a\u{200C}", "\u{200D}x", "x\u{200D}", "\u{200D}"] {
+            assert!(check_name(n.as_bytes()).is_err(), "{n:?}");
+        }
+        // Bidi overrides, isolates and marks stay refused anywhere.
+        for c in ['\u{202E}', '\u{2066}', '\u{200E}', '\u{200F}'] {
+            assert!(check_name(format!("a{c}b").as_bytes()).is_err());
+        }
     }
 
     #[test]

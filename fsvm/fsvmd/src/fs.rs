@@ -28,8 +28,9 @@ use std::ffi::{CStr, CString};
 use std::io;
 use std::mem::{size_of, MaybeUninit};
 use std::os::unix::net::UnixStream;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const ROOT: u64 = fuse::sys::ROOT_ID;
 /// How long the kernel may cache names and attributes. Only this process changes the volume.
@@ -49,7 +50,9 @@ fn call_err(e: CallError) -> io::Error {
 }
 
 struct Node {
-    guest: u64,
+    /// The VM's id for this node, or None until it is looked up again (after the VM took the id back, or after a
+    /// new VM took over the session).
+    guest: Option<u64>,
     parent: u64,
     name: Vec<u8>,
     kind: Kind,
@@ -60,10 +63,29 @@ struct Listing {
     entries: Vec<(CString, Kind, u64)>,
 }
 
+/// Most directory listings open at once. Each holds up to 65536 names.
+const MAX_LISTINGS: usize = 64;
+/// Most new VMs for one mount within RESTART_WINDOW. After that fsvmd exits and vold reports the card as not opened.
+const MAX_RESTARTS: usize = 3;
+const RESTART_WINDOW: Duration = Duration::from_secs(600);
+/// Deepest path resolved again after a VM change. FAT and exFAT paths cannot go deeper with names of one byte.
+const MAX_DEPTH: usize = 2048;
+
+/// Starts a new VM for the same volume when the session broke (a missed deadline, a VM that stopped).
+pub trait Session: Send {
+    /// Returns the new client, the root node and whether the volume is now read-only.
+    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, u64, bool)>;
+}
+
 struct State {
     client: Client<StreamTransport<UnixStream>>,
+    root_guest: u64,
+    session: Box<dyn Session>,
+    restarts: Vec<Instant>,
+    read_only: Arc<AtomicBool>,
     nodes: HashMap<u64, Node>,
     by_guest: HashMap<u64, u64>,
+    by_name: HashMap<(u64, Vec<u8>), u64>,
     next_ino: u64,
     listings: HashMap<u64, Listing>,
     next_handle: u64,
@@ -71,7 +93,7 @@ struct State {
 
 pub struct FsvmFs {
     state: Mutex<State>,
-    read_only: bool,
+    read_only: Arc<AtomicBool>,
     gid: u32,
     dir_mode: u32,
     file_mode: u32,
@@ -79,14 +101,34 @@ pub struct FsvmFs {
 
 impl FsvmFs {
     /// `obb`: an app's OBB image, read-only for its owner's group (vold mounted these with fmask and dmask 0227).
-    pub fn new(client: Client<StreamTransport<UnixStream>>, root_guest: u64, read_only: bool, gid: u32, obb: bool) -> Self {
+    pub fn new(
+        client: Client<StreamTransport<UnixStream>>,
+        root_guest: u64,
+        read_only: bool,
+        gid: u32,
+        obb: bool,
+        session: Box<dyn Session>,
+    ) -> Self {
         let mut nodes = HashMap::new();
-        nodes.insert(ROOT, Node { guest: root_guest, parent: ROOT, name: Vec::new(), kind: Kind::Dir, lookups: 1 });
+        nodes.insert(ROOT, Node { guest: Some(root_guest), parent: ROOT, name: Vec::new(), kind: Kind::Dir, lookups: 1 });
         let mut by_guest = HashMap::new();
         by_guest.insert(root_guest, ROOT);
+        let read_only = Arc::new(AtomicBool::new(read_only || obb));
         FsvmFs {
-            state: Mutex::new(State { client, nodes, by_guest, next_ino: ROOT + 1, listings: HashMap::new(), next_handle: 1 }),
-            read_only: read_only || obb,
+            state: Mutex::new(State {
+                client,
+                root_guest,
+                session,
+                restarts: Vec::new(),
+                read_only: read_only.clone(),
+                nodes,
+                by_guest,
+                by_name: HashMap::new(),
+                next_ino: ROOT + 1,
+                listings: HashMap::new(),
+                next_handle: 1,
+            }),
+            read_only,
             gid,
             dir_mode: if obb { 0o550 } else { 0o770 },
             file_mode: if obb { 0o440 } else { 0o660 },
@@ -124,7 +166,7 @@ impl FsvmFs {
     }
 
     fn writable(&self) -> io::Result<()> {
-        if self.read_only {
+        if self.read_only.load(Ordering::Relaxed) {
             Err(err(libc::EROFS))
         } else {
             Ok(())
@@ -133,16 +175,108 @@ impl FsvmFs {
 }
 
 impl State {
-    fn guest(&self, ino: u64) -> io::Result<u64> {
-        self.nodes.get(&ino).map(|n| n.guest).ok_or_else(|| err(libc::ENOENT))
+    fn node(&self, ino: u64) -> io::Result<&Node> {
+        self.nodes.get(&ino).ok_or_else(|| err(libc::ENOENT))
     }
 
-    fn dir(&self, ino: u64) -> io::Result<u64> {
-        match self.nodes.get(&ino) {
-            Some(n) if n.kind == Kind::Dir => Ok(n.guest),
-            Some(_) => Err(err(libc::ENOTDIR)),
-            None => Err(err(libc::ENOENT)),
+    fn is_dir(&self, ino: u64) -> io::Result<()> {
+        match self.node(ino)?.kind {
+            Kind::Dir => Ok(()),
+            Kind::File => Err(err(libc::ENOTDIR)),
         }
+    }
+
+    /// Forgets the VM's id of a node and of its ancestors, so that they are looked up again.
+    fn invalidate(&mut self, mut ino: u64) {
+        for _ in 0..MAX_DEPTH {
+            if ino == ROOT {
+                return;
+            }
+            let Some(n) = self.nodes.get_mut(&ino) else { return };
+            if let Some(g) = n.guest.take() {
+                self.by_guest.remove(&g);
+            }
+            ino = n.parent;
+        }
+    }
+
+    /// The VM's id for a node, looking the path up again where the VM's id is gone.
+    fn resolve(&mut self, ino: u64, depth: usize) -> Result<u64, CallError> {
+        if ino == ROOT {
+            return Ok(self.root_guest);
+        }
+        let n = self.nodes.get(&ino).ok_or(CallError::Errno(libc::ENOENT))?;
+        if let Some(g) = n.guest {
+            return Ok(g);
+        }
+        if depth >= MAX_DEPTH {
+            return Err(CallError::Errno(libc::ENAMETOOLONG));
+        }
+        let (parent, name, kind) = (n.parent, n.name.clone(), n.kind);
+        let pg = self.resolve(parent, depth + 1)?;
+        let a = self.client.lookup(pg, &name)?;
+        if a.kind != kind {
+            // The name now holds something else. The kernel's node for it is gone.
+            return Err(CallError::Errno(libc::ENOENT));
+        }
+        if self.by_guest.get(&a.node).is_some_and(|&other| other != ino) {
+            warn!("filesystem VM returned one node for two names");
+            return Err(CallError::Errno(libc::EIO));
+        }
+        self.by_guest.insert(a.node, ino);
+        if let Some(n) = self.nodes.get_mut(&ino) {
+            n.guest = Some(a.node);
+        }
+        Ok(a.node)
+    }
+
+    /// Starts a new VM after the session broke, within the restart limit. Past it fsvmd exits: the FUSE mount ends,
+    /// and vold, which watches this process, reports the card as not opened.
+    fn recover(&mut self, why: &str) {
+        let now = Instant::now();
+        self.restarts.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
+        if self.restarts.len() >= MAX_RESTARTS {
+            error!("filesystem VM session broken ({why}), {MAX_RESTARTS} new VMs within {RESTART_WINDOW:?}, giving up");
+            std::process::exit(2);
+        }
+        self.restarts.push(now);
+        warn!("filesystem VM session broken ({why}), starting a new VM");
+        match self.session.restart() {
+            Ok((client, root, read_only)) => {
+                self.client = client;
+                self.root_guest = root;
+                if read_only {
+                    self.read_only.store(true, Ordering::Relaxed);
+                }
+                self.by_guest.clear();
+                for (&ino, n) in self.nodes.iter_mut() {
+                    n.guest = if ino == ROOT { Some(root) } else { None };
+                }
+                self.by_guest.insert(root, ROOT);
+            }
+            Err(e) => {
+                error!("no new filesystem VM: {e:?}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    /// Runs one call on a node: resolves the VM's id, and on a stale id or a broken session tries once more.
+    fn call<T>(&mut self, ino: u64, mut f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>) -> io::Result<T> {
+        for attempt in 0..3 {
+            let last = attempt == 2;
+            let r = match self.resolve(ino, 0) {
+                Ok(g) => f(&mut self.client, g),
+                Err(e) => Err(e),
+            };
+            match r {
+                Ok(v) => return Ok(v),
+                Err(CallError::Errno(libc::ESTALE)) if !last => self.invalidate(ino),
+                Err(CallError::Broken(why)) if !last => self.recover(&why),
+                Err(e) => return Err(call_err(e)),
+            }
+        }
+        Err(err(libc::EIO))
     }
 
     /// Maps the VM's node to Android's inode number. A node must keep its one place in the tree: a VM that
@@ -157,32 +291,48 @@ impl State {
             n.lookups += 1;
             return Ok(ino);
         }
+        let key = (parent, name.to_vec());
+        if let Some(&ino) = self.by_name.get(&key) {
+            let n = self.nodes.get_mut(&ino).ok_or_else(|| err(libc::EIO))?;
+            if n.kind == a.kind {
+                // The same name after the VM changed or took its id back.
+                if let Some(old) = n.guest.replace(a.node) {
+                    self.by_guest.remove(&old);
+                }
+                n.lookups += 1;
+                self.by_guest.insert(a.node, ino);
+                return Ok(ino);
+            }
+            // Another kind of node under the old name: the old inode no longer has a name.
+            self.by_name.remove(&key);
+        }
         let ino = self.next_ino;
         self.next_ino += 1;
-        self.nodes.insert(ino, Node { guest: a.node, parent, name: name.to_vec(), kind: a.kind, lookups: 1 });
+        self.nodes.insert(ino, Node { guest: Some(a.node), parent, name: name.to_vec(), kind: a.kind, lookups: 1 });
         self.by_guest.insert(a.node, ino);
+        self.by_name.insert(key, ino);
         Ok(ino)
     }
 
     fn rename_node(&mut self, from_dir: u64, from: &[u8], to_dir: u64, to: &[u8]) {
-        if let Some(n) = self.nodes.values_mut().find(|n| n.parent == from_dir && n.name == from) {
-            n.parent = to_dir;
-            n.name = to.to_vec();
+        if let Some(ino) = self.by_name.remove(&(from_dir, from.to_vec())) {
+            if let Some(n) = self.nodes.get_mut(&ino) {
+                n.parent = to_dir;
+                n.name = to.to_vec();
+            }
+            self.by_name.insert((to_dir, to.to_vec()), ino);
         }
     }
 
     fn drop_child(&mut self, parent: u64, name: &[u8]) {
-        let found = self.nodes.iter().find(|(_, n)| n.parent == parent && n.name == name).map(|(i, _)| *i);
-        if let Some(ino) = found {
+        if let Some(ino) = self.by_name.remove(&(parent, name.to_vec())) {
             if let Some(n) = self.nodes.remove(&ino) {
-                self.by_guest.remove(&n.guest);
+                if let Some(g) = n.guest {
+                    self.by_guest.remove(&g);
+                }
             }
         }
     }
-}
-
-fn check<T>(r: CallResult<T>) -> io::Result<T> {
-    r.map_err(call_err)
 }
 
 pub struct DirIter {
@@ -218,8 +368,8 @@ impl FileSystem for FsvmFs {
 
     fn lookup(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<Entry> {
         let mut s = self.state.lock().unwrap();
-        let dir = s.dir(parent)?;
-        let a = check(s.client.lookup(dir, name.to_bytes()))?;
+        s.is_dir(parent)?;
+        let a = s.call(parent, |c, g| c.lookup(g, name.to_bytes()))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         Ok(Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT })
     }
@@ -238,17 +388,21 @@ impl FileSystem for FsvmFs {
         };
         if gone {
             if let Some(n) = s.nodes.remove(&ino) {
-                s.by_guest.remove(&n.guest);
-                // Best effort: the VM may drop its handle. A failure here only keeps a handle alive in the VM.
-                let _ = s.client.forget(n.guest);
+                if s.by_name.get(&(n.parent, n.name.clone())) == Some(&ino) {
+                    s.by_name.remove(&(n.parent, n.name));
+                }
+                if let Some(g) = n.guest {
+                    s.by_guest.remove(&g);
+                    // Best effort: the VM may drop its slot. A failure only keeps a slot alive in the VM.
+                    let _ = s.client.forget(g);
+                }
             }
         }
     }
 
     fn getattr(&self, _ctx: Context, ino: u64, _h: Option<u64>) -> io::Result<(libc::stat64, Duration)> {
         let mut s = self.state.lock().unwrap();
-        let g = s.guest(ino)?;
-        let a = check(s.client.getattr(g))?;
+        let a = s.call(ino, |c, g| c.getattr(g))?;
         Ok((self.stat(ino, &a), TIMEOUT))
     }
 
@@ -261,19 +415,18 @@ impl FileSystem for FsvmFs {
         valid: SetattrValid,
     ) -> io::Result<(libc::stat64, Duration)> {
         let mut s = self.state.lock().unwrap();
-        let g = s.guest(ino)?;
-        let mut a = check(s.client.getattr(g))?;
+        let mut a = s.call(ino, |c, g| c.getattr(g))?;
         if valid.intersects(SetattrValid::SIZE | SetattrValid::MTIME | SetattrValid::MTIME_NOW) {
             self.writable()?;
         }
         if valid.contains(SetattrValid::SIZE) {
-            a = check(s.client.truncate(g, attr.st_size.max(0) as u64))?;
+            a = s.call(ino, |c, g| c.truncate(g, attr.st_size.max(0) as u64))?;
         }
         if valid.contains(SetattrValid::MTIME_NOW) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            a = check(s.client.set_mtime(g, now.as_secs() as i64, now.subsec_nanos()))?;
+            a = s.call(ino, |c, g| c.set_mtime(g, now.as_secs() as i64, now.subsec_nanos()))?;
         } else if valid.contains(SetattrValid::MTIME) {
-            a = check(s.client.set_mtime(g, attr.st_mtime, attr.st_mtime_nsec as u32))?;
+            a = s.call(ino, |c, g| c.set_mtime(g, attr.st_mtime, attr.st_mtime_nsec as u32))?;
         }
         // Owner, group and mode are vold's choice for the whole volume, as they were with the kernel mount.
         Ok((self.stat(ino, &a), TIMEOUT))
@@ -281,14 +434,14 @@ impl FileSystem for FsvmFs {
 
     fn open(&self, _ctx: Context, ino: u64, flags: u32) -> io::Result<(Option<u64>, OpenOptions)> {
         let mut s = self.state.lock().unwrap();
-        let g = s.guest(ino)?;
+        s.node(ino)?;
         let acc = flags as i32 & libc::O_ACCMODE;
         if acc != libc::O_RDONLY {
             self.writable()?;
         }
         if flags as i32 & libc::O_TRUNC != 0 {
             self.writable()?;
-            check(s.client.truncate(g, 0))?;
+            s.call(ino, |c, g| c.truncate(g, 0))?;
         }
         Ok((Some(ino), OpenOptions::empty()))
     }
@@ -318,8 +471,7 @@ impl FileSystem for FsvmFs {
         _flags: u32,
     ) -> io::Result<usize> {
         let mut s = self.state.lock().unwrap();
-        let g = s.guest(ino)?;
-        let data = check(s.client.read(g, offset, size.min(MAX_IO)))?;
+        let data = s.call(ino, |c, g| c.read(g, offset, size.min(MAX_IO)))?;
         w.write_all(&data)?;
         Ok(data.len())
     }
@@ -343,8 +495,7 @@ impl FileSystem for FsvmFs {
         let mut buf = vec![0u8; size as usize];
         r.read_exact(&mut buf)?;
         let mut s = self.state.lock().unwrap();
-        let g = s.guest(ino)?;
-        let n = check(s.client.write(g, offset, &buf))?;
+        let n = s.call(ino, |c, g| c.write(g, offset, &buf))?;
         Ok(n as usize)
     }
 
@@ -354,8 +505,7 @@ impl FileSystem for FsvmFs {
 
     fn fsync(&self, _ctx: Context, ino: u64, _datasync: bool, _h: u64) -> io::Result<()> {
         let mut s = self.state.lock().unwrap();
-        let g = s.guest(ino)?;
-        check(s.client.fsync(g))
+        s.call(ino, |c, g| c.fsync(g))
     }
 
     fn create(
@@ -370,8 +520,8 @@ impl FileSystem for FsvmFs {
     ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
-        let dir = s.dir(parent)?;
-        let a = check(s.client.create(dir, name.to_bytes(), flags as i32 & libc::O_EXCL != 0))?;
+        s.is_dir(parent)?;
+        let a = s.call(parent, |c, g| c.create(g, name.to_bytes(), flags as i32 & libc::O_EXCL != 0))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         let entry = Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT };
         Ok((entry, Some(ino), OpenOptions::empty()))
@@ -388,8 +538,8 @@ impl FileSystem for FsvmFs {
     ) -> io::Result<Entry> {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
-        let dir = s.dir(parent)?;
-        let a = check(s.client.mkdir(dir, name.to_bytes()))?;
+        s.is_dir(parent)?;
+        let a = s.call(parent, |c, g| c.mkdir(g, name.to_bytes()))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         Ok(Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT })
     }
@@ -397,8 +547,8 @@ impl FileSystem for FsvmFs {
     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
-        let dir = s.dir(parent)?;
-        check(s.client.unlink(dir, name.to_bytes()))?;
+        s.is_dir(parent)?;
+        s.call(parent, |c, g| c.unlink(g, name.to_bytes()))?;
         s.drop_child(parent, name.to_bytes());
         Ok(())
     }
@@ -406,8 +556,8 @@ impl FileSystem for FsvmFs {
     fn rmdir(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
-        let dir = s.dir(parent)?;
-        check(s.client.rmdir(dir, name.to_bytes()))?;
+        s.is_dir(parent)?;
+        s.call(parent, |c, g| c.rmdir(g, name.to_bytes()))?;
         s.drop_child(parent, name.to_bytes());
         Ok(())
     }
@@ -427,9 +577,11 @@ impl FileSystem for FsvmFs {
             return Err(err(libc::EINVAL));
         }
         let mut s = self.state.lock().unwrap();
-        let from = s.dir(olddir)?;
-        let to = s.dir(newdir)?;
-        check(s.client.rename(from, oldname.to_bytes(), to, newname.to_bytes()))?;
+        s.is_dir(olddir)?;
+        s.is_dir(newdir)?;
+        // Both directories' ids must be current. Resolve the target first, then run the call on the source.
+        let to = s.call(newdir, |_, g| Ok(g))?;
+        s.call(olddir, |c, from| c.rename(from, oldname.to_bytes(), to, newname.to_bytes()))?;
         s.drop_child(newdir, newname.to_bytes());
         s.rename_node(olddir, oldname.to_bytes(), newdir, newname.to_bytes());
         Ok(())
@@ -437,8 +589,11 @@ impl FileSystem for FsvmFs {
 
     fn opendir(&self, _ctx: Context, ino: u64, _flags: u32) -> io::Result<(Option<u64>, OpenOptions)> {
         let mut s = self.state.lock().unwrap();
-        let dir = s.dir(ino)?;
-        let listing = check(s.client.list(dir))?;
+        s.is_dir(ino)?;
+        if s.listings.len() >= MAX_LISTINGS {
+            return Err(err(libc::EMFILE));
+        }
+        let listing = s.call(ino, |c, g| c.list(g))?;
         if listing.dropped > 0 || listing.duplicates > 0 || listing.truncated {
             warn!(
                 "directory listing cleaned: {} refused, {} duplicates, truncated {}",
@@ -449,7 +604,12 @@ impl FileSystem for FsvmFs {
         for (name, a) in listing.entries {
             // Names passed fsvm_proto's rules, so they hold no NUL.
             let Ok(c) = CString::new(name) else { continue };
-            let known = s.by_guest.get(&a.node).copied().unwrap_or(UNKNOWN_INO);
+            let known = s
+                .by_guest
+                .get(&a.node)
+                .or_else(|| s.by_name.get(&(ino, c.as_bytes().to_vec())))
+                .copied()
+                .unwrap_or(UNKNOWN_INO);
             entries.push((c, a.kind, known));
         }
         let h = s.next_handle;
@@ -478,7 +638,7 @@ impl FileSystem for FsvmFs {
 
     fn statfs(&self, _ctx: Context, _ino: u64) -> io::Result<libc::statvfs64> {
         let mut s = self.state.lock().unwrap();
-        let t = check(s.client.statfs())?;
+        let t = s.call(ROOT, |c, _| c.statfs())?;
         // SAFETY: every field of statvfs64 is valid as zero.
         let mut st: libc::statvfs64 = unsafe { std::mem::zeroed() };
         st.f_bsize = t.bsize as _;

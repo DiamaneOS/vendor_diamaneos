@@ -30,16 +30,21 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/fs.h>
+#include <linux/hdreg.h>
 #include <linux/vm_sockets.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -65,11 +70,24 @@ static void logline(const char *what, const char *detail, int err)
 		(void)!write(2, line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
 }
 
-/* ---- Node table: node number <-> path below MNT ("" is the root, node 1). ---- */
+/*
+ * ---- Node table: node id <-> path below MNT ("" is the root, node 1). ----
+ *
+ * A node id is a slot number in its low 32 bits and the slot's generation in its high 32 bits. A slot is only taken
+ * for a node Android looked up or created, never for a name it only listed. When the table or the memory for paths
+ * runs out, the least recently used slot is taken back (a clock over the slots) and its generation moves on, so an
+ * old id answers ESTALE and fsvmd looks the name up again. The root is never taken back.
+ */
+
+#define MAX_PATH_BYTES (16u << 20) /* all node paths together, bounded for a small VM */
 
 static char *node_path[MAX_NODES + 1];
-static uint32_t hash_slot[HASH_SIZE]; /* node number, 0 = empty, UINT32_MAX = deleted */
-static uint32_t next_free = 2;
+static uint32_t node_gen[MAX_NODES + 1];
+static uint8_t node_used[MAX_NODES + 1];
+static uint32_t hash_slot[HASH_SIZE]; /* slot, 0 = empty, UINT32_MAX = deleted */
+static uint32_t hash_deleted;
+static size_t path_bytes;
+static uint32_t clock_hand = 2;
 
 static uint32_t hash_str(const char *s)
 {
@@ -77,6 +95,11 @@ static uint32_t hash_str(const char *s)
 	while (*s)
 		h = (h ^ (uint8_t)*s++) * 16777619u;
 	return h;
+}
+
+static uint64_t node_id(uint32_t slot)
+{
+	return (uint64_t)node_gen[slot] << 32 | slot;
 }
 
 static uint32_t node_find(const char *path)
@@ -92,61 +115,114 @@ static uint32_t node_find(const char *path)
 	return 0;
 }
 
-static void slot_remove(uint32_t node)
+static void slot_insert(uint32_t slot)
 {
-	uint32_t i = hash_str(node_path[node]) & (HASH_SIZE - 1);
+	uint32_t i = hash_str(node_path[slot]) & (HASH_SIZE - 1);
+	while (hash_slot[i] != 0 && hash_slot[i] != UINT32_MAX)
+		i = (i + 1) & (HASH_SIZE - 1);
+	if (hash_slot[i] == UINT32_MAX)
+		hash_deleted--;
+	hash_slot[i] = slot;
+}
+
+/* Rebuilds the hash when deleted marks pile up, so lookups stay short. */
+static void hash_rebuild(void)
+{
+	memset(hash_slot, 0, sizeof(hash_slot));
+	hash_deleted = 0;
+	for (uint32_t n = 1; n <= MAX_NODES; n++)
+		if (node_path[n])
+			slot_insert(n);
+}
+
+static void slot_remove(uint32_t slot)
+{
+	uint32_t i = hash_str(node_path[slot]) & (HASH_SIZE - 1);
 	for (uint32_t probe = 0; probe < HASH_SIZE; probe++, i = (i + 1) & (HASH_SIZE - 1)) {
 		if (hash_slot[i] == 0)
 			return;
-		if (hash_slot[i] == node) {
+		if (hash_slot[i] == slot) {
 			hash_slot[i] = UINT32_MAX;
+			if (++hash_deleted > HASH_SIZE / 4)
+				hash_rebuild();
 			return;
 		}
 	}
 }
 
-static void slot_insert(uint32_t node)
+/* Frees a slot. Its old id answers ESTALE from now on. */
+static void slot_free(uint32_t slot)
 {
-	uint32_t i = hash_str(node_path[node]) & (HASH_SIZE - 1);
-	while (hash_slot[i] != 0 && hash_slot[i] != UINT32_MAX)
-		i = (i + 1) & (HASH_SIZE - 1);
-	hash_slot[i] = node;
-}
-
-static void node_drop(uint32_t node)
-{
-	if (node <= 1 || node > MAX_NODES || !node_path[node])
+	if (slot <= 1 || slot > MAX_NODES || !node_path[slot])
 		return;
-	slot_remove(node);
-	free(node_path[node]);
-	node_path[node] = NULL;
+	slot_remove(slot);
+	path_bytes -= strlen(node_path[slot]) + 1;
+	free(node_path[slot]);
+	node_path[slot] = NULL;
+	node_used[slot] = 0;
+	node_gen[slot]++;
 }
 
-/* Returns the node for a path, adding it if new. 0 when the table is full. */
+/* Takes back the least recently used slot (second chance). */
+static void evict_one(void)
+{
+	for (uint32_t step = 0; step < 2 * MAX_NODES; step++) {
+		uint32_t c = clock_hand;
+		clock_hand = clock_hand >= MAX_NODES ? 2 : clock_hand + 1;
+		if (!node_path[c])
+			continue;
+		if (node_used[c]) {
+			node_used[c] = 0;
+			continue;
+		}
+		slot_free(c);
+		return;
+	}
+}
+
+/* Returns the slot for a path, taking one if new (and taking back an old one if needed). 0 only without memory. */
 static uint32_t node_get(const char *path)
 {
 	uint32_t n = node_find(path);
-	if (n)
+	if (n) {
+		node_used[n] = 1;
 		return n;
-	for (uint32_t tries = 0; tries < MAX_NODES; tries++) {
-		uint32_t c = next_free;
-		next_free = next_free >= MAX_NODES ? 2 : next_free + 1;
-		if (!node_path[c]) {
-			node_path[c] = strdup(path);
-			if (!node_path[c])
-				return 0;
-			slot_insert(c);
-			return c;
-		}
 	}
-	return 0;
+	size_t len = strlen(path) + 1;
+	while (path_bytes + len > MAX_PATH_BYTES)
+		evict_one();
+	uint32_t c = 0;
+	for (uint32_t tries = 0; tries < MAX_NODES && !c; tries++) {
+		uint32_t t = clock_hand;
+		clock_hand = clock_hand >= MAX_NODES ? 2 : clock_hand + 1;
+		if (!node_path[t])
+			c = t;
+	}
+	if (!c) {
+		evict_one();
+		for (uint32_t t = 2; t <= MAX_NODES && !c; t++)
+			if (!node_path[t])
+				c = t;
+		if (!c)
+			return 0;
+	}
+	node_path[c] = strdup(path);
+	if (!node_path[c])
+		return 0;
+	path_bytes += len;
+	node_used[c] = 1;
+	slot_insert(c);
+	return c;
 }
 
-static const char *path_of(uint64_t node)
+/* The path of a node id, or NULL when the id is unknown or stale. */
+static const char *path_of(uint64_t id)
 {
-	if (node == 0 || node > MAX_NODES)
+	uint32_t slot = (uint32_t)id;
+	if (slot == 0 || slot > MAX_NODES || !node_path[slot] || node_gen[slot] != (uint32_t)(id >> 32))
 		return NULL;
-	return node_path[node];
+	node_used[slot] = 1;
+	return node_path[slot];
 }
 
 /* Builds MNT/<path>[/<name>] into out. */
@@ -172,32 +248,37 @@ static void node_rename(const char *from, const char *to)
 	size_t fl = strlen(from);
 	uint32_t target = node_find(to);
 	if (target)
-		node_drop(target);
+		slot_free(target);
 	for (uint32_t n = 2; n <= MAX_NODES; n++) {
 		char *p = node_path[n];
 		if (!p || strncmp(p, from, fl) != 0 || (p[fl] != 0 && p[fl] != '/'))
 			continue;
 		char next[PATH_MAX];
 		if (snprintf(next, sizeof(next), "%s%s", to, p + fl) >= (int)sizeof(next)) {
-			node_drop(n);
+			slot_free(n);
+			continue;
+		}
+		char *moved = strdup(next);
+		if (!moved) {
+			slot_free(n);
 			continue;
 		}
 		slot_remove(n);
+		path_bytes += strlen(moved) - strlen(p);
 		free(p);
-		node_path[n] = strdup(next);
-		if (node_path[n])
-			slot_insert(n);
+		node_path[n] = moved;
+		slot_insert(n);
 	}
 }
 
-/* Drops every node at or below `path` (after unlink or rmdir). */
+/* Frees every node at or below `path` (after unlink or rmdir). */
 static void node_unlink(const char *path)
 {
 	size_t l = strlen(path);
 	for (uint32_t n = 2; n <= MAX_NODES; n++) {
 		char *p = node_path[n];
 		if (p && strncmp(p, path, l) == 0 && (p[l] == 0 || p[l] == '/'))
-			node_drop(n);
+			slot_free(n);
 	}
 }
 
@@ -243,7 +324,7 @@ static int reply(int s, uint32_t id, int32_t status, const void *payload, uint32
 	return 0;
 }
 
-static int fill_attr(const char *rel, uint32_t node, struct fsvm_attr *a)
+static int fill_attr(const char *rel, uint64_t node, struct fsvm_attr *a)
 {
 	char p[PATH_MAX];
 	struct stat st;
@@ -281,13 +362,13 @@ static uint8_t outbuf[FSVM_MAX_IO > FSVM_MAX_DIR_PAYLOAD ? FSVM_MAX_IO : FSVM_MA
 static int attr_reply(int s, uint32_t id, const char *rel)
 {
 	struct fsvm_attr a;
-	uint32_t node = node_get(rel);
-	if (!node)
+	uint32_t slot = node_get(rel);
+	if (!slot)
 		return reply(s, id, -ENOMEM, NULL, 0);
-	int r = fill_attr(rel, node, &a);
+	int r = fill_attr(rel, node_id(slot), &a);
 	if (r) {
 		if (r == -ENOENT)
-			node_drop(node);
+			slot_free(slot);
 		return reply(s, id, r, NULL, 0);
 	}
 	return reply(s, id, 0, &a, sizeof(a));
@@ -321,9 +402,10 @@ static int do_readdir(int s, const struct fsvm_req *q, const char *rel)
 		char child[PATH_MAX];
 		if (child_path(child, sizeof(child), rel, e->d_name))
 			continue;
-		uint32_t node = node_get(child);
+		/* A listed name takes no slot: Android looks it up before it uses it. */
+		uint32_t slot = node_find(child);
 		struct fsvm_attr a;
-		if (!node || fill_attr(child, node, &a))
+		if (fill_attr(child, slot ? node_id(slot) : FSVM_NODE_LISTED, &a))
 			continue;
 		uint16_t l16 = (uint16_t)nl;
 		memcpy(outbuf + used, &a, sizeof(a));
@@ -397,7 +479,7 @@ static int do_write(int s, const struct fsvm_req *q, const char *rel, const uint
 }
 
 static int read_layout(void);
-static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro);
+static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms);
 
 static int handle(int s, struct fsvm_req *q, const char *name, const char *name2, const uint8_t *data)
 {
@@ -418,7 +500,7 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 	case FSVM_MOUNT: {
 		if (q->arg > UINT32_MAX)
 			return reply(s, q->id, -EINVAL, NULL, 0);
-		r = do_mount((uint32_t)q->arg, q->node, q->node2, q->flags & 1);
+		r = do_mount((uint32_t)q->arg, q->node, q->node2, q->flags & 1, q->len);
 		if (r)
 			return reply(s, q->id, r, NULL, 0);
 		struct fsvm_hello h = { FSVM_VERSION, fs_kind, read_only ? 1u : 0u, 0, 1 };
@@ -431,8 +513,9 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 	/* Everything below needs the mounted volume. */
 	if (!fs_kind)
 		return reply(s, q->id, -EINVAL, NULL, 0);
+	/* An id the guest no longer knows: fsvmd looks the name up again. */
 	if (q->op != FSVM_STATFS && !base)
-		return reply(s, q->id, -ENOENT, NULL, 0);
+		return reply(s, q->id, -ESTALE, NULL, 0);
 
 	switch (q->op) {
 	case FSVM_LOOKUP:
@@ -455,8 +538,8 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		return reply(s, q->id, 0, &o, sizeof(o));
 	}
 	case FSVM_FORGET:
-		if (q->node > 1)
-			node_drop((uint32_t)q->node);
+		if (q->node > 1 && path_of(q->node))
+			slot_free((uint32_t)q->node);
 		return reply(s, q->id, 0, NULL, 0);
 	default:
 		break;
@@ -492,7 +575,7 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 	case FSVM_RENAME: {
 		const char *base2 = path_of(q->node2);
 		if (!base2)
-			return reply(s, q->id, -ENOENT, NULL, 0);
+			return reply(s, q->id, -ESTALE, NULL, 0);
 		if (child_path(rel, sizeof(rel), base, name) || child_path(rel2, sizeof(rel2), base2, name2) ||
 		    full_path(p, sizeof(p), base, name) || full_path(p2, sizeof(p2), base2, name2))
 			return reply(s, q->id, -ENAMETOOLONG, NULL, 0);
@@ -571,6 +654,7 @@ static void serve(int s)
 /* ---- The disk and mounting ---- */
 
 static int disk_fd = -1;
+static unsigned sector_size = 512;
 
 static int disk_read(void *ctx, uint64_t off, void *buf, size_t len)
 {
@@ -589,23 +673,18 @@ static int disk_read(void *ctx, uint64_t off, void *buf, size_t len)
 	return 0;
 }
 
-static int read_u64_file(const char *path, uint64_t *out)
+/* Size in bytes of a block device (or of a file, for the host harness). */
+static int dev_bytes(int fd, uint64_t *out)
 {
-	char buf[32];
-	int fd = open(path, O_RDONLY | O_CLOEXEC);
-	if (fd < 0)
+	uint64_t b = 0;
+	if (!ioctl(fd, BLKGETSIZE64, &b)) {
+		*out = b;
+		return 0;
+	}
+	off_t end = lseek(fd, 0, SEEK_END);
+	if (end < 0)
 		return -errno;
-	ssize_t n = read(fd, buf, sizeof(buf) - 1);
-	close(fd);
-	if (n <= 0)
-		return -EIO;
-	buf[n] = 0;
-	char *end;
-	errno = 0;
-	unsigned long long v = strtoull(buf, &end, 10);
-	if (errno || end == buf)
-		return -EIO;
-	*out = v;
+	*out = (uint64_t)end;
 	return 0;
 }
 
@@ -614,7 +693,7 @@ static int read_layout(void)
 {
 	if (layout_state)
 		return layout_state < 0 ? layout_state : 0;
-	int r = fsvm_read_layout(disk_read, NULL, disk_sectors, &layout);
+	int r = fsvm_read_layout(disk_read, NULL, disk_sectors, sector_size, &layout);
 	layout_state = r ? r : 1;
 	if (r)
 		logline("partition table refused", NULL, -r);
@@ -649,12 +728,104 @@ static int try_mount(const char *dev, int want_ro)
 	return -EIO;
 }
 
+static int64_t now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Runs a checker until `deadline_ms` (now_ms). Returns its exit code, -ETIMEDOUT, or -ECHILD when it did not run. */
+static int run_checker(char *const argv[], int64_t deadline_ms)
+{
+	if (access(argv[0], X_OK))
+		return -ECHILD;
+	pid_t pid = fork();
+	if (pid < 0)
+		return -ECHILD;
+	if (pid == 0) {
+		execv(argv[0], argv);
+		_exit(127);
+	}
+	for (;;) {
+		int st = 0;
+		pid_t r = waitpid(pid, &st, WNOHANG);
+		if (r == pid) {
+			if (WIFEXITED(st))
+				return WEXITSTATUS(st) == 127 ? -ECHILD : WEXITSTATUS(st);
+			return -ECHILD; /* killed, for example out of memory */
+		}
+		if (r < 0)
+			return -ECHILD;
+		if (now_ms() >= deadline_ms) {
+			kill(pid, SIGKILL);
+			waitpid(pid, NULL, 0);
+			return -ETIMEDOUT;
+		}
+		usleep(20 * 1000);
+	}
+}
+
+/* Whether an exFAT volume is marked dirty (VolumeFlags bit 1, offset 106). */
+static int exfat_dirty(const char *dev)
+{
+	uint8_t b[512];
+	int fd = open(dev, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	int r = pread(fd, b, sizeof(b), 0) == (ssize_t)sizeof(b) && (b[106] & 2);
+	close(fd);
+	return r;
+}
+
+/*
+ * The filesystem check before a writable mount, here in the VM rather than on Android, with the tools vold used
+ * (fsck_msdos and fsck.exfat, built static from the pinned tree). As on most systems it runs when the volume is
+ * marked dirty: fsck_msdos -p checks only then, and fsck.exfat runs only when the exFAT dirty flag is set.
+ * Returns 0 to mount as asked, 1 to mount read-only (the check did not finish), or a negative errno to refuse.
+ */
+static int check_volume(const char *dev, uint32_t kind, uint32_t budget_ms)
+{
+	if (!budget_ms)
+		return 0;
+	int64_t deadline = now_ms() + budget_ms;
+	if (kind == FSVM_FS_VFAT) {
+		char *argv[] = { "/bin/fsck_msdos", "-p", "-y", (char *)dev, NULL };
+		for (int pass = 1;; pass++) {
+			int r = run_checker(argv, deadline);
+			if (r == 0)
+				return 0;
+			if (r == 4 && pass <= 3)
+				continue; /* modified, check again, as vold did */
+			if (r == -ETIMEDOUT || r == -ECHILD) {
+				logline("FAT check did not finish, read-only", dev, -r);
+				return 1;
+			}
+			logline("FAT check failed", dev, 0);
+			return -EIO;
+		}
+	}
+	if (!exfat_dirty(dev))
+		return 0;
+	char *argv[] = { "/bin/fsck.exfat", "-y", (char *)dev, NULL };
+	int r = run_checker(argv, deadline);
+	if (r == 0 || r == 1)
+		return 0; /* clean, or errors corrected */
+	if (r == -ETIMEDOUT || r == -ECHILD) {
+		logline("exFAT check did not finish, read-only", dev, -r);
+		return 1;
+	}
+	logline("exFAT check failed", dev, 0);
+	return -EIO;
+}
+
 /*
  * Mounts partition `index` (0: the whole disk) once. It must be in the layout read from the disk at exactly `start`
- * and `length`, and this kernel's partition device must agree. Then counts the free space once: the FAT driver reads
- * its whole table for that, which belongs here, inside MOUNT's deadline, not in a later STATFS.
+ * and `length`, and this kernel's partition device must agree. A writable mount is checked first, within
+ * `check_ms`. Then the free space is counted once: the FAT driver reads its whole table for that, which belongs
+ * here, inside MOUNT's deadline, not in a later STATFS.
  */
-static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro)
+static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms)
 {
 	if (fs_kind) {
 		if (index == mounted_index && start == mounted_start && length == mounted_length)
@@ -664,25 +835,34 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	int r = read_layout();
 	if (r)
 		return r;
-	if (!fsvm_layout_find(&layout, index, start, length))
+	const struct fsvm_layout_entry *e = fsvm_layout_find(&layout, index, start, length);
+	if (!e)
 		return -ENOENT;
 	char dev[32];
 	if (index == 0) {
 		snprintf(dev, sizeof(dev), "%s", DISK);
 	} else {
-		char path[64];
-		uint64_t s = 0, n = 0;
+		/* This kernel's partition device, compared with the table read in userspace. */
 		snprintf(dev, sizeof(dev), "%s%u", DISK, index);
-		snprintf(path, sizeof(path), "/sys/class/block/vda%u/start", index);
-		if (read_u64_file(path, &s))
+		int fd = open(dev, O_RDONLY | O_CLOEXEC);
+		struct hd_geometry geo;
+		uint64_t bytes = 0;
+		int ok = fd >= 0 && !ioctl(fd, HDIO_GETGEO, &geo) && !dev_bytes(fd, &bytes);
+		if (fd >= 0)
+			close(fd);
+		if (!ok)
 			return -ENOENT;
-		snprintf(path, sizeof(path), "/sys/class/block/vda%u/size", index);
-		if (read_u64_file(path, &n))
-			return -ENOENT;
-		if (s != start || n != length) {
+		if ((uint64_t)geo.start != start || bytes != length * 512) {
 			logline("partition differs from the table read", dev, 0);
 			return -EINVAL;
 		}
+	}
+	if (!want_ro) {
+		r = check_volume(dev, e->fs_kind, check_ms);
+		if (r < 0)
+			return r;
+		if (r == 1)
+			want_ro = 1;
 	}
 	r = try_mount(dev, want_ro);
 	if (r) {
@@ -698,22 +878,122 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	return 0;
 }
 
+/* ---- Self test (host harness only, from the kernel command line) ---- */
+
+/* The value of `fsvm.selftest=` on the kernel command line, or -1. pvmfw passes no such argument to a real VM. */
+static int selftest_arg(void)
+{
+	char buf[1024];
+	int fd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	ssize_t n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return -1;
+	buf[n] = 0;
+	const char *p = strstr(buf, "fsvm.selftest=");
+	return p ? atoi(p + 14) : -1;
+}
+
+/* Reads the layout, mounts a partition, writes, reads back and lists, and logs one result line for the harness. */
+static void selftest(int want)
+{
+	char line[160];
+	int r = read_layout();
+	snprintf(line, sizeof(line), "%d table %u count %u", r, layout.h.table, layout.h.count);
+	logline("selftest layout", line, 0);
+	for (uint32_t i = 0; !r && i < layout.h.count; i++) {
+		const struct fsvm_layout_entry *e = &layout.e[i];
+		snprintf(line, sizeof(line), "%u start %llu length %llu fs %u label %.*s", e->index,
+			 (unsigned long long)e->start, (unsigned long long)e->length, e->fs_kind, e->label_len, e->label);
+		logline("selftest part", line, 0);
+	}
+	const struct fsvm_layout_entry *pick = NULL;
+	for (uint32_t i = 0; !r && i < layout.h.count; i++)
+		if (layout.e[i].fs_kind && (want == 255 || layout.e[i].index == (uint32_t)want))
+			pick = pick ? pick : &layout.e[i];
+	if (!pick) {
+		logline("selftest result", r ? "layout refused" : "nothing to mount", 0);
+		return;
+	}
+	int64_t t0 = now_ms();
+	r = do_mount(pick->index, pick->start, pick->length, 0, 20000);
+	snprintf(line, sizeof(line), "%d after %lld ms, read-only %d", r, (long long)(now_ms() - t0), read_only);
+	logline("selftest mount", line, 0);
+	if (r) {
+		logline("selftest result", "mount failed", 0);
+		return;
+	}
+	int ok = 1;
+	if (!read_only) {
+		static const char msg[] = "fsvm selftest\n";
+		char back[sizeof(msg)];
+		int fd = open(MNT "/fsvm-selftest.txt", O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0660);
+		ok = fd >= 0 && write(fd, msg, sizeof(msg)) == (ssize_t)sizeof(msg) && !fsync(fd) &&
+		     pread(fd, back, sizeof(back), 0) == (ssize_t)sizeof(back) && !memcmp(back, msg, sizeof(msg));
+		if (fd >= 0)
+			close(fd);
+	}
+	unsigned entries = 0;
+	DIR *d = opendir(MNT);
+	struct dirent *de;
+	while (d && (de = readdir(d)))
+		entries++;
+	if (d)
+		closedir(d);
+	struct statfs sf;
+	ok = ok && d && !statfs(MNT, &sf);
+	snprintf(line, sizeof(line), "%s, %u entries, %llu free blocks", ok ? "ok" : "failed", entries,
+		 ok ? (unsigned long long)sf.f_bfree : 0ULL);
+	logline("selftest result", line, 0);
+	umount(MNT);
+}
+
 int main(void)
 {
 	mkdir("/dev", 0755);
+	mkdir("/proc", 0555);
+	mkdir("/sys", 0555);
 	mkdir(MNT, 0755);
 	mount("devtmpfs", "/dev", "devtmpfs", MS_NOSUID | MS_NOEXEC, "mode=0755");
+	mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
+	mount("sysfs", "/sys", "sysfs", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL);
+	/* The kernel had no console to give /init (the initramfs holds no /dev/console). Logs go to it from here. */
+	if (fcntl(2, F_GETFD) < 0) {
+		int c = open("/dev/console", O_RDWR | O_CLOEXEC);
+		if (c >= 0 && c != 2) {
+			dup2(c, 1);
+			dup2(c, 2);
+			close(c);
+		}
+	}
 	node_path[1] = strdup("");
-	if (node_path[1])
+	if (node_path[1]) {
+		path_bytes = 1;
 		slot_insert(1);
+	}
 	for (int wait = 0; wait < 50 && access(DISK, F_OK); wait++)
 		usleep(100 * 1000);
 	disk_fd = open(DISK, O_RDONLY | O_CLOEXEC);
-	if (disk_fd < 0 || read_u64_file("/sys/class/block/vda/size", &disk_sectors)) {
+	uint64_t bytes = 0;
+	int ss = 512;
+	if (disk_fd >= 0 && ioctl(disk_fd, BLKSSZGET, &ss))
+		ss = 512;
+	sector_size = (unsigned)ss;
+	if (disk_fd < 0 || dev_bytes(disk_fd, &bytes) || bytes < 512) {
 		/* Nothing to serve. Android times out and does not mount the volume. */
 		logline("no disk", NULL, errno);
 		for (;;)
 			pause();
+	}
+	disk_sectors = bytes / 512;
+
+	int want = selftest_arg();
+	if (want >= 0) {
+		selftest(want);
+		sync();
+		reboot(RB_POWER_OFF);
 	}
 
 	int ls = socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -726,6 +1006,7 @@ int main(void)
 		for (;;)
 			pause();
 	}
+	logline("serving on vsock", NULL, 0);
 	for (;;) {
 		int s = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
 		if (s < 0)

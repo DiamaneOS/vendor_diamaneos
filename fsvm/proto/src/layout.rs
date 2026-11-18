@@ -409,8 +409,9 @@ pub fn encode_layout(disk_sectors: u64, table: u32, parts: &[RawPart]) -> Vec<u8
 /// FAT32 card with 4 KiB clusters, 64 MiB per FAT, timed out at 48 MiB and worked at 96 MiB).
 ///
 /// - exFAT keeps its allocation bitmap in memory for as long as it is mounted, so the bitmap is added in full.
-/// - FAT reads its table through the page cache. The first free-space count reads all of it once. Room for up to
-///   64 MiB of it keeps that count from thrashing.
+/// - FAT reads its table through the page cache, and the first free-space count reads all of it once. The check of a
+///   dirty FAT volume (fsck_msdos, in the VM) holds the table and two cluster bitmaps. So the FAT counts with a
+///   quarter more, up to 160 MiB.
 ///
 /// Bounded to 96..=256 MiB whatever the card claims. A filesystem that needs more fails to mount in the VM, and the
 /// card is reported as not opened.
@@ -422,7 +423,7 @@ pub fn serve_memory_mib(fs_kind: u32, meta_bytes: u64) -> u32 {
     let meta_mib = meta_bytes.div_ceil(1 << 20).min(1 << 20) as u32;
     let want = match fs_kind {
         crate::FS_EXFAT => 80 + meta_mib,
-        _ => 64 + meta_mib.min(64),
+        _ => 64 + (meta_mib.saturating_mul(5) / 4).min(160),
     };
     want.clamp(MIN_SERVE_MIB, MAX_SERVE_MIB)
 }
@@ -651,10 +652,11 @@ mod tests {
 
     #[test]
     fn memory_is_bounded() {
-        // 64 GB FAT32 with 4 KiB clusters: 64 MiB per FAT.
-        assert_eq!(serve_memory_mib(crate::FS_VFAT, 64 << 20), 128);
+        // 64 GB FAT32 with 4 KiB clusters: 64 MiB per FAT. 2 TB with 32 KiB clusters: 256 MiB.
+        assert_eq!(serve_memory_mib(crate::FS_VFAT, 64 << 20), 144);
         assert_eq!(serve_memory_mib(crate::FS_VFAT, 1 << 20), 96);
-        assert_eq!(serve_memory_mib(crate::FS_VFAT, 1 << 30), 128);
+        assert_eq!(serve_memory_mib(crate::FS_VFAT, 256 << 20), 224);
+        assert_eq!(serve_memory_mib(crate::FS_VFAT, 1 << 30), 224);
         // 256 GB exFAT with 4 KiB clusters: 8 MiB bitmap. 2 TB with 4 KiB clusters: 64 MiB.
         assert_eq!(serve_memory_mib(crate::FS_EXFAT, 8 << 20), 96);
         assert_eq!(serve_memory_mib(crate::FS_EXFAT, 64 << 20), 144);

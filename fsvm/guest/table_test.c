@@ -44,6 +44,7 @@ static int failures;
 	} while (0)
 
 static const char *current = "";
+static unsigned sector_size = 512;
 
 static int rd(void *ctx, uint64_t off, void *buf, size_t len)
 {
@@ -165,10 +166,14 @@ struct gpt_part {
 	uint64_t first, last;
 };
 
-/* A protective MBR, a primary GPT at LBA 1 and a backup at the end, with `n` entries in a table of `slots`. */
+/*
+ * A protective MBR, a primary GPT at LBA 1 and a backup at the end, with `n` entries in a table of `slots`. LBAs count
+ * blocks of `sector_size` bytes, as on the disk being tested.
+ */
 static void make_gpt(const struct gpt_part *parts, unsigned n, uint32_t slots)
 {
 	static uint8_t entries[1024 * 128];
+	const uint64_t ss = sector_size, lbas = (uint64_t)DISK_SECTORS * 512 / ss;
 	memset(entries, 0, sizeof(entries));
 	for (unsigned i = 0; i < n; i++) {
 		uint8_t *e = entries + i * 128;
@@ -179,21 +184,21 @@ static void make_gpt(const struct gpt_part *parts, unsigned n, uint32_t slots)
 	}
 	uint32_t ecount = slots > 1024 ? 1024 : slots;
 	uint32_t ecrc = crc(entries, (size_t)ecount * 128);
-	uint64_t tsect = ((uint64_t)ecount * 128 + 511) / 512;
-	mbr(0, 0, 0xEE, 1, DISK_SECTORS - 1);
+	uint64_t tlbas = ((uint64_t)ecount * 128 + ss - 1) / ss;
+	mbr(0, 0, 0xEE, 1, (uint32_t)(lbas - 1));
 	for (int backup = 0; backup < 2; backup++) {
-		uint64_t my = backup ? DISK_SECTORS - 1 : 1, alt = backup ? 1 : DISK_SECTORS - 1;
-		uint64_t table = backup ? DISK_SECTORS - 1 - tsect : 2;
-		memcpy(disk + table * 512, entries, (size_t)tsect * 512);
-		uint8_t *h = disk + my * 512;
-		memset(h, 0, 512);
+		uint64_t my = backup ? lbas - 1 : 1, alt = backup ? 1 : lbas - 1;
+		uint64_t table = backup ? lbas - 1 - tlbas : 2;
+		memcpy(disk + table * ss, entries, (size_t)ecount * 128);
+		uint8_t *h = disk + my * ss;
+		memset(h, 0, ss);
 		memcpy(h, "EFI PART", 8);
 		put32(h + 8, 0x00010000);
 		put32(h + 12, 92);
 		put64(h + 24, my);
 		put64(h + 32, alt);
-		put64(h + 40, 34);
-		put64(h + 48, DISK_SECTORS - 34);
+		put64(h + 40, ss == 512 ? 34 : 6);
+		put64(h + 48, lbas - (ss == 512 ? 34 : 6));
 		put64(h + 72, table);
 		put32(h + 80, slots);
 		put32(h + 84, 128);
@@ -205,12 +210,13 @@ static void make_gpt(const struct gpt_part *parts, unsigned n, uint32_t slots)
 static void reset(const char *name)
 {
 	current = name;
+	sector_size = 512;
 	memset(disk, 0, sizeof(disk));
 }
 
 static int run(struct fsvm_layout *l)
 {
-	int r = fsvm_read_layout(rd, NULL, DISK_SECTORS, l);
+	int r = fsvm_read_layout(rd, NULL, DISK_SECTORS, sector_size, l);
 	if (dump_dir && r == 0) {
 		char path[512];
 		snprintf(path, sizeof(path), "%s/%s.layout", dump_dir, current);
@@ -349,6 +355,26 @@ int main(int argc, char **argv)
 	mbr(0, 0, 0x07, 2048, 4096); /* NTFS or exFAT type, but nothing recognisable inside */
 	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == 0 && l.e[0].label_len == 0);
 	CHECK(fsvm_layout_find(&l, 1, 2048, 4096) == NULL);
+
+	/* A USB disk with 4096-byte logical blocks: its GPT counts 4096-byte LBAs, the layout 512-byte sectors. */
+	reset("gpt_4k_blocks");
+	sector_size = 4096;
+	{
+		struct gpt_part p[] = {
+			{ basic, 1, 256, 1279 },     /* 4096-byte LBAs: sectors 2048 to 10239 */
+			{ expand, 2, 1280, 3000 },
+		};
+		make_gpt(p, 2, 128);
+		make_fat32(2048, 0x44445555, "BIG");
+	}
+	CHECK(run(&l) == 0);
+	CHECK(l.h.table == FSVM_TABLE_GPT && l.h.count == 2);
+	CHECK(l.e[0].start == 2048 && l.e[0].length == 8192 && l.e[0].fs_kind == FSVM_FS_VFAT);
+	CHECK(l.e[0].label_len == 3 && !memcmp(l.e[0].label, "BIG", 3));
+	CHECK(l.e[1].start == 10240 && l.e[1].length == (3000 - 1280 + 1) * 8);
+	/* The same disk read as 512-byte blocks finds no GPT header at LBA 1: nothing Android can use, no guess. */
+	sector_size = 512;
+	CHECK(run(&l) != 0 || l.h.count == 0);
 
 	reset("blank");
 	CHECK(run(&l) == 0 && l.h.count == 0);

@@ -36,10 +36,13 @@ struct fsvm_layout {
 };
 
 /*
- * Reads the layout of a disk of `disk_sectors` 512-byte sectors. Returns 0, or a negative errno when the table is
- * malformed or claims more than the protocol allows (the disk is then not served at all).
+ * Reads the layout of a disk of `disk_sectors` 512-byte sectors whose logical blocks are `sector_size` bytes (512,
+ * or 4096 on some USB disks: their tables count 4096-byte blocks). The layout always counts 512-byte sectors.
+ * Returns 0, or a negative errno when the table is malformed or claims more than the protocol allows (the disk is
+ * then not served at all).
  */
-int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, struct fsvm_layout *out);
+int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned sector_size,
+		     struct fsvm_layout *out);
 
 /* Bytes of the layout reply. */
 static inline uint32_t fsvm_layout_size(const struct fsvm_layout *l)

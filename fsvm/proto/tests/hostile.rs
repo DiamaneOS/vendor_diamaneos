@@ -59,7 +59,7 @@ fn attr(node: u64, kind: Kind, size: u64) -> Attr {
 }
 
 fn quick() -> Deadlines {
-    Deadlines { hello: Duration::from_millis(600), meta: Duration::from_millis(600), io: Duration::from_millis(600), mount: Duration::from_millis(600) }
+    Deadlines { hello: Duration::from_millis(600), meta: Duration::from_millis(600), io: Duration::from_millis(600), mutate: Duration::from_millis(600), mount: Duration::from_millis(600) }
 }
 
 /// Runs `server` against a fresh client and returns the client.
@@ -308,7 +308,7 @@ fn random_replies_never_panic_or_hang() {
                 }
             }
         });
-        c.deadlines = Deadlines { hello: Duration::from_millis(150), meta: Duration::from_millis(150), io: Duration::from_millis(150), mount: Duration::from_millis(150) };
+        c.deadlines = Deadlines { hello: Duration::from_millis(150), meta: Duration::from_millis(150), io: Duration::from_millis(150), mutate: Duration::from_millis(150), mount: Duration::from_millis(150) };
         let t = Instant::now();
         let _ = c.getattr(2);
         let _ = c.list(1);
@@ -316,7 +316,7 @@ fn random_replies_never_panic_or_hang() {
         let _ = c.statfs();
         let _ = c.hello();
         let _ = c.layout(1 << 30);
-        let _ = c.mount(1, 2048, 4096, true, FS_VFAT);
+        let _ = c.mount(1, 2048, 4096, true, FS_VFAT, Duration::ZERO);
         assert!(t.elapsed() < Duration::from_secs(3), "seed {seed}");
     }
 }
@@ -359,7 +359,7 @@ fn honest_layout_and_mount() {
     let l = c.layout(DISK_BYTES).unwrap();
     assert_eq!(l.parts.len(), 2);
     assert_eq!(l.parts[1].fs_uuid.as_deref(), Some("1234-5678"));
-    assert_eq!(c.mount(2, 200_000, 100_000, false, FS_VFAT).unwrap().fs_kind, FS_VFAT);
+    assert_eq!(c.mount(2, 200_000, 100_000, false, FS_VFAT, Duration::ZERO).unwrap().fs_kind, FS_VFAT);
     assert!(!c.is_broken());
 }
 
@@ -376,7 +376,7 @@ fn hostile_layouts_break_the_session() {
         assert!(matches!(c.layout(DISK_BYTES), Err(CallError::Broken(_))), "{what}");
         // Nothing more is asked of a VM that lied about the disk.
         let t = Instant::now();
-        assert!(matches!(c.mount(1, 2048, 100, true, 0), Err(CallError::Broken(_))), "{what}");
+        assert!(matches!(c.mount(1, 2048, 100, true, 0, Duration::ZERO), Err(CallError::Broken(_))), "{what}");
         assert!(t.elapsed() < Duration::from_millis(50));
     }
 }
@@ -409,6 +409,6 @@ fn hostile_mount_replies_break_the_session() {
         ("short", hello_payload(FS_VFAT, false)[..10].to_vec(), false),
     ] {
         let mut c = layout_server(layout::encode_layout(sectors, 1, &[fat(1, 2048, 100)]), reply_payload);
-        assert!(matches!(c.mount(1, 2048, 100, ro, FS_VFAT), Err(CallError::Broken(_))), "{what}");
+        assert!(matches!(c.mount(1, 2048, 100, ro, FS_VFAT, Duration::ZERO), Err(CallError::Broken(_))), "{what}");
     }
 }

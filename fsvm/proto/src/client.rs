@@ -88,7 +88,11 @@ impl<S: TimedStream> Transport for StreamTransport<S> {
 #[derive(Debug, Clone, Copy)]
 pub struct Deadlines {
     pub hello: Duration,
+    /// Lookups, attributes, listings and statfs.
     pub meta: Duration,
+    /// Calls that change the volume (create, mkdir, unlink, rmdir, rename, truncate, set time): a cheap card in the
+    /// middle of its garbage collection can take seconds for one.
+    pub mutate: Duration,
     pub io: Duration,
     /// MOUNT: the VM's kernel mounts the filesystem and counts its free space once, which reads a whole FAT. A
     /// 2 TB FAT32 card with 32 KiB clusters has 256 MiB per FAT, about 13 s from a slow card. Later STATFS calls
@@ -104,6 +108,7 @@ impl Default for Deadlines {
         Deadlines {
             hello: Duration::from_secs(10),
             meta: Duration::from_secs(5),
+            mutate: Duration::from_secs(15),
             io: Duration::from_secs(15),
             mount: Duration::from_secs(30),
         }
@@ -186,7 +191,11 @@ impl<T: Transport> Client<T> {
     }
 
     fn attr_call(&mut self, req: Request, op: Op) -> CallResult<Attr> {
-        let p = self.call(req, op, ATTR_SIZE as u32, self.deadlines.meta)?;
+        let budget = match op {
+            Op::Lookup | Op::Getattr => self.deadlines.meta,
+            _ => self.deadlines.mutate,
+        };
+        let p = self.call(req, op, ATTR_SIZE as u32, budget)?;
         match decode_attr(&p) {
             Ok(a) => Ok(a),
             Err(e) => self.fail(format!("{op:?} attr: {e:?}")),
@@ -194,7 +203,8 @@ impl<T: Transport> Client<T> {
     }
 
     fn empty_call(&mut self, req: Request, op: Op) -> CallResult<()> {
-        let p = self.call(req, op, 0, self.deadlines.meta)?;
+        let budget = if op == Op::Forget { self.deadlines.meta } else { self.deadlines.mutate };
+        let p = self.call(req, op, 0, budget)?;
         debug_assert!(p.is_empty());
         Ok(())
     }
@@ -227,10 +237,20 @@ impl<T: Transport> Client<T> {
     }
 
     /// Mounts partition `index` (0: the whole disk), which must still be at `start` and `length` sectors. Once per
-    /// VM. The reply must name a filesystem, and `expect_fs` when that is not 0.
-    pub fn mount(&mut self, index: u32, start: u64, length: u64, read_only: bool, expect_fs: u32) -> CallResult<Hello> {
-        let budget = self.deadlines.mount;
-        let req = Request { arg: index as u64, node: start, node2: length, flags: read_only as u16, ..Default::default() };
+    /// VM. A writable mount is checked first, for at most `check` (zero: no check). The reply must name a
+    /// filesystem, and `expect_fs` when that is not 0. It may be read-only when the check did not finish.
+    pub fn mount(&mut self, index: u32, start: u64, length: u64, read_only: bool, expect_fs: u32, check: Duration) -> CallResult<Hello> {
+        let check_ms = check.as_millis().min(u32::MAX as u128) as u32;
+        // The check, then the mount and the first free-space count.
+        let budget = self.deadlines.mount + check;
+        let req = Request {
+            arg: index as u64,
+            node: start,
+            node2: length,
+            flags: read_only as u16,
+            len: check_ms,
+            ..Default::default()
+        };
         let p = self.call(req, Op::Mount, HELLO_SIZE as u32, budget)?;
         match decode_hello(&p) {
             Ok(h) if h.fs_kind == 0 => self.fail("mount: no filesystem".into()),

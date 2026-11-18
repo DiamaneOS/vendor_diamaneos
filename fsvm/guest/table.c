@@ -33,6 +33,7 @@
 #include <string.h>
 
 #define SECTOR 512u
+#define MAX_SECTOR 4096u
 #define GPT_MAX_ENTRIES 128u
 #define GPT_ENTRY_SIZE 128u
 #define LABEL_SCAN_MAX (64u * 1024u)
@@ -259,18 +260,22 @@ static int add_entry(struct fsvm_layout *l, uint32_t index, uint64_t start, uint
 	return 0;
 }
 
-/* One GPT header and its entries at `lba`. Returns 0 and fills `l`, or a negative errno. */
-static int read_gpt_at(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, uint64_t lba, int primary,
+/*
+ * One GPT header and its entries at `lba`. LBAs count logical blocks of `ss` bytes (512, or 4096 on some USB disks).
+ * The layout counts 512-byte sectors. Returns 0 and fills `l`, or a negative errno.
+ */
+static int read_gpt_at(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned ss, uint64_t lba, int primary,
 		       struct fsvm_layout *l)
 {
 	static uint8_t entries[GPT_MAX_ENTRIES * GPT_ENTRY_SIZE];
-	uint8_t h[SECTOR];
-	if (lba >= disk_sectors || rd(ctx, lba * SECTOR, h, sizeof(h)))
+	static uint8_t h[MAX_SECTOR];
+	const uint64_t f = ss / SECTOR, lbas = disk_sectors / f;
+	if (lba >= lbas || rd(ctx, lba * ss, h, ss))
 		return -EIO;
 	if (memcmp(h, "EFI PART", 8))
 		return -EINVAL;
 	uint32_t hsize = le32(h + 12);
-	if (hsize < 92 || hsize > SECTOR)
+	if (hsize < 92 || hsize > ss)
 		return -EINVAL;
 	uint32_t want = le32(h + 16);
 	memset(h + 16, 0, 4);
@@ -278,15 +283,15 @@ static int read_gpt_at(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, uint64
 		return -EINVAL;
 	uint64_t my = le64(h + 24), first = le64(h + 40), last = le64(h + 48), table = le64(h + 72);
 	uint32_t n = le32(h + 80), esize = le32(h + 84), ecrc = le32(h + 88);
-	if (my != lba || (primary ? le64(h + 32) >= disk_sectors : 0))
+	if (my != lba || (primary ? le64(h + 32) >= lbas : 0))
 		return -EINVAL;
 	/* A table claiming hundreds of entries or odd entry sizes is not one vold ever wrote. */
 	if (n == 0 || n > GPT_MAX_ENTRIES || esize != GPT_ENTRY_SIZE)
 		return -E2BIG;
-	uint64_t tsectors = ((uint64_t)n * esize + SECTOR - 1) / SECTOR;
-	if (first > last || last >= disk_sectors || table < 2 || table + tsectors > disk_sectors)
+	uint64_t tlbas = ((uint64_t)n * esize + ss - 1) / ss;
+	if (first > last || last >= lbas || table < 2 || table + tlbas > lbas)
 		return -EINVAL;
-	if (rd(ctx, table * SECTOR, entries, (size_t)n * esize))
+	if (rd(ctx, table * ss, entries, (size_t)n * esize))
 		return -EIO;
 	if (crc32(entries, (size_t)n * esize) != ecrc)
 		return -EINVAL;
@@ -304,24 +309,28 @@ static int read_gpt_at(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, uint64
 		if (e < s || s < first || e > last)
 			return -EINVAL;
 		struct fsvm_layout_entry *x;
-		int r = add_entry(l, i + 1, s, e - s + 1, &x);
+		int r = add_entry(l, i + 1, s * f, (e - s + 1) * f, &x);
 		if (r)
 			return r;
 		memcpy(x->type_guid, p, 16);
 		memcpy(x->part_guid, p + 16, 16);
 		if (!memcmp(p, gpt_basic_data, 16))
-			probe_fs(rd, ctx, s * SECTOR, (e - s + 1) * SECTOR, x);
+			probe_fs(rd, ctx, s * ss, (e - s + 1) * ss, x);
 	}
 	return 0;
 }
 
-int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, struct fsvm_layout *l)
+int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned sector_size,
+		     struct fsvm_layout *l)
 {
 	uint8_t b[SECTOR];
+	const unsigned ss = sector_size;
 	memset(l, 0, sizeof(*l));
 	l->h.disk_sectors = disk_sectors;
-	if (disk_sectors < 1 || disk_sectors > (UINT64_MAX >> 10))
+	if (disk_sectors < 1 || disk_sectors > (UINT64_MAX >> 10) || (ss != 512 && ss != 4096) ||
+	    disk_sectors % (ss / SECTOR))
 		return -EINVAL;
+	const uint64_t f = ss / SECTOR, lbas = disk_sectors / f;
 	if (rd(ctx, 0, b, sizeof(b)))
 		return -EIO;
 
@@ -343,11 +352,11 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, struct f
 			return 0; /* not a partition table */
 	for (int i = 0; i < 4; i++) {
 		if (p[16 * i + 4] == 0xEE) {
-			int r = read_gpt_at(rd, ctx, disk_sectors, 1, 1, l);
+			int r = read_gpt_at(rd, ctx, disk_sectors, ss, 1, 1, l);
 			if (r == -E2BIG)
 				return r;
 			if (r)
-				r = read_gpt_at(rd, ctx, disk_sectors, disk_sectors - 1, 0, l);
+				r = read_gpt_at(rd, ctx, disk_sectors, ss, lbas - 1, 0, l);
 			return r;
 		}
 	}
@@ -359,14 +368,14 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, struct f
 		uint64_t s = le32(q + 8), n = le32(q + 12);
 		if (type != 0x06 && type != 0x07 && type != 0x0b && type != 0x0c && type != 0x0e)
 			continue;
-		if (!n || !s || s + n > disk_sectors)
+		if (!n || !s || s + n > lbas)
 			return -EINVAL;
 		struct fsvm_layout_entry *e;
-		int r = add_entry(l, (uint32_t)i + 1, s, n, &e);
+		int r = add_entry(l, (uint32_t)i + 1, s * f, n * f, &e);
 		if (r)
 			return r;
 		e->mbr_type = type;
-		probe_fs(rd, ctx, s * SECTOR, n * SECTOR, e);
+		probe_fs(rd, ctx, s * ss, n * ss, e);
 	}
 	return 0;
 }

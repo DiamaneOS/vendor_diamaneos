@@ -46,13 +46,17 @@ enum {
 	FSVM_FSYNC = 15,
 	FSVM_FORGET = 16,
 	FSVM_LAYOUT = 17, /* the partitions this VM read from its disk (layout.rs) */
-	FSVM_MOUNT = 18,  /* arg: partition index (0: whole disk), node: start, node2: length, flags bit 0: read-only */
+	FSVM_MOUNT = 18,  /* arg: partition index (0: whole disk), node: start, node2: length, flags bit 0: read-only,
+			   * len: milliseconds the filesystem check may take (0: no check) */
 };
 
 #define FSVM_MAX_IO (128u * 1024u)
 #define FSVM_MAX_NAME 1020u
 #define FSVM_MAX_DIR_PAYLOAD (64u * 1024u)
 #define FSVM_MAX_DIR_PAGE_ENTRIES 512u
+
+/* The node id of a listed name that has no slot (READDIR): Android looks it up before it uses it. */
+#define FSVM_NODE_LISTED UINT64_MAX
 
 #define FSVM_KIND_FILE 1u
 #define FSVM_KIND_DIR 2u

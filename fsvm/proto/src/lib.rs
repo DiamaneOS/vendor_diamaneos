@@ -121,16 +121,21 @@ pub mod errno {
     pub const ENAMETOOLONG: i32 = 36;
     pub const ENOTEMPTY: i32 = 39;
     pub const ETIMEDOUT: i32 = 110;
+    /// The VM no longer knows a node id (it took the slot back). fsvmd looks the name up again.
+    pub const ESTALE: i32 = 116;
 
     /// Errors passed through as they are. They describe the filesystem, not the VM, and cannot confuse Android.
     pub fn pass_through(e: i32) -> i32 {
         match e {
             EPERM | ENOENT | EIO | EACCES | EBUSY | EEXIST | EXDEV | ENOTDIR | EISDIR | EINVAL | EFBIG
-            | ENOSPC | EROFS | ENAMETOOLONG | ENOTEMPTY => e,
+            | ENOSPC | EROFS | ENAMETOOLONG | ENOTEMPTY | ESTALE => e,
             _ => EIO,
         }
     }
 }
+
+/// The node id of a listed name the VM keeps no slot for (READDIR only). Never valid in a request.
+pub const NODE_LISTED: u64 = u64::MAX;
 
 /// Attributes of a node, checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

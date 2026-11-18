@@ -123,7 +123,78 @@ python_binary_host {
 genrule {
     name: "fsvm_guest_initrd",
     tools: ["fsvm_mkinitrd"],
-    device_first_srcs: [":fsvm_guest_init"],
+    device_first_srcs: [
+        ":fsvm_guest_init",
+        ":fsvm_fsck_msdos",
+        ":fsvm_fsck_exfat",
+    ],
     out: ["fsvm_initrd.img"],
-    cmd: "$(location fsvm_mkinitrd) $(out) $(in)",
+    cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init) " +
+        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat)",
+}
+
+// The filesystem checks vold ran on Android (fsck_untrusted) now run in the VM, before a writable mount. Static
+// builds of the pinned tree's own sources, unchanged: each file in guest/fsck includes one source file of
+// external/fsck_msdos or external/exfatprogs, with that project's flags, so nothing is copied or forked.
+license {
+    name: "fsvm_fsck_msdos_license",
+    license_kinds: ["SPDX-license-identifier-BSD"],
+    license_text: ["guest/fsck/NOTICE.fsck_msdos"],
+}
+
+license {
+    name: "fsvm_fsck_exfat_license",
+    license_kinds: [
+        "SPDX-license-identifier-GPL-2.0",
+        "SPDX-license-identifier-LGPL",
+    ],
+    license_text: ["guest/fsck/NOTICE.exfatprogs"],
+}
+
+cc_binary {
+    name: "fsvm_fsck_msdos",
+    licenses: ["fsvm_fsck_msdos_license"],
+    srcs: [
+        "guest/fsck/fsck_msdos_boot.c",
+        "guest/fsck/fsck_msdos_check.c",
+        "guest/fsck/fsck_msdos_dir.c",
+        "guest/fsck/fsck_msdos_fat.c",
+        "guest/fsck/fsck_msdos_fsutil.c",
+        "guest/fsck/fsck_msdos_main.c",
+    ],
+    // As external/fsck_msdos builds fsck_msdos, which finds its own headers (fstab.h) through this.
+    include_dirs: ["external/fsck_msdos"],
+    cflags: [
+        "-O2",
+        "-Wall",
+        "-Werror",
+        "-D_BSD_SOURCE",
+        "-D_LARGEFILE_SOURCE",
+        "-D_FILE_OFFSET_BITS=64",
+        "-Wno-unused-variable",
+        "-Wno-unused-const-variable",
+        "-Wno-format",
+        "-Wno-sign-compare",
+        "-include external/fsck_msdos/freebsd-compat.h",
+    ],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fsvm_fsck_exfat",
+    licenses: ["fsvm_fsck_exfat_license"],
+    srcs: [
+        "guest/fsck/fsck_exfat_fsck.c",
+        "guest/fsck/fsck_exfat_repair.c",
+    ],
+    // As external/exfatprogs builds fsck.exfat.
+    defaults: ["exfatprogs-defaults"],
+    static_libs: ["libexfat"],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
 }
