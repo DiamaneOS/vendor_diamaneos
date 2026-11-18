@@ -78,6 +78,8 @@ const MAX_DEPTH: usize = 2048;
 pub trait Session: Send {
     /// Returns the new client, the root node and whether the volume is now read-only.
     fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, u64, bool)>;
+    /// Stops the VM and waits up to `within` for its end.
+    fn stop_vm(&mut self, within: Duration);
 }
 
 struct State {
@@ -93,12 +95,16 @@ struct State {
     listings: HashMap<u64, Listing>,
     listing_bytes: usize,
     next_handle: u64,
+    /// Counts new VMs. A file handle is the count at its open: after a new VM took over, acknowledged writes of the
+    /// old one may be lost, and fsync or close on an older handle says so (EIO).
+    generation: u64,
     /// Set once the filesystem was written back and unmounted in the VM before a stop: nothing is served after.
     closed: bool,
 }
 
 pub struct FsvmFs {
     state: Arc<Mutex<State>>,
+    closing: Arc<AtomicBool>,
     read_only: Arc<AtomicBool>,
     gid: u32,
     dir_mode: u32,
@@ -134,8 +140,10 @@ impl FsvmFs {
                 listings: HashMap::new(),
                 listing_bytes: 0,
                 next_handle: 1,
+                generation: 0,
                 closed: false,
             })),
+            closing: Arc::new(AtomicBool::new(false)),
             read_only,
             gid,
             dir_mode: if obb { 0o550 } else { 0o770 },
@@ -145,7 +153,7 @@ impl FsvmFs {
 
     /// A handle that outlives the FUSE loop, for the orderly stop (Closer::close).
     pub fn closer(&self) -> Closer {
-        Closer { state: self.state.clone() }
+        Closer { state: self.state.clone(), closing: self.closing.clone() }
     }
 
     #[allow(clippy::useless_conversion)]
@@ -256,6 +264,7 @@ impl State {
         warn!("filesystem VM session broken ({why}), starting a new VM");
         match self.session.restart() {
             Ok((client, root, read_only)) => {
+                self.generation += 1;
                 self.client = client;
                 self.root_guest = root;
                 if read_only {
@@ -403,12 +412,39 @@ impl State {
 /// the card clean. Used when the FUSE loop ended (vold unmounted the volume) and on SIGTERM (vold's stop).
 pub struct Closer {
     state: Arc<Mutex<State>>,
+    closing: Arc<AtomicBool>,
 }
 
+/// How an orderly stop ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Closed {
+    /// Everything written back, the filesystem unmounted and marked clean, the VM stopped.
+    Clean,
+    /// Not everything may be on the disk: vold must not call the volume safely removed.
+    NotWrittenBack,
+    /// Another stop runs already (the FUSE loop ended and vold's stop request came on top). It decides.
+    InProgress,
+}
+
+/// Below this the VM's dirty data counts as written.
+const DIRTY_DONE: u64 = 64 << 10;
+/// The write back must have made progress within this, or the stop goes on without waiting further.
+const NO_PROGRESS: Duration = Duration::from_secs(4);
+/// What UNMOUNT gets at least after the wait for the dirty data (when the whole stop allows that much).
+const UNMOUNT_MIN: Duration = Duration::from_secs(4);
+/// The VM is given this long to end before fsvmd does, so its disk is free (a mixed card's partition).
+const VM_END: Duration = Duration::from_secs(3);
+
 impl Closer {
-    /// Waits up to `lock_wait` for a call in progress, then gives the VM `budget` to write back and unmount.
-    pub fn close(&self, lock_wait: Duration, budget: Duration) -> bool {
-        let until = Instant::now() + lock_wait;
+    /// Waits up to `lock_wait` for a call in progress, then has the VM write everything back as long as its dirty
+    /// data keeps going down, and unmount, all within `max` from the start. Then stops the VM and waits for its end.
+    pub fn close(&self, lock_wait: Duration, max: Duration) -> Closed {
+        if self.closing.swap(true, Ordering::SeqCst) {
+            return Closed::InProgress;
+        }
+        let start = Instant::now();
+        let deadline = start + max;
+        let until = start + lock_wait;
         let mut guard = loop {
             match self.state.try_lock() {
                 Ok(g) => break g,
@@ -418,29 +454,63 @@ impl Closer {
                 }
                 Err(std::sync::TryLockError::WouldBlock) => {
                     error!("a call to the filesystem VM is still running, stopping without writing back");
-                    return false;
+                    return Closed::NotWrittenBack;
                 }
             }
         };
         if guard.closed {
-            return true;
+            return Closed::Clean;
         }
         guard.closed = true;
-        if guard.client.is_broken() {
+        let result = if guard.client.is_broken() {
             error!("the filesystem VM session is broken, stopping without writing back");
-            return false;
-        }
-        let t = Instant::now();
-        match guard.client.unmount(budget) {
-            Ok(()) => {
-                info!("written back and unmounted in the VM in {:?}, the volume is clean", t.elapsed());
-                true
+            Closed::NotWrittenBack
+        } else {
+            // The VM writes back by itself (within about 1 s, at most 8 MiB waiting). Waiting while that goes down
+            // gives a slow card the time it needs, and a stuck one no more than NO_PROGRESS.
+            let mut least = u64::MAX;
+            let mut progress_at = Instant::now();
+            loop {
+                let now = Instant::now();
+                if now + UNMOUNT_MIN >= deadline {
+                    break;
+                }
+                match guard.client.dirty() {
+                    Ok(d) if d < DIRTY_DONE => break,
+                    Ok(d) => {
+                        if d < least {
+                            if least != u64::MAX {
+                                info!("writing back: {} KiB left", d >> 10);
+                            }
+                            least = d;
+                            progress_at = now;
+                        } else if now.duration_since(progress_at) > NO_PROGRESS {
+                            warn!("writing back: no progress for {NO_PROGRESS:?}, {} KiB left", d >> 10);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("writing back: the VM did not say how much is left: {e:?}");
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(250));
             }
-            Err(e) => {
-                error!("writing back and unmounting in the VM failed after {:?}: {e:?}", t.elapsed());
-                false
+            let budget = deadline.saturating_duration_since(Instant::now());
+            match guard.client.unmount(budget) {
+                Ok(()) => {
+                    info!("written back and unmounted in the VM in {:?}, the volume is clean", start.elapsed());
+                    Closed::Clean
+                }
+                Err(e) => {
+                    error!("writing back and unmounting in the VM failed after {:?}: {e:?}", start.elapsed());
+                    Closed::NotWrittenBack
+                }
             }
-        }
+        };
+        // The VM ends before fsvmd does, so nothing holds its disk any more when vold takes it back.
+        guard.session.stop_vm(VM_END);
+        result
     }
 }
 
@@ -552,7 +622,7 @@ impl FileSystem for FsvmFs {
             self.writable()?;
             s.call(ino, |c, g| c.truncate(g, 0))?;
         }
-        Ok((Some(ino), OpenOptions::empty()))
+        Ok((Some(s.generation), OpenOptions::empty()))
     }
 
     fn release(
@@ -611,14 +681,22 @@ impl FileSystem for FsvmFs {
     /// close(): every write already reached the VM's filesystem (FUSE writes here are write-through), and the
     /// filesystem writes it back within about two seconds, as the kernel's FAT driver did with close. An app that
     /// needs the data on the card calls fsync, and an eject writes everything back first (Closer).
-    fn flush(&self, _ctx: Context, _ino: u64, _h: u64, _lock_owner: u64) -> io::Result<()> {
+    fn flush(&self, _ctx: Context, _ino: u64, h: u64, _lock_owner: u64) -> io::Result<()> {
+        let s = self.state.lock().unwrap();
+        if h != s.generation {
+            // A new VM took over since this file was opened: writes the old one acknowledged may be lost.
+            return Err(err(libc::EIO));
+        }
         Ok(())
     }
 
     /// fsync and fdatasync: the file's data, and for fsync its directory entry and times, are on the card when this
     /// returns.
-    fn fsync(&self, _ctx: Context, ino: u64, datasync: bool, _h: u64) -> io::Result<()> {
+    fn fsync(&self, _ctx: Context, ino: u64, datasync: bool, h: u64) -> io::Result<()> {
         let mut s = self.state.lock().unwrap();
+        if h != s.generation {
+            return Err(err(libc::EIO));
+        }
         s.call(ino, |c, g| c.fsync(g, datasync))
     }
 
@@ -644,7 +722,7 @@ impl FileSystem for FsvmFs {
         let a = s.call_once(parent, |c, g| c.create(g, name.to_bytes(), flags as i32 & libc::O_EXCL != 0))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         let entry = Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT };
-        Ok((entry, Some(ino), OpenOptions::empty()))
+        Ok((entry, Some(s.generation), OpenOptions::empty()))
     }
 
     fn mkdir(

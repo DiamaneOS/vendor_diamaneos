@@ -189,8 +189,11 @@ fn watch_sigterm(closer: fs::Closer) -> Result<()> {
         let mut b = [0u8; 1];
         let _ = rd.read(&mut b);
         warn!("stopped by vold: writing back before the VM stops");
-        closer.close(Duration::from_millis(300), Duration::from_millis(1500));
-        std::process::exit(0);
+        match closer.close(Duration::from_millis(300), Duration::from_millis(1500)) {
+            // The stop after the FUSE loop runs already and decides the exit. vold's kill covers a hang.
+            fs::Closed::InProgress => {}
+            c => exit_for(c),
+        }
     });
     Ok(())
 }
@@ -221,10 +224,11 @@ type VmClient = Client<StreamTransport<UnixStream>>;
 /// fsvmd finishes within these, whatever the VM does.
 const PROBE_BUDGET: Duration = Duration::from_secs(20);
 const SERVE_BUDGET: Duration = Duration::from_secs(30);
-/// The orderly stop after vold unmounted the volume: a call still running gets this long to end, then the VM gets
-/// CLOSE_BUDGET to write back and unmount. vold waits 12 s for fsvmd to end on its own (fs/Fsvm.cpp kSyncMs).
+/// The orderly stop after vold unmounted the volume: a call still running gets CLOSE_LOCK_WAIT to end, then the VM
+/// writes back as long as its dirty data keeps going down, and unmounts, all within CLOSE_MAX, and stops (3 s). vold
+/// waits 26 s for fsvmd to end on its own (fs/Fsvm.cpp kSyncMs).
 const CLOSE_LOCK_WAIT: Duration = Duration::from_secs(2);
-const CLOSE_BUDGET: Duration = Duration::from_secs(9);
+const CLOSE_MAX: Duration = Duration::from_secs(20);
 /// At most this long for a writable mount's filesystem check, within the budget.
 const CHECK_MAX: Duration = Duration::from_secs(14);
 /// Kept for the mount itself and the first free-space count.
@@ -338,6 +342,19 @@ impl fs::Session for Served {
         let (client, hello) = self.bring_up(SERVE_BUDGET)?;
         Ok((client, hello.root, hello.read_only))
     }
+
+    fn stop_vm(&mut self, within: Duration) {
+        if let Some(vm) = self.vm.take() {
+            vm.stop_and_wait(within);
+        }
+    }
+}
+
+/// fsvmd's exit status when it could not write the volume back before it ended (vold fs/Fsvm.h kExitNotWrittenBack).
+const EXIT_NOT_WRITTEN_BACK: i32 = 3;
+
+fn exit_for(c: fs::Closed) -> ! {
+    std::process::exit(if c == fs::Closed::Clean { 0 } else { EXIT_NOT_WRITTEN_BACK })
 }
 
 fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
@@ -383,14 +400,25 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     watch_sigterm(filesystem.closer())?;
     let r = config.enter_message_loop(filesystem);
     info!("volume {}: FUSE loop ended: {r:?}", args.volume);
-    // vold unmounted the volume. Everything is written back and the filesystem unmounted in the VM (marked clean)
-    // before the VM stops with this process. vold waits for this (fs/Fsvm.cpp Stop).
-    closer.close(CLOSE_LOCK_WAIT, CLOSE_BUDGET);
-    Ok(())
+    // vold unmounted the volume. Everything is written back and the filesystem unmounted in the VM (marked clean),
+    // and the VM stopped, before this process ends. vold waits for this (fs/Fsvm.cpp Stop) and learns from the exit
+    // status whether it worked.
+    match closer.close(CLOSE_LOCK_WAIT, CLOSE_MAX) {
+        fs::Closed::InProgress => loop {
+            // vold's stop request came first: its thread finishes and exits.
+            std::thread::sleep(Duration::from_secs(3600));
+        },
+        c => exit_for(c),
+    }
 }
 
 fn run() -> Result<()> {
     check_no_capabilities()?;
+    // The service is kept from the low memory killer. Its fsvmd processes, and the VM managers and crosvm they start,
+    // are not: back to the default.
+    if let Err(e) = std::fs::write("/proc/self/oom_score_adj", "0") {
+        warn!("oom_score_adj: {e}");
+    }
     let args = parse_args()?;
     let disk = inherited(DISK_FD)?;
     let pipe = inherited(PIPE_FD)?;

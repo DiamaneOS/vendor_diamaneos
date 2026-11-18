@@ -471,6 +471,26 @@ int main(int argc, char **argv)
 	bad_sector = 2048 + 32 + 2 * 16;
 	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == FSVM_FS_VFAT && l.e[0].label_len == 0);
 
+	/* A GPT without the protective MBR (sector 0 empty), as some tools and cameras write it: read as a GPT. */
+	reset("gpt_no_protective_mbr");
+	{
+		struct gpt_part p[] = { { basic, 1, 2048, 6143 } };
+		make_gpt(p, 1, 128);
+		memset(disk, 0, 512);
+		make_fat32(2048, 9, NULL);
+	}
+	CHECK(run(&l) == 0 && l.h.table == FSVM_TABLE_GPT && l.h.count == 1 && l.e[0].fs_kind == FSVM_FS_VFAT);
+	/* The same with both headers damaged: the layout fails (unopenable), it does not look blank. */
+	reset("gpt_no_protective_mbr_damaged");
+	{
+		struct gpt_part p[] = { { basic, 1, 2048, 6143 } };
+		make_gpt(p, 1, 128);
+		memset(disk, 0, 512);
+		disk[512 + 20] ^= 1;
+		disk[(DISK_SECTORS - 1) * 512 + 20] ^= 1;
+	}
+	CHECK(run(&l) == -EINVAL);
+
 	reset("blank");
 	CHECK(run(&l) == 0 && l.h.count == 0);
 

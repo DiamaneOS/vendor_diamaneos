@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #define FSVM_PORT 5690u
-#define FSVM_VERSION 3u
+#define FSVM_VERSION 4u
 #define FSVM_REQ_MAGIC 0x32564d46u /* "FMV2" */
 #define FSVM_RSP_MAGIC 0x32524d46u /* "FMR2" */
 
@@ -49,6 +49,7 @@ enum {
 	FSVM_MOUNT = 18,  /* arg: partition index (0: whole disk), node: start, node2: length, flags bit 0: read-only,
 			   * len: milliseconds the filesystem check may take (0: no check) */
 	FSVM_UNMOUNT = 19, /* write everything back and unmount (the filesystem is marked clean), before a stop */
+	FSVM_DIRTY = 20,   /* the bytes still to be written to the disk (u64): dirty plus under write back */
 };
 /* FSVM_FSYNC flags bit 0: data only (fdatasync). */
 #define FSVM_FSYNC_DATA 1u

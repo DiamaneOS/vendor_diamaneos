@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/blkpg.h>
 #include <linux/fs.h>
 #include <linux/hdreg.h>
 #include <linux/vm_sockets.h>
@@ -495,6 +496,28 @@ static int read_layout(void);
 static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms);
 static int do_unmount(void);
 
+/* Dirty plus Writeback from /proc/meminfo, in bytes: what this VM still has to write to its disk. */
+static uint64_t dirty_bytes(void)
+{
+	char buf[4096];
+	int fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	ssize_t n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = 0;
+	uint64_t total = 0;
+	static const char *keys[] = { "\nDirty:", "\nWriteback:" };
+	for (unsigned i = 0; i < 2; i++) {
+		const char *p = strstr(buf, keys[i]);
+		if (p)
+			total += strtoull(p + strlen(keys[i]), NULL, 10) * 1024;
+	}
+	return total;
+}
+
 static uint32_t hello_flags(void)
 {
 	return (read_only ? 1u : 0u) | (was_dirty ? 2u : 0u);
@@ -513,6 +536,13 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 	}
 	case FSVM_UNMOUNT:
 		return reply(s, q->id, do_unmount(), NULL, 0);
+	case FSVM_DIRTY: {
+		uint64_t b = dirty_bytes();
+		uint8_t out[8];
+		for (int i = 0; i < 8; i++)
+			out[i] = (uint8_t)(b >> (8 * i));
+		return reply(s, q->id, 0, out, sizeof(out));
+	}
 	case FSVM_LAYOUT:
 		r = read_layout();
 		if (r)
@@ -731,8 +761,9 @@ static int try_mount(const char *dev, int want_ro)
 		{ "vfat", "utf8,shortname=mixed,errors=remount-ro", FSVM_FS_VFAT },
 		{ "exfat", "iocharset=utf8,errors=remount-ro", FSVM_FS_EXFAT },
 	};
-	/* MS_DIRSYNC as vold mounted cards (fs/Vfat.cpp, fs/Exfat.cpp): directory changes reach the card at once, so
-	 * a card pulled without eject keeps its directory structure. */
+	/* MS_DIRSYNC as vold mounted cards (fs/Vfat.cpp, fs/Exfat.cpp): a directory change waits until it is on the disk.
+	 * Android's VM manager opens a card with O_DIRECT, so that means on the card, not in Android's page cache, and a
+	 * card pulled without eject keeps its directory structure. */
 	unsigned long base = MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | MS_DIRSYNC | (want_ro ? MS_RDONLY : 0);
 	for (unsigned i = 0; i < sizeof(fs) / sizeof(fs[0]); i++) {
 		if (!mount(dev, MNT, fs[i].type, base, fs[i].opts)) {
@@ -797,6 +828,18 @@ static int exfat_dirty(const char *dev)
 	if (fd < 0)
 		return 0;
 	int r = pread(fd, b, sizeof(b), 0) == (ssize_t)sizeof(b) && (b[106] & 2);
+	close(fd);
+	return r;
+}
+
+/* The state byte Linux's FAT driver sets while it has the volume mounted writable. */
+static int fat_linux_dirty(const char *dev)
+{
+	uint8_t b[512];
+	int fd = open(dev, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	int r = pread(fd, b, sizeof(b), 0) == (ssize_t)sizeof(b) && (b[(b[22] | b[23]) ? 0x25 : 0x41] & 1);
 	close(fd);
 	return r;
 }
@@ -907,6 +950,27 @@ static int check_volume(const char *dev, uint32_t kind, uint32_t budget_ms)
  * `check_ms`. Then the free space is counted once: the FAT driver reads its whole table for that, which belongs
  * here, inside MOUNT's deadline, not in a later STATFS.
  */
+/*
+ * A GPT without the protective MBR: this VM's kernel does not read it (Linux needs the MBR or a "gpt" switch), the
+ * table reader did. The partition is added to this VM's own kernel at the range read, so it can be mounted. Only
+ * inside the VM: Android's kernel never gets it.
+ */
+static void add_own_partition(const char *dev, uint32_t index, uint64_t start, uint64_t length)
+{
+	struct blkpg_partition p = { 0 };
+	p.pno = (int)index;
+	p.start = (long long)(start * 512);
+	p.length = (long long)(length * 512);
+	struct blkpg_ioctl_arg a = { 0 };
+	a.op = BLKPG_ADD_PARTITION;
+	a.datalen = sizeof(p);
+	a.data = &p;
+	if (disk_fd < 0 || ioctl(disk_fd, BLKPG, &a))
+		logline("adding the partition in the VM", DISK, errno);
+	for (int wait = 0; wait < 20 && access(dev, F_OK); wait++)
+		usleep(50 * 1000); /* devtmpfs makes the node */
+}
+
 static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms)
 {
 	if (fs_kind) {
@@ -926,6 +990,8 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	} else {
 		/* This kernel's partition device, compared with the table read in userspace. */
 		snprintf(dev, sizeof(dev), "%s%u", DISK, index);
+		if (access(dev, F_OK) && layout.h.table == FSVM_TABLE_GPT)
+			add_own_partition(dev, index, start, length);
 		int fd = open(dev, O_RDONLY | O_CLOEXEC);
 		struct hd_geometry geo;
 		uint64_t bytes = 0;
@@ -990,7 +1056,9 @@ static int do_unmount(void)
 		r = r ? r : -EIO;
 	if (b >= 0)
 		close(b);
-	if (!r && !read_only && volume_dirty(mounted_dev, kind))
+	/* Clean means the mark Linux's driver set while mounted is gone: on FAT the boot sector byte (a FAT32 card whose
+	 * FAT never carried the clean bit would otherwise read as not clean), on exFAT the volume flag. */
+	if (!r && !read_only && (kind == FSVM_FS_EXFAT ? exfat_dirty(mounted_dev) : fat_linux_dirty(mounted_dev)))
 		r = -EIO;
 	logline(r ? "unmounted, not clean" : "unmounted, clean", mounted_dev, -r);
 	return r;
@@ -1129,6 +1197,9 @@ int main(void)
 	 */
 	write_proc("/proc/sys/vm/dirty_expire_centisecs", "100");
 	write_proc("/proc/sys/vm/dirty_writeback_centisecs", "100");
+	/* And at most 8 MiB waits at any time (write back starts at 2 MiB), so an eject has little left to write. */
+	write_proc("/proc/sys/vm/dirty_bytes", "8388608");
+	write_proc("/proc/sys/vm/dirty_background_bytes", "2097152");
 
 #ifdef FSVM_SELFTEST
 	int want = selftest_arg();

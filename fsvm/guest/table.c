@@ -24,8 +24,8 @@
  *   from 5 in chain order as Linux numbers them. Types vold serves (06 07 0b 0c 0e) are reported. The chain is
  *   bounded: at most MAX_EBRS links, each one later on the disk than the last and inside the extended partition,
  *   and every logical partition inside it too. Anything else refuses the whole table.
- * - A GPT (protective MBR type ee): the primary header and entries, or the backup when the primary fails its
- *   checksums. Only the types vold uses are reported: basic data, android_meta and android_expand.
+ * - A GPT (protective MBR type ee, or no MBR signature and a GPT header at either end): the primary header and
+ *   entries, or the backup when the primary fails its checksums. Only the types vold uses are reported: basic data, android_meta and android_expand.
  * - For each public partition: FAT or exFAT, its serial (the volume UUID), its label, and how much metadata its
  *   filesystem driver needs (one FAT, or the exFAT allocation bitmap).
  *
@@ -421,8 +421,24 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned
 			l->h.count = 0;
 		return 0;
 	}
-	if (b[510] != 0x55 || b[511] != 0xAA)
-		return 0; /* nothing Android can use */
+	if (b[510] != 0x55 || b[511] != 0xAA) {
+		/*
+		 * No MBR signature. Some tools and cameras write a GPT without the protective MBR, which the kernel and
+		 * sgdisk read: a GPT header at either end is read as one (a damaged one fails the layout), so such a
+		 * card never looks blank. Without one there is nothing Android can use.
+		 */
+		static uint8_t h[MAX_SECTOR];
+		int head = !rd(ctx, 1 * (uint64_t)ss, h, ss) && !memcmp(h, "EFI PART", 8);
+		int tail = lbas > 2 && !rd(ctx, (lbas - 1) * ss, h, ss) && !memcmp(h, "EFI PART", 8);
+		if (!head && !tail)
+			return 0;
+		int r = read_gpt_at(rd, ctx, disk_sectors, ss, 1, 1, l);
+		if (r == -E2BIG)
+			return r;
+		if (r)
+			r = read_gpt_at(rd, ctx, disk_sectors, ss, lbas - 1, 0, l);
+		return r;
+	}
 
 	const uint8_t *p = b + 446;
 	for (int i = 0; i < 4; i++)

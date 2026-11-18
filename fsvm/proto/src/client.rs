@@ -290,12 +290,13 @@ impl<T: Transport> Client<T> {
         let mut cookie = 0u64;
         let deadline = Instant::now() + self.deadlines.listing;
         for _ in 0..MAX_DIR_PAGES {
+            // A page gets its full deadline or is not asked for: a slow page cut short would break the session.
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+            if left < self.deadlines.meta {
                 listing.truncated = true;
                 return Ok(listing);
             }
-            let budget = self.deadlines.meta.min(left);
+            let budget = self.deadlines.meta;
             let p = self.call(Request { node: dir, arg: cookie, ..Default::default() }, Op::Readdir, MAX_DIR_PAYLOAD as u32, budget)?;
             let page = match decode_dir_page(&p) {
                 Ok(page) => page,
@@ -407,6 +408,16 @@ impl<T: Transport> Client<T> {
         let p = self.call(Request::default(), Op::Unmount, 0, budget)?;
         debug_assert!(p.is_empty());
         Ok(())
+    }
+
+    /// The bytes the VM still has to write to its disk.
+    pub fn dirty(&mut self) -> CallResult<u64> {
+        let budget = self.deadlines.meta;
+        let p = self.call(Request::default(), Op::Dirty, 8, budget)?;
+        if p.len() != 8 {
+            return self.fail(format!("dirty: {} bytes", p.len()));
+        }
+        Ok(le_u64(&p, 0))
     }
 
     pub fn forget(&mut self, node: u64) -> CallResult<()> {

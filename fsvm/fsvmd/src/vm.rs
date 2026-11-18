@@ -130,6 +130,14 @@ impl Vm {
             warn!("stopping the VM: {e:?}");
         }
     }
+
+    /// Stops the VM and waits up to `within` for its end, so that its disk is free afterwards.
+    pub fn stop_and_wait(&self, within: Duration) {
+        self.stop();
+        if self.instance.wait_for_death_with_timeout(within).is_none() {
+            warn!("the VM did not end within {within:?}");
+        }
+    }
 }
 
 impl Drop for Vm {

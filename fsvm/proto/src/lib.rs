@@ -43,7 +43,8 @@ pub use client::{Client, Deadlines, StreamTransport, Transport};
 
 pub const REQ_MAGIC: u32 = u32::from_le_bytes(*b"FMV2");
 pub const RSP_MAGIC: u32 = u32::from_le_bytes(*b"FMR2");
-pub const VERSION: u32 = 3;
+/// 4: UNMOUNT, DIRTY, the data-only FSYNC flag and the dirty flag in HELLO.
+pub const VERSION: u32 = 4;
 pub const PORT: u32 = 5690;
 
 pub const REQ_HEADER: usize = 48;
@@ -103,6 +104,9 @@ pub enum Op {
     /// Writes everything back, unmounts the filesystem in the VM (which marks it clean) and answers 0, or an errno
     /// when either failed. fsvmd sends it before every orderly stop of the VM.
     Unmount = 19,
+    /// The bytes the VM still has to write to its disk (dirty plus under write back), 8 bytes. fsvmd watches it go
+    /// down before an orderly stop.
+    Dirty = 20,
 }
 
 /// The kinds of node a filesystem on a card can hold. FAT and exFAT have no links or special files.

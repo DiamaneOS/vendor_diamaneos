@@ -41,6 +41,8 @@ const MAX_REQUEST: usize = 4096;
 const MAX_ARGS: usize = 32;
 /// vold allows 6 served volumes, 4 OBB images and one probe per disk at a time. This only bounds a broken vold.
 const MAX_CHILDREN: usize = 24;
+/// After vold went away, fsvmd gets this long for its orderly stop (it writes back in up to 1.8 s) before a kill.
+const VOLD_GONE_GRACE: Duration = Duration::from_secs(3);
 /// vold sends its request right after connecting.
 const REQUEST_WITHIN: Duration = Duration::from_secs(5);
 
@@ -318,13 +320,28 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
     let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
     send(conn, &format!("P {pid}"));
     let mut vold_gone = false;
+    // When vold is gone: a stop request (fsvmd writes its volume back), and a kill if it is still there after
+    // VOLD_GONE_GRACE.
+    let mut kill_at: Option<std::time::Instant> = None;
     loop {
         let mut p = [
             libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: if vold_gone { -1 } else { conn.as_raw_fd() }, events: libc::POLLIN, revents: 0 },
         ];
+        let timeout = match kill_at {
+            None => -1,
+            Some(t) => {
+                let left = t.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    signal(&pidfd, libc::SIGKILL);
+                    kill_at = None;
+                    continue;
+                }
+                left.as_millis().max(1) as libc::c_int
+            }
+        };
         // SAFETY: poll on two pollfds of descriptors this process owns.
-        if unsafe { libc::poll(p.as_mut_ptr(), 2, -1) } < 0 {
+        if unsafe { libc::poll(p.as_mut_ptr(), 2, timeout) } < 0 {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EINTR) {
                 continue;
@@ -351,8 +368,9 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
                 _ => {}
             }
         } else if n == 0 || p[1].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
-            info!("vold closed the connection of fsvmd {pid}, killing it");
-            signal(&pidfd, libc::SIGKILL);
+            info!("vold closed the connection of fsvmd {pid}, stopping it");
+            signal(&pidfd, libc::SIGTERM);
+            kill_at = Some(std::time::Instant::now() + VOLD_GONE_GRACE);
             vold_gone = true;
         }
     }
@@ -492,19 +510,46 @@ mod tests {
 
     #[test]
     fn vold_gone_kills_the_child() {
+        // A child that ignores the stop request is killed after the grace time.
         let (vold, svc) = pair();
         let t = run_service(svc);
-        let (mut rd, wr) = pipe();
-        request(&vold, 4, &["-c", "exec sleep 30"], &[wr.as_raw_fd()]);
+        let (rd, wr) = pipe();
+        request(&vold, 4, &["-c", "trap '' TERM; echo ready >&5; exec sleep 30"], &[wr.as_raw_fd()]);
         drop(wr);
         assert!(answer(&vold).starts_with("P "));
+        // Only once the child ignores SIGTERM.
+        let mut rd = std::io::BufReader::new(rd);
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut rd, &mut line).unwrap();
+        assert_eq!(line, "ready\n");
         let start = std::time::Instant::now();
         drop(vold);
         t.join().unwrap().unwrap();
         // The child held the pipe's write end, so EOF means it is gone.
         let mut out = Vec::new();
         rd.read_to_end(&mut out).unwrap();
-        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(start.elapsed() >= VOLD_GONE_GRACE && start.elapsed() < Duration::from_secs(6));
+    }
+
+    #[test]
+    fn vold_gone_stops_the_child_first() {
+        // A child that writes back on SIGTERM gets to do it: the stop request comes first.
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        let (rd, wr) = pipe();
+        request(&vold, 4, &["-c", "trap 'echo stopped >&5; exit 0' TERM; echo ready >&5; sleep 30 5>&- & wait"], &[wr.as_raw_fd()]);
+        drop(wr);
+        assert!(answer(&vold).starts_with("P "));
+        // Only once the child's handler is in place.
+        let mut rd = std::io::BufReader::new(rd);
+        let mut out = String::new();
+        std::io::BufRead::read_line(&mut rd, &mut out).unwrap();
+        assert_eq!(out, "ready\n");
+        drop(vold);
+        t.join().unwrap().unwrap();
+        out.clear();
+        rd.read_to_string(&mut out).unwrap();
+        assert_eq!(out, "stopped\n");
     }
 
     /// The service listens itself: a socket that was bound but never listened on still takes vold's connection.
