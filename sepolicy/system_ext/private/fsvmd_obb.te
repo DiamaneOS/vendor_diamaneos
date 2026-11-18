@@ -27,6 +27,8 @@ allow fsvmd_obb system_file:file { open read getattr };
 # The VM's instance disk is a memfd, read and written by its VM manager and crosvm.
 tmpfs_domain(fsvmd_obb)
 virtualizationservice_use(fsvmd_obb)
+# The same client as fsvmd: its timeouts on the vsock socket its VM manager made.
+allow fsvmd_obb fsvmd_obb_virtualizationmanager:vsock_socket setopt;
 allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } fsvmd_obb_tmpfs:file { read write getattr };
 allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } vold:fd use;
 allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } { media_rw_data_file fuse }:file { read getattr };
