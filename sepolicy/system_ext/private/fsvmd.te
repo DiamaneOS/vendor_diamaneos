@@ -14,6 +14,9 @@ type fsvmd_launcher_exec, system_file_type, exec_type, file_type;
 init_daemon_domain(fsvmd_launcher)
 domain_auto_trans(fsvmd_launcher, fsvmd_exec, fsvmd)
 allow fsvmd_launcher self:unix_stream_socket { accept listen read write getopt shutdown };
+# init raises SYS_NICE for the service only so that it stays in the bounding set (the VM manager's file capability
+# needs it there to be executed at all). The service drops it from its other sets at start, which is a capset.
+allow fsvmd_launcher self:process setcap;
 allow fsvmd_launcher fsvmd:process { signal sigkill };
 allow fsvmd fsvmd_launcher:process sigchld;
 allow fsvmd fsvmd_launcher:fd use;

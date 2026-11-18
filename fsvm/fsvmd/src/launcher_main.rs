@@ -19,14 +19,45 @@ mod launcher;
 use anyhow::{ensure, Result};
 use log::error;
 
-/// The service holds no capabilities (fsvmd.rc `capabilities` with none), and refuses to run with any.
-fn check_no_capabilities() -> Result<()> {
-    let status = std::fs::read_to_string("/proc/self/status")?;
+/// CAP_SYS_NICE: the VM manager and crosvm in the virtualization APEX carry it as a file capability with the effective
+/// bit (its canned_fs_config), and the kernel refuses to execute such a file (EPERM) when the bounding set lacks it.
+/// So it is the one capability the bounding set keeps (fsvmd.rc `capabilities SYS_NICE`). Every other set is empty.
+const BOUNDING: u64 = 1 << 23;
+
+/// init raises the service's capabilities (fsvmd.rc) as ambient ones. The service drops them from every set but the
+/// bounding set at once, so it and every fsvmd it starts run without any.
+fn drop_capabilities() -> Result<()> {
+    // SAFETY: prctl with these arguments only clears this process's ambient set.
+    let r = unsafe { libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) };
+    ensure!(r == 0, "clearing the ambient capabilities: {}", std::io::Error::last_os_error());
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    let header = Header { version: 0x2008_0522, pid: 0 }; // _LINUX_CAPABILITY_VERSION_3
+    let data = [Data { effective: 0, permitted: 0, inheritable: 0 }; 2];
+    // SAFETY: capset reads the header and two data structs of capability version 3, both valid for the call.
+    let r = unsafe { libc::syscall(libc::SYS_capset, &header as *const Header, data.as_ptr()) };
+    ensure!(r == 0, "dropping the capabilities: {}", std::io::Error::last_os_error());
+    Ok(())
+}
+
+/// Every capability set is empty but the bounding set, which holds BOUNDING only.
+fn check_capabilities(status: &str) -> Result<()> {
     let mut seen = 0;
     for line in status.lines() {
         for set in ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"] {
             if let Some(v) = line.strip_prefix(set) {
-                ensure!(u64::from_str_radix(v.trim(), 16)? == 0, "running with capabilities ({set}), refusing");
+                let want = if set == "CapBnd:" { BOUNDING } else { 0 };
+                ensure!(u64::from_str_radix(v.trim(), 16)? == want, "running with capabilities ({set}{v}), refusing");
                 seen += 1;
             }
         }
@@ -39,7 +70,10 @@ fn main() {
     android_logger::init_once(
         android_logger::Config::default().with_tag("fsvmd_launcher").with_max_level(log::LevelFilter::Info),
     );
-    if let Err(e) = check_no_capabilities().and_then(|_| launcher::run()) {
+    let started = drop_capabilities()
+        .and_then(|_| check_capabilities(&std::fs::read_to_string("/proc/self/status")?))
+        .and_then(|_| launcher::run());
+    if let Err(e) = started {
         error!("{e:?}");
         std::process::exit(1);
     }

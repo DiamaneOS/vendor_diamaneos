@@ -138,16 +138,19 @@ fn parse_args() -> Result<Args> {
     Ok(a)
 }
 
-/// fsvmd holds no capabilities: init starts the service as the system user without any (fsvmd.rc `capabilities`
-/// drops the bounding set too), and every fsvmd it starts inherits that. A service definition that keeps any is
-/// refused here.
+/// fsvmd holds no capabilities: the service drops all it got from init and every fsvmd it starts inherits that. The
+/// bounding set keeps CAP_SYS_NICE only, which the VM manager's file capability needs to be executed at all
+/// (launcher_main.rs). Anything else is refused here.
+const BOUNDING: u64 = 1 << 23;
+
 fn check_no_capabilities() -> Result<()> {
     let status = std::fs::read_to_string("/proc/self/status")?;
     let mut seen = 0;
     for line in status.lines() {
         for set in ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"] {
             if let Some(v) = line.strip_prefix(set) {
-                ensure!(u64::from_str_radix(v.trim(), 16)? == 0, "running with capabilities ({set}), refusing");
+                let want = if set == "CapBnd:" { BOUNDING } else { 0 };
+                ensure!(u64::from_str_radix(v.trim(), 16)? == want, "running with capabilities ({set}{v}), refusing");
                 seen += 1;
             }
         }
