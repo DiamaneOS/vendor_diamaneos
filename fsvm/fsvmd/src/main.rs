@@ -13,7 +13,8 @@
 // limitations under the License.
 
 //! fsvmd: SD cards, USB drives and OBB images for Android, with their partition tables and filesystems parsed only
-//! inside a protected VM. vold starts it in one of three modes:
+//! inside a protected VM. init runs it as a service (`fsvmd --launcher`, fsvmd.rc, launcher.rs), which starts one
+//! fsvmd for each request of vold's, in one of three modes:
 //!
 //! ```text
 //! fsvmd --probe --disk-bytes <n>
@@ -44,6 +45,7 @@
 //! ```
 
 mod fs;
+mod launcher;
 mod vm;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -132,7 +134,8 @@ fn parse_args() -> Result<Args> {
     Ok(a)
 }
 
-/// fsvmd holds no capabilities. vold starts it as the system user, and a uid change drops them.
+/// fsvmd holds no capabilities: init starts the service as the system user without any, and every fsvmd it starts
+/// inherits that.
 fn check_no_capabilities() -> Result<()> {
     let status = std::fs::read_to_string("/proc/self/status")?;
     for line in status.lines() {
@@ -326,6 +329,9 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
 
 fn run() -> Result<()> {
     check_no_capabilities()?;
+    if std::env::args().nth(1).as_deref() == Some("--launcher") {
+        return launcher::run();
+    }
     let args = parse_args()?;
     let disk = inherited(DISK_FD)?;
     let pipe = inherited(PIPE_FD)?;

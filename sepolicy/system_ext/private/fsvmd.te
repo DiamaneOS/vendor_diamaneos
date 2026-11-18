@@ -3,13 +3,24 @@
 type fsvmd, domain, coredomain;
 type fsvmd_exec, system_file_type, exec_type, file_type;
 type fsvmd_tmpfs, file_type;
+type fsvmd_socket, file_type, coredomain_socket;
 
-# vold starts fsvmd for each public FAT or exFAT volume and stops it after unmounting.
-domain_auto_trans(vold, fsvmd_exec, fsvmd)
-allow vold fsvmd:process { sigkill signal };
+# init runs the fsvmd service (fsvmd.rc) as the system user without capabilities. vold asks it over its socket for
+# one fsvmd per probe, volume or OBB image, and the service starts it (fsvmd/src/launcher.rs), so vold changes no ids
+# and holds neither setuid nor setgid. vold stops fsvmd through the service. Only vold may connect.
+init_daemon_domain(fsvmd)
+allow fsvmd fsvmd_exec:file execute_no_trans;
+allow fsvmd self:unix_stream_socket { accept read write getopt shutdown };
+allow fsvmd self:process { signal sigkill };
+unix_socket_connect(vold, fsvmd, fsvmd)
+# fsvmd connects to its own sockets (virtualizationservice_use, for its VM manager).
+neverallow { domain -vold -fsvmd } fsvmd:unix_stream_socket connectto;
+neverallow { domain -init } fsvmd:process transition;
+neverallow vold self:global_capability_class_set { setuid setgid };
 
-# The descriptors vold hands over: the volume's block device (3), the /dev/fuse descriptor it mounted at
-# /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the volume.
+# The descriptors vold hands over through the socket: the volume's block device (3), the /dev/fuse descriptor it
+# mounted at /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the
+# volume.
 allow fsvmd vold:fd use;
 allow fsvmd vold:fifo_file write;
 # The kernel checks a descriptor against its open mode when fsvmd inherits it and when fsvmd passes it on over binder,

@@ -1,0 +1,518 @@
+// Copyright (C) 2026 DiamaneOS
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! The fsvmd service (`fsvmd --launcher`, started by init from fsvmd.rc): vold asks it over `/dev/socket/fsvmd` for
+//! one fsvmd process per probe, volume or OBB image. init runs the service as the system user without capabilities,
+//! and every fsvmd it starts inherits exactly that, so vold changes no ids and needs neither setuid nor setgid.
+//!
+//! One request per connection, one SOCK_SEQPACKET message: `FSVMD1\0`, one digit whose bits say which descriptors
+//! follow (1: descriptor 3, the disk or OBB file, 2: descriptor 4, /dev/fuse, 4: descriptor 5, the pipe to vold) and
+//! `\0`, then fsvmd's arguments, each ended by `\0`. The descriptors come in SCM_RIGHTS in that order. Answers, one
+//! message each: `P <pid>` once fsvmd runs, `X <status>` when it ended (its exit code, or 128 plus the signal), or
+//! `E <errno>` when it could not be started. vold may send `T` (stop) or `K` (kill). When vold closes the connection,
+//! for example because vold itself ended, its fsvmd is killed. The service signals only its own children, through
+//! pidfds, so a pid that was reused can never be hit.
+
+use anyhow::{bail, ensure, Context, Result};
+use log::{info, warn};
+use std::ffi::CString;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+/// The fsvmd binary the service runs for each request.
+pub const FSVMD: &str = "/system_ext/bin/fsvmd";
+const SOCKET_ENV: &str = "ANDROID_SOCKET_fsvmd";
+const MAGIC: &[u8] = b"FSVMD1";
+const MAX_REQUEST: usize = 4096;
+const MAX_ARGS: usize = 32;
+/// vold allows 6 served volumes, 4 OBB images and one probe per disk at a time. This only bounds a broken vold.
+const MAX_CHILDREN: usize = 24;
+/// vold sends its request right after connecting.
+const REQUEST_WITHIN: Duration = Duration::from_secs(5);
+
+static CHILDREN: AtomicUsize = AtomicUsize::new(0);
+
+/// Runs the service: accepts vold's requests on init's socket, for ever.
+pub fn run() -> Result<()> {
+    let fd: RawFd = std::env::var(SOCKET_ENV).context("no socket from init")?.parse().context("socket from init")?;
+    // SAFETY: init created this listening socket for the service, and nothing else in this process uses it.
+    let listener = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: F_SETFD only changes the descriptor flags of the listening socket.
+    ensure!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == 0, "F_SETFD on the socket");
+    // fsvmd children are reaped here, through their pidfds. SIGCHLD ignored would reap them behind its back.
+    // SAFETY: restores the default disposition of SIGCHLD, before any child exists.
+    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
+    info!("fsvmd service ready");
+    loop {
+        // SAFETY: accept4 on the listening socket this process owns, without the peer's address.
+        let c = unsafe {
+            libc::accept4(listener.as_raw_fd(), std::ptr::null_mut(), std::ptr::null_mut(), libc::SOCK_CLOEXEC)
+        };
+        if c < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::EINTR) {
+                warn!("accept: {e}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            continue;
+        }
+        // SAFETY: accept4 returned a new descriptor that nothing else owns.
+        let conn = unsafe { OwnedFd::from_raw_fd(c) };
+        // SELinux lets only vold connect (fsvmd.te). vold runs as root, so anything else is refused here too.
+        match peer_uid(&conn) {
+            Ok(0) => {}
+            Ok(uid) => {
+                warn!("request from uid {uid} refused");
+                continue;
+            }
+            Err(e) => {
+                warn!("request refused: {e:?}");
+                continue;
+            }
+        }
+        std::thread::spawn(move || {
+            if let Err(e) = handle(conn, FSVMD) {
+                warn!("request: {e:?}");
+            }
+        });
+    }
+}
+
+fn peer_uid(conn: &OwnedFd) -> Result<u32> {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: SO_PEERCRED writes at most `len` bytes into `cred`.
+    let r = unsafe {
+        libc::getsockopt(
+            conn.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    ensure!(r == 0, "SO_PEERCRED: {}", std::io::Error::last_os_error());
+    Ok(cred.uid)
+}
+
+/// Keeps the count of running children, released when dropped.
+struct Slot;
+
+impl Slot {
+    fn take() -> Option<Slot> {
+        if CHILDREN.fetch_add(1, Ordering::SeqCst) >= MAX_CHILDREN {
+            CHILDREN.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Slot)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        CHILDREN.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Serves one connection: one request, then the child's life. `exe` is FSVMD, except in the host test.
+pub fn handle(conn: OwnedFd, exe: &str) -> Result<()> {
+    ensure!(wait_readable(&conn, REQUEST_WITHIN)?, "no request");
+    let (data, fds) = receive(&conn)?;
+    let (mask, argv) = match parse(&data, fds.len(), exe) {
+        Ok(r) => r,
+        Err(e) => {
+            send(&conn, &format!("E {}", libc::EINVAL));
+            return Err(e);
+        }
+    };
+    let Some(_slot) = Slot::take() else {
+        send(&conn, &format!("E {}", libc::EBUSY));
+        bail!("{MAX_CHILDREN} fsvmd processes running already");
+    };
+    let pid = match spawn(&argv, mask, &fds) {
+        Ok(pid) => pid,
+        Err(e) => {
+            send(&conn, &format!("E {}", e.raw_os_error().unwrap_or(libc::EIO)));
+            bail!("fork: {e}");
+        }
+    };
+    // The child has its copies. Ours go, so that the child alone holds the disk, FUSE and the pipe.
+    drop(fds);
+    info!("fsvmd {pid} started: {}", argv.get(1).map(|a| a.to_string_lossy()).unwrap_or_default());
+    supervise(&conn, pid)
+}
+
+fn wait_readable(fd: &OwnedFd, within: Duration) -> Result<bool> {
+    let mut p = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    loop {
+        // SAFETY: poll on one pollfd of a descriptor this process owns.
+        let r = unsafe { libc::poll(&mut p, 1, within.as_millis() as libc::c_int) };
+        if r >= 0 {
+            return Ok(r == 1 && p.revents & libc::POLLIN != 0);
+        }
+        let e = std::io::Error::last_os_error();
+        ensure!(e.raw_os_error() == Some(libc::EINTR), "poll: {e}");
+    }
+}
+
+/// Reads the request and takes every descriptor that came with it, so each one is closed whatever is refused later.
+fn receive(conn: &OwnedFd) -> Result<(Vec<u8>, Vec<OwnedFd>)> {
+    let mut data = vec![0u8; MAX_REQUEST];
+    let mut iov = libc::iovec { iov_base: data.as_mut_ptr().cast(), iov_len: data.len() };
+    // SAFETY: CMSG_SPACE only computes a size.
+    let space = unsafe { libc::CMSG_SPACE((3 * std::mem::size_of::<RawFd>()) as libc::c_uint) } as usize;
+    let mut control = vec![0u64; space.div_ceil(8)];
+    // SAFETY: an all-zero msghdr is valid, its pointers are set below.
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = space as _;
+    // SAFETY: recvmsg writes into `data` and `control` within the lengths given in `msg`.
+    let n = unsafe { libc::recvmsg(conn.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC | libc::MSG_DONTWAIT) };
+    ensure!(n >= 0, "recvmsg: {}", std::io::Error::last_os_error());
+    let mut fds = Vec::new();
+    // SAFETY: the CMSG_* walk stays inside the control buffer recvmsg filled, as msg_controllen says.
+    unsafe {
+        let mut c = libc::CMSG_FIRSTHDR(&msg);
+        while !c.is_null() {
+            if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                let bytes = (*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
+                let p = libc::CMSG_DATA(c) as *const RawFd;
+                for i in 0..bytes / std::mem::size_of::<RawFd>() {
+                    fds.push(OwnedFd::from_raw_fd(p.add(i).read_unaligned()));
+                }
+            }
+            c = libc::CMSG_NXTHDR(&msg, c);
+        }
+    }
+    ensure!(msg.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) == 0, "request or descriptors cut off");
+    data.truncate(n as usize);
+    Ok((data, fds))
+}
+
+/// Checks a request: the descriptor bits must match the descriptors, and the arguments go to fsvmd unchanged (fsvmd
+/// checks them itself). Returns the bits and fsvmd's argv.
+pub fn parse(data: &[u8], fds: usize, exe: &str) -> Result<(u8, Vec<CString>)> {
+    ensure!(data.last() == Some(&0), "request not ended by NUL");
+    let fields: Vec<&[u8]> = data[..data.len() - 1].split(|b| *b == 0).collect();
+    ensure!(fields.len() >= 2 && fields[0] == MAGIC, "not a request");
+    ensure!(fields[1].len() == 1 && (b'0'..=b'7').contains(&fields[1][0]), "descriptor bits");
+    let mask = fields[1][0] - b'0';
+    ensure!(mask.count_ones() as usize == fds, "{fds} descriptors for bits {mask}");
+    let args = &fields[2..];
+    ensure!(!args.is_empty() && args.len() <= MAX_ARGS, "{} arguments", args.len());
+    ensure!(!args.iter().any(|a| *a == b"--launcher"), "a request for the service itself");
+    let mut argv = vec![CString::new(exe)?];
+    for a in args {
+        argv.push(CString::new(*a)?);
+    }
+    Ok((mask, argv))
+}
+
+/// Forks and runs `argv` with the descriptors in the slots `mask` names as 3, 4 and 5, and no others above 2.
+fn spawn(argv: &[CString], mask: u8, fds: &[OwnedFd]) -> std::io::Result<libc::pid_t> {
+    let mut ptrs: Vec<*const libc::c_char> = argv.iter().map(|a| a.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    let mut slots: [RawFd; 3] = [-1; 3];
+    let mut it = fds.iter();
+    for (i, s) in slots.iter_mut().enumerate() {
+        if mask & (1 << i) != 0 {
+            *s = it.next().map(|f| f.as_raw_fd()).unwrap_or(-1);
+        }
+    }
+    // SAFETY: the child only calls async-signal-safe functions on data prepared before the fork (in_child).
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if pid == 0 {
+        // SAFETY: this is the child of the fork above.
+        unsafe { in_child(&slots, &ptrs) }
+    }
+    Ok(pid)
+}
+
+/// In the forked child: fcntl, dup2, close, close_range, execv and _exit only.
+unsafe fn in_child(slots: &[RawFd; 3], argv: &[*const libc::c_char]) -> ! {
+    let mut high: [RawFd; 3] = [-1; 3];
+    for i in 0..3 {
+        if slots[i] >= 0 {
+            high[i] = libc::fcntl(slots[i], libc::F_DUPFD, 10);
+            if high[i] < 0 {
+                libc::_exit(127);
+            }
+        }
+    }
+    for i in 0..3 {
+        let target = 3 + i as RawFd;
+        if high[i] >= 0 {
+            // dup2 leaves the new descriptor without close-on-exec.
+            if libc::dup2(high[i], target) < 0 {
+                libc::_exit(127);
+            }
+        } else {
+            libc::close(target);
+        }
+    }
+    libc::syscall(libc::SYS_close_range, 6 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint);
+    libc::execv(argv[0], argv.as_ptr());
+    libc::_exit(127)
+}
+
+fn send(conn: &OwnedFd, text: &str) {
+    // SAFETY: send reads `text` within its length. A vold that is gone gets nothing, and no SIGPIPE.
+    unsafe { libc::send(conn.as_raw_fd(), text.as_ptr().cast(), text.len(), libc::MSG_NOSIGNAL) };
+}
+
+fn signal(pidfd: &OwnedFd, sig: libc::c_int) {
+    // SAFETY: pidfd_send_signal on a pidfd of this process's own child, not reaped yet.
+    unsafe {
+        libc::syscall(libc::SYS_pidfd_send_signal, pidfd.as_raw_fd(), sig, std::ptr::null::<libc::siginfo_t>(), 0)
+    };
+}
+
+/// Passes vold's stop and kill to the child, kills it when vold goes away, and reports how it ended.
+fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
+    // SAFETY: `pid` is this process's own child and not reaped yet, so it names that child.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as RawFd;
+    if raw < 0 {
+        let e = std::io::Error::last_os_error();
+        // SAFETY: as above, the pid still names the unreaped child.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        reap(pid);
+        send(conn, &format!("E {}", e.raw_os_error().unwrap_or(libc::EIO)));
+        bail!("pidfd_open: {e}");
+    }
+    // SAFETY: pidfd_open returned a new descriptor that nothing else owns.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
+    send(conn, &format!("P {pid}"));
+    let mut vold_gone = false;
+    loop {
+        let mut p = [
+            libc::pollfd { fd: pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: if vold_gone { -1 } else { conn.as_raw_fd() }, events: libc::POLLIN, revents: 0 },
+        ];
+        // SAFETY: poll on two pollfds of descriptors this process owns.
+        if unsafe { libc::poll(p.as_mut_ptr(), 2, -1) } < 0 {
+            let e = std::io::Error::last_os_error();
+            ensure!(e.raw_os_error() == Some(libc::EINTR), "poll: {e}");
+            continue;
+        }
+        if p[0].revents != 0 {
+            break;
+        }
+        if p[1].revents == 0 {
+            continue;
+        }
+        let mut b = [0u8; 8];
+        // SAFETY: recv writes at most b.len() bytes into `b`.
+        let n = unsafe { libc::recv(conn.as_raw_fd(), b.as_mut_ptr().cast(), b.len(), libc::MSG_DONTWAIT) };
+        if n > 0 {
+            match b[0] {
+                b'T' => signal(&pidfd, libc::SIGTERM),
+                b'K' => signal(&pidfd, libc::SIGKILL),
+                _ => {}
+            }
+        } else if n == 0 || p[1].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            info!("vold closed the connection of fsvmd {pid}, killing it");
+            signal(&pidfd, libc::SIGKILL);
+            vold_gone = true;
+        }
+    }
+    let status = reap(pid);
+    info!("fsvmd {pid} ended: {status}");
+    send(conn, &format!("X {status}"));
+    Ok(())
+}
+
+/// Reaps the child: its exit code, or 128 plus the signal that ended it.
+fn reap(pid: libc::pid_t) -> i32 {
+    let mut status = 0;
+    loop {
+        // SAFETY: waitpid on this process's own child.
+        let r = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if r == pid {
+            break;
+        }
+        if r < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return 255;
+        }
+    }
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) {
+        128 + libc::WTERMSIG(status)
+    } else {
+        255
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    fn pair() -> (OwnedFd, OwnedFd) {
+        let mut sv = [0; 2];
+        // SAFETY: socketpair writes two new descriptors into `sv`.
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, sv.as_mut_ptr()) }, 0);
+        // SAFETY: both are new descriptors nothing else owns.
+        unsafe { (OwnedFd::from_raw_fd(sv[0]), OwnedFd::from_raw_fd(sv[1])) }
+    }
+
+    fn pipe() -> (std::fs::File, OwnedFd) {
+        let mut p = [0; 2];
+        // SAFETY: pipe2 writes two new descriptors into `p`.
+        assert_eq!(unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both are new descriptors nothing else owns.
+        unsafe { (std::fs::File::from_raw_fd(p[0]), OwnedFd::from_raw_fd(p[1])) }
+    }
+
+    /// Sends a request like vold's (fs/Fsvm.cpp Spawn).
+    fn request(s: &OwnedFd, mask: u8, args: &[&str], fds: &[RawFd]) {
+        let mut m = MAGIC.to_vec();
+        m.push(0);
+        m.push(b'0' + mask);
+        m.push(0);
+        for a in args {
+            m.extend_from_slice(a.as_bytes());
+            m.push(0);
+        }
+        let mut iov = libc::iovec { iov_base: m.as_mut_ptr().cast(), iov_len: m.len() };
+        let space = unsafe { libc::CMSG_SPACE((fds.len() * 4) as libc::c_uint) } as usize;
+        let mut control = vec![0u64; space.div_ceil(8).max(1)];
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        if !fds.is_empty() {
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = space as _;
+            unsafe {
+                let c = libc::CMSG_FIRSTHDR(&msg);
+                (*c).cmsg_level = libc::SOL_SOCKET;
+                (*c).cmsg_type = libc::SCM_RIGHTS;
+                (*c).cmsg_len = libc::CMSG_LEN((fds.len() * 4) as libc::c_uint) as _;
+                std::ptr::copy_nonoverlapping(fds.as_ptr(), libc::CMSG_DATA(c) as *mut RawFd, fds.len());
+            }
+        }
+        assert_eq!(unsafe { libc::sendmsg(s.as_raw_fd(), &msg, 0) }, m.len() as isize);
+    }
+
+    fn answer(s: &OwnedFd) -> String {
+        let mut b = [0u8; 64];
+        let n = unsafe { libc::recv(s.as_raw_fd(), b.as_mut_ptr().cast(), b.len(), 0) };
+        assert!(n >= 0);
+        String::from_utf8_lossy(&b[..n as usize]).into_owned()
+    }
+
+    fn run_service(conn: OwnedFd) -> std::thread::JoinHandle<Result<()>> {
+        std::thread::spawn(move || handle(conn, "/bin/sh"))
+    }
+
+    #[test]
+    fn runs_with_exactly_the_descriptors_given() {
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        let (mut rd, wr) = pipe();
+        // Descriptor 5 is the pipe. 3 and 4 are not open, and nothing above 5 is (the test runner has some).
+        let script = "echo ok >&5; for n in 3 4 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+                      [ -e /proc/$$/fd/$n ] && echo open $n >&5; done; true";
+        request(&vold, 4, &["-c", script], &[wr.as_raw_fd()]);
+        drop(wr);
+        assert!(answer(&vold).starts_with("P "));
+        let mut out = String::new();
+        rd.read_to_string(&mut out).unwrap();
+        assert_eq!(out, "ok\n");
+        assert_eq!(answer(&vold), "X 0");
+        t.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn exit_codes_and_kill() {
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        request(&vold, 0, &["-c", "exit 3"], &[]);
+        assert!(answer(&vold).starts_with("P "));
+        assert_eq!(answer(&vold), "X 3");
+        t.join().unwrap().unwrap();
+
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        request(&vold, 0, &["-c", "exec sleep 30"], &[]);
+        assert!(answer(&vold).starts_with("P "));
+        unsafe { libc::send(vold.as_raw_fd(), b"K".as_ptr().cast(), 1, 0) };
+        assert_eq!(answer(&vold), format!("X {}", 128 + libc::SIGKILL));
+        t.join().unwrap().unwrap();
+
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        request(&vold, 0, &["-c", "exec sleep 30"], &[]);
+        assert!(answer(&vold).starts_with("P "));
+        unsafe { libc::send(vold.as_raw_fd(), b"T".as_ptr().cast(), 1, 0) };
+        assert_eq!(answer(&vold), format!("X {}", 128 + libc::SIGTERM));
+        t.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn vold_gone_kills_the_child() {
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        let (mut rd, wr) = pipe();
+        request(&vold, 4, &["-c", "exec sleep 30"], &[wr.as_raw_fd()]);
+        drop(wr);
+        assert!(answer(&vold).starts_with("P "));
+        let start = std::time::Instant::now();
+        drop(vold);
+        t.join().unwrap().unwrap();
+        // The child held the pipe's write end, so EOF means it is gone.
+        let mut out = Vec::new();
+        rd.read_to_end(&mut out).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn refused_requests() {
+        let (_, wr) = pipe();
+        // Bits that do not match the descriptors, before anything runs.
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        request(&vold, 1, &["-c", "true"], &[]);
+        assert_eq!(answer(&vold), format!("E {}", libc::EINVAL));
+        assert!(t.join().unwrap().is_err());
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        request(&vold, 0, &["-c", "true"], &[wr.as_raw_fd()]);
+        assert_eq!(answer(&vold), format!("E {}", libc::EINVAL));
+        assert!(t.join().unwrap().is_err());
+        // The service itself is never started again.
+        let (vold, svc) = pair();
+        let t = run_service(svc);
+        request(&vold, 0, &["--launcher"], &[]);
+        assert_eq!(answer(&vold), format!("E {}", libc::EINVAL));
+        assert!(t.join().unwrap().is_err());
+        assert!(parse(b"FSVMD1\x000\x00--probe", 0, FSVMD).is_err());
+        assert!(parse(b"FSVMD2\x000\x00--probe\x00", 0, FSVMD).is_err());
+        assert!(parse(b"FSVMD1\x008\x00--probe\x00", 0, FSVMD).is_err());
+        assert!(parse(b"FSVMD1\x000\x00", 0, FSVMD).is_err());
+        let (mask, argv) = parse(b"FSVMD1\x005\x00--probe\x00--disk-bytes\x00512\x00", 2, FSVMD).unwrap();
+        assert_eq!(mask, 5);
+        assert_eq!(argv.len(), 4);
+        // No request at all.
+        let (vold, svc) = pair();
+        drop(vold);
+        assert!(handle(svc, "/bin/sh").is_err());
+    }
+}

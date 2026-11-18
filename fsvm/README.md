@@ -16,7 +16,8 @@ card -> vold (opens the whole disk, runs fsck in fsck_untrusted on a partition a
 
 - `proto/`: the protocol and the checking client (`libfsvm_proto`), with unit tests and tests against a hostile
   server (`cargo test` on any machine, `fsvm_proto_test` and `fsvm_proto_hostile_test` in the tree).
-- `fsvmd/`: the daemon vold starts for each public volume.
+- `fsvmd/`: the daemon that serves each public volume. vold asks init's fsvmd service (`fsvmd.rc`, `launcher.rs`)
+  to start one, as the system user without capabilities.
 - `guest/`: the VM's `/init` (`fsvm_guest_init`, static), its partition table reader (`table.c`, host-tested by
   `fsvm_guest_table_test` on hostile tables) and its initramfs (`fsvm_guest_initrd`).
 - `kernel/`: the phase 2 kernel change (`CONFIG_BLK_NO_EXTERNAL_PART_SCAN`, kernel_common-6.18 and kernel_qcom-6.18).

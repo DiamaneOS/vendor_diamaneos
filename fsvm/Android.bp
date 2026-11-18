@@ -51,6 +51,7 @@ rust_binary {
     edition: "2021",
     prefer_rlib: true,
     system_ext_specific: true,
+    init_rc: ["fsvmd/fsvmd.rc"],
     rustlibs: [
         "android.system.virtualizationservice-rust",
         "libandroid_logger",
@@ -62,6 +63,21 @@ rust_binary {
         "liblog_rust",
         "libvmclient",
     ],
+}
+
+// The fsvmd service's request handling on the host: descriptors, exit codes, stop, kill, vold going away and refused
+// requests (fsvmd/src/launcher.rs).
+rust_test_host {
+    name: "fsvmd_launcher_test",
+    crate_name: "fsvmd_launcher",
+    srcs: ["fsvmd/src/launcher.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libanyhow",
+        "liblibc",
+        "liblog_rust",
+    ],
+    test_suites: ["general-tests"],
 }
 
 // Test client for the phone checks (scripts/fsprod-phone.sh), through the same checking client. In no product's
