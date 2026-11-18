@@ -59,6 +59,16 @@ struct Node {
     lookups: u64,
 }
 
+/// An open file: the VM it was opened in (State::generation) and the VM's handle for it, which keeps serving the
+/// file after its name went. None when the VM had no handle left (reads and writes then go by name).
+struct OpenFile {
+    generation: u64,
+    guest: Option<u64>,
+}
+
+/// Most files open at once (the VM keeps 1024 handles, beyond that files are served by name).
+const MAX_OPEN_FILES: usize = 8192;
+
 struct Listing {
     entries: Vec<(CString, Kind, u64)>,
     /// What fsvm_proto counted for it (MAX_LISTING_BYTES).
@@ -94,6 +104,7 @@ struct State {
     next_ino: u64,
     listings: HashMap<u64, Listing>,
     listing_bytes: usize,
+    files: HashMap<u64, OpenFile>,
     next_handle: u64,
     /// Counts new VMs. A file handle is the count at its open: after a new VM took over, acknowledged writes of the
     /// old one may be lost, and fsync or close on an older handle says so (EIO).
@@ -139,6 +150,7 @@ impl FsvmFs {
                 next_ino: ROOT + 1,
                 listings: HashMap::new(),
                 listing_bytes: 0,
+                files: HashMap::new(),
                 next_handle: 1,
                 generation: 0,
                 closed: false,
@@ -322,6 +334,52 @@ impl State {
             }
         }
         Err(err(libc::EIO))
+    }
+
+    /// Opens `ino` in the VM and keeps it as an open file. Its handle is fsvmd's own number.
+    fn open_file(&mut self, ino: u64, write: bool) -> io::Result<u64> {
+        if self.files.len() >= MAX_OPEN_FILES {
+            return Err(err(libc::EMFILE));
+        }
+        let guest = match self.call(ino, |c, g| c.open_handle(g, write)) {
+            Ok(h) => Some(h),
+            // The VM has no handle left: this file is served by name.
+            Err(e) if e.raw_os_error() == Some(libc::EMFILE) => None,
+            Err(e) => return Err(e),
+        };
+        let h = self.next_handle;
+        self.next_handle += 1;
+        self.files.insert(h, OpenFile { generation: self.generation, guest });
+        Ok(h)
+    }
+
+    /// The VM's handle of an open file, when it was opened in the VM that serves now.
+    fn guest_handle(&self, h: u64) -> Option<u64> {
+        self.files.get(&h).filter(|f| f.generation == self.generation).and_then(|f| f.guest)
+    }
+
+    /// Whether writes through this open file may have been lost: it was opened in a VM that has been replaced since.
+    fn stale(&self, h: u64) -> bool {
+        self.files.get(&h).is_some_and(|f| f.generation != self.generation)
+    }
+
+    /// A call through an open file's handle. A broken session starts a new VM and answers EIO: the handle is gone.
+    fn handle_call<T>(
+        &mut self,
+        handle: u64,
+        mut f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>,
+    ) -> io::Result<T> {
+        if self.closed {
+            return Err(err(libc::EIO));
+        }
+        match f(&mut self.client, handle) {
+            Ok(v) => Ok(v),
+            Err(CallError::Broken(why)) => {
+                self.recover(&why);
+                Err(err(libc::EIO))
+            }
+            Err(e) => Err(call_err(e)),
+        }
     }
 
     /// A rename resolves both directories on every attempt, so neither id is stale after a new VM took over. Not
@@ -579,9 +637,13 @@ impl FileSystem for FsvmFs {
         }
     }
 
-    fn getattr(&self, _ctx: Context, ino: u64, _h: Option<u64>) -> io::Result<(libc::stat64, Duration)> {
+    fn getattr(&self, _ctx: Context, ino: u64, h: Option<u64>) -> io::Result<(libc::stat64, Duration)> {
         let mut s = self.state.lock().unwrap();
-        let a = s.call(ino, |c, g| c.getattr(g))?;
+        // An open file answers through its handle, also after its name went.
+        let a = match h.and_then(|h| s.guest_handle(h)) {
+            Some(guest) => s.handle_call(guest, |c, g| c.getattr_handle(g))?,
+            None => s.call(ino, |c, g| c.getattr(g))?,
+        };
         Ok((self.stat(ino, &a), TIMEOUT))
     }
 
@@ -622,7 +684,8 @@ impl FileSystem for FsvmFs {
             self.writable()?;
             s.call(ino, |c, g| c.truncate(g, 0))?;
         }
-        Ok((Some(s.generation), OpenOptions::empty()))
+        let h = s.open_file(ino, acc != libc::O_RDONLY)?;
+        Ok((Some(h), OpenOptions::empty()))
     }
 
     fn release(
@@ -630,11 +693,16 @@ impl FileSystem for FsvmFs {
         _ctx: Context,
         _ino: u64,
         _flags: u32,
-        _h: u64,
+        h: u64,
         _flush: bool,
         _flock_release: bool,
         _lock_owner: Option<u64>,
     ) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        if let Some(guest) = s.guest_handle(h) {
+            let _ = s.handle_call(guest, |c, g| c.close_handle(g));
+        }
+        s.files.remove(&h);
         Ok(())
     }
 
@@ -642,7 +710,7 @@ impl FileSystem for FsvmFs {
         &self,
         _ctx: Context,
         ino: u64,
-        _h: u64,
+        h: u64,
         mut w: W,
         size: u32,
         offset: u64,
@@ -650,7 +718,10 @@ impl FileSystem for FsvmFs {
         _flags: u32,
     ) -> io::Result<usize> {
         let mut s = self.state.lock().unwrap();
-        let data = s.call(ino, |c, g| c.read(g, offset, size.min(MAX_IO)))?;
+        let data = match s.guest_handle(h) {
+            Some(guest) => s.handle_call(guest, |c, g| c.read_handle(g, offset, size.min(MAX_IO)))?,
+            None => s.call(ino, |c, g| c.read(g, offset, size.min(MAX_IO)))?,
+        };
         w.write_all(&data)?;
         Ok(data.len())
     }
@@ -659,7 +730,7 @@ impl FileSystem for FsvmFs {
         &self,
         _ctx: Context,
         ino: u64,
-        _h: u64,
+        h: u64,
         mut r: R,
         size: u32,
         offset: u64,
@@ -674,7 +745,10 @@ impl FileSystem for FsvmFs {
         let mut buf = vec![0u8; size as usize];
         r.read_exact(&mut buf)?;
         let mut s = self.state.lock().unwrap();
-        let n = s.call(ino, |c, g| c.write(g, offset, &buf))?;
+        let n = match s.guest_handle(h) {
+            Some(guest) => s.handle_call(guest, |c, g| c.write_handle(g, offset, &buf))?,
+            None => s.call(ino, |c, g| c.write(g, offset, &buf))?,
+        };
         Ok(n as usize)
     }
 
@@ -683,7 +757,7 @@ impl FileSystem for FsvmFs {
     /// needs the data on the card calls fsync, and an eject writes everything back first (Closer).
     fn flush(&self, _ctx: Context, _ino: u64, h: u64, _lock_owner: u64) -> io::Result<()> {
         let s = self.state.lock().unwrap();
-        if h != s.generation {
+        if s.stale(h) {
             // A new VM took over since this file was opened: writes the old one acknowledged may be lost.
             return Err(err(libc::EIO));
         }
@@ -694,10 +768,13 @@ impl FileSystem for FsvmFs {
     /// returns.
     fn fsync(&self, _ctx: Context, ino: u64, datasync: bool, h: u64) -> io::Result<()> {
         let mut s = self.state.lock().unwrap();
-        if h != s.generation {
+        if s.stale(h) {
             return Err(err(libc::EIO));
         }
-        s.call(ino, |c, g| c.fsync(g, datasync))
+        match s.guest_handle(h) {
+            Some(guest) => s.handle_call(guest, |c, g| c.fsync_handle(g, datasync)),
+            None => s.call(ino, |c, g| c.fsync(g, datasync)),
+        }
     }
 
     fn fsyncdir(&self, _ctx: Context, ino: u64, datasync: bool, _h: u64) -> io::Result<()> {
@@ -722,7 +799,8 @@ impl FileSystem for FsvmFs {
         let a = s.call_once(parent, |c, g| c.create(g, name.to_bytes(), flags as i32 & libc::O_EXCL != 0))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         let entry = Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT };
-        Ok((entry, Some(s.generation), OpenOptions::empty()))
+        let h = s.open_file(ino, true)?;
+        Ok((entry, Some(h), OpenOptions::empty()))
     }
 
     fn mkdir(

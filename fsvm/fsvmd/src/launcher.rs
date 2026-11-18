@@ -22,9 +22,10 @@
 //! follow (1: descriptor 3, the disk or OBB file, 2: descriptor 4, /dev/fuse, 4: descriptor 5, the pipe to vold) and
 //! `\0`, then fsvmd's arguments, each ended by `\0`. The descriptors come in SCM_RIGHTS in that order. Answers, one
 //! message each: `P <pid>` once fsvmd runs, `X <status>` when it ended (its exit code, or 128 plus the signal), or
-//! `E <errno>` when it could not be started. vold may send `T` (stop) or `K` (kill). When vold closes the connection,
-//! for example because vold itself ended, its fsvmd is killed. The service signals only its own children, through
-//! pidfds, so a pid that was reused can never be hit.
+//! `E <errno>` when it could not be started. vold may send `T` (stop), `K` (kill) or `W` (write back now). When
+//! vold closes the connection, for example because vold itself ended, its fsvmd is asked to stop and killed 3 s
+//! later. The service signals only its own children, through pidfds, so a pid that was reused can never be hit. OBB
+//! images are served by `fsvmd_obb`, everything else by `fsvmd`.
 
 use anyhow::{bail, ensure, Context, Result};
 use log::{info, warn};
@@ -33,8 +34,10 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// The fsvmd binary the service runs for each request.
+/// The fsvmd binary the service runs for each request, and the one for OBB images (its own domain, no card access,
+/// outside the VM memory pool).
 pub const FSVMD: &str = "/system_ext/bin/fsvmd";
+pub const FSVMD_OBB: &str = "/system_ext/bin/fsvmd_obb";
 const SOCKET_ENV: &str = "ANDROID_SOCKET_fsvmd";
 const MAGIC: &[u8] = b"FSVMD1";
 const MAX_REQUEST: usize = 4096;
@@ -228,6 +231,8 @@ pub fn parse(data: &[u8], fds: usize, exe: &str) -> Result<(u8, Vec<CString>)> {
     let args = &fields[2..];
     ensure!(!args.is_empty() && args.len() <= MAX_ARGS, "{} arguments", args.len());
     ensure!(!args.iter().any(|a| *a == b"--launcher"), "a request for the service itself");
+    // An OBB image is served by fsvmd_obb, everything else by fsvmd.
+    let exe = if exe == FSVMD && args[0] == b"--obb" { FSVMD_OBB } else { exe };
     let mut argv = vec![CString::new(exe)?];
     for a in args {
         argv.push(CString::new(*a)?);
@@ -365,6 +370,8 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
             match b[0] {
                 b'T' => signal(&pidfd, libc::SIGTERM),
                 b'K' => signal(&pidfd, libc::SIGKILL),
+                // Write back now: the volume goes (vold stops several volumes of a disk together).
+                b'W' => signal(&pidfd, libc::SIGUSR1),
                 _ => {}
             }
         } else if n == 0 || p[1].revents & (libc::POLLHUP | libc::POLLERR) != 0 {
@@ -618,6 +625,10 @@ mod tests {
         let (mask, argv) = parse(b"FSVMD1\x005\x00--probe\x00--disk-bytes\x00512\x00", 2, FSVMD).unwrap();
         assert_eq!(mask, 5);
         assert_eq!(argv.len(), 4);
+        assert_eq!(argv[0].to_str().unwrap(), FSVMD);
+        // OBB images run fsvmd_obb.
+        let (_, argv) = parse(b"FSVMD1\x005\x00--obb\x00--volume\x00obb:1\x00", 2, FSVMD).unwrap();
+        assert_eq!(argv[0].to_str().unwrap(), FSVMD_OBB);
         // No request at all.
         let (vold, svc) = pair();
         drop(vold);

@@ -436,6 +436,105 @@ static int do_readdir(int s, const struct fsvm_req *q, const char *rel)
 	return reply(s, q->id, 0, outbuf, used);
 }
 
+/* ---- Open files (OPEN, CLOSE): a descriptor per handle, so a file stays readable and writable after its name went,
+ * as with the kernel's FAT driver. Handle ids carry a generation like node ids. ---- */
+
+#define MAX_HANDLES 1024u
+static int handle_fd[MAX_HANDLES + 1];
+static uint32_t handle_gen[MAX_HANDLES + 1];
+
+/* The descriptor of a valid handle, or -1. */
+static int handle_lookup(uint64_t h)
+{
+	uint32_t slot = (uint32_t)h, gen = (uint32_t)(h >> 32);
+	if (slot == 0 || slot > MAX_HANDLES || handle_gen[slot] != gen || handle_fd[slot] <= 0)
+		return -1;
+	return handle_fd[slot];
+}
+
+static int handle_open(const char *rel, int write, uint64_t *out)
+{
+	char p[PATH_MAX];
+	if (write && read_only)
+		return -EROFS;
+	int r = full_path(p, sizeof(p), rel, NULL);
+	if (r)
+		return r;
+	for (uint32_t slot = 1; slot <= MAX_HANDLES; slot++) {
+		if (handle_fd[slot] > 0)
+			continue;
+		int fd = open(p, (write ? O_RDWR : O_RDONLY) | O_NOFOLLOW | O_CLOEXEC);
+		if (fd < 0)
+			return -errno;
+		if (fd == 0) { /* 0 marks a free slot */
+			int high = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+			close(fd);
+			if (high < 0)
+				return -EMFILE;
+			fd = high;
+		}
+		handle_fd[slot] = fd;
+		*out = (uint64_t)handle_gen[slot] << 32 | slot;
+		return 0;
+	}
+	return -EMFILE;
+}
+
+static int handle_close(uint64_t h)
+{
+	if (handle_lookup(h) < 0)
+		return -EBADF;
+	uint32_t slot = (uint32_t)h;
+	close(handle_fd[slot]);
+	handle_fd[slot] = 0;
+	handle_gen[slot]++;
+	return 0;
+}
+
+/* Before an unmount: every open file goes, so the filesystem can be unmounted. */
+static void handle_close_all(void)
+{
+	for (uint32_t slot = 1; slot <= MAX_HANDLES; slot++)
+		if (handle_fd[slot] > 0)
+			handle_close((uint64_t)handle_gen[slot] << 32 | slot);
+}
+
+static int read_fd(int s, const struct fsvm_req *q, int fd)
+{
+	uint32_t want = q->len > FSVM_MAX_IO ? FSVM_MAX_IO : q->len;
+	uint32_t got = 0;
+	while (got < want) {
+		ssize_t n = pread(fd, outbuf + got, want - got, (off_t)(q->arg + got));
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0)
+			return reply(s, q->id, -errno, NULL, 0);
+		if (n == 0)
+			break;
+		got += (uint32_t)n;
+	}
+	return reply(s, q->id, 0, outbuf, got);
+}
+
+static int write_fd(int s, const struct fsvm_req *q, int fd, const uint8_t *data)
+{
+	if (read_only)
+		return reply(s, q->id, -EROFS, NULL, 0);
+	uint32_t done = 0;
+	while (done < q->len) {
+		ssize_t n = pwrite(fd, data + done, q->len - done, (off_t)(q->arg + done));
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		done += (uint32_t)n;
+	}
+	if (done == 0 && q->len)
+		return reply(s, q->id, -errno, NULL, 0);
+	uint32_t out[2] = { done, 0 };
+	return reply(s, q->id, 0, out, sizeof(out));
+}
+
 static int do_read(int s, const struct fsvm_req *q, const char *rel)
 {
 	char p[PATH_MAX];
@@ -564,6 +663,34 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 	/* Everything below needs the mounted volume. */
 	if (!fs_kind)
 		return reply(s, q->id, -EINVAL, NULL, 0);
+	/* An open file's handle: no name needed, so it serves a file whose name went. */
+	if (q->node2 && (q->op == FSVM_READ || q->op == FSVM_WRITE || q->op == FSVM_FSYNC || q->op == FSVM_CLOSE ||
+			 q->op == FSVM_GETATTR)) {
+		if (q->op == FSVM_CLOSE)
+			return reply(s, q->id, handle_close(q->node2), NULL, 0);
+		int fd = handle_lookup(q->node2);
+		if (fd < 0)
+			return reply(s, q->id, -EBADF, NULL, 0);
+		if (q->op == FSVM_GETATTR) {
+			struct stat st;
+			struct fsvm_attr at;
+			if (fstat(fd, &st))
+				return reply(s, q->id, -errno, NULL, 0);
+			memset(&at, 0, sizeof(at));
+			at.node = q->node ? q->node : 1;
+			at.kind = FSVM_KIND_FILE;
+			at.size = (uint64_t)st.st_size;
+			at.mtime_s = st.st_mtim.tv_sec;
+			at.mtime_ns = (uint32_t)st.st_mtim.tv_nsec;
+			return reply(s, q->id, 0, &at, sizeof(at));
+		}
+		if (q->op == FSVM_READ)
+			return read_fd(s, q, fd);
+		if (q->op == FSVM_WRITE)
+			return write_fd(s, q, fd, data);
+		r = ((q->flags & FSVM_FSYNC_DATA) ? fdatasync(fd) : fsync(fd)) ? -errno : 0;
+		return reply(s, q->id, r, NULL, 0);
+	}
 	/* An id the guest no longer knows: fsvmd looks the name up again. */
 	if (q->op != FSVM_STATFS && !base)
 		return reply(s, q->id, -ESTALE, NULL, 0);
@@ -648,6 +775,16 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		if (utimensat(AT_FDCWD, p, ts, AT_SYMLINK_NOFOLLOW))
 			return reply(s, q->id, -errno, NULL, 0);
 		return attr_reply(s, q->id, base);
+	}
+	case FSVM_OPEN: {
+		uint64_t h = 0;
+		r = handle_open(base, q->flags & 1, &h);
+		if (r)
+			return reply(s, q->id, r, NULL, 0);
+		uint8_t out[8];
+		for (int i = 0; i < 8; i++)
+			out[i] = (uint8_t)(h >> (8 * i));
+		return reply(s, q->id, 0, out, sizeof(out));
 	}
 	case FSVM_FSYNC: {
 		if (full_path(p, sizeof(p), base, NULL))
@@ -1038,6 +1175,7 @@ static int do_unmount(void)
 	if (!fs_kind)
 		return 0;
 	int r = 0;
+	handle_close_all();
 	int d = open(MNT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (d < 0 || syncfs(d))
 		r = -EIO;
@@ -1123,6 +1261,12 @@ static void selftest(int want)
 		     pread(fd, back, sizeof(back), 0) == (ssize_t)sizeof(back) && !memcmp(back, msg, sizeof(msg));
 		if (fd >= 0)
 			close(fd);
+		/* An open file stays readable and writable through its handle after its name went (OPEN, CLOSE). */
+		uint64_t h = 0;
+		int hfd = -1;
+		ok = ok && !handle_open("fsvm-selftest.txt", 1, &h) && (hfd = handle_lookup(h)) > 0 &&
+		     !unlink(MNT "/fsvm-selftest.txt") && pwrite(hfd, "x", 1, 0) == 1 && pread(hfd, back, 1, 0) == 1 &&
+		     back[0] == 'x' && !handle_close(h) && handle_lookup(h) < 0;
 	}
 	unsigned entries = 0;
 	DIR *d = opendir(MNT);

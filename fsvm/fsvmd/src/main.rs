@@ -159,11 +159,13 @@ fn check_no_capabilities() -> Result<()> {
 /// The write end of the pipe SIGTERM wakes the closing thread through (watch_sigterm).
 static TERM_PIPE: AtomicI32 = AtomicI32::new(-1);
 
-extern "C" fn on_sigterm(_: libc::c_int) {
+extern "C" fn on_sigterm(sig: libc::c_int) {
     let fd = TERM_PIPE.load(Ordering::Relaxed);
     if fd >= 0 {
+        // SIGUSR1 is vold's request to write back now, with the full time (several volumes stop together).
+        let b: &[u8; 1] = if sig == libc::SIGUSR1 { b"W" } else { b"T" };
         // SAFETY: write is async-signal-safe, on a pipe this process created and never closes.
-        unsafe { libc::write(fd, b"T".as_ptr().cast(), 1) };
+        unsafe { libc::write(fd, b.as_ptr().cast(), 1) };
     }
 }
 
@@ -184,12 +186,20 @@ fn watch_sigterm(closer: fs::Closer) -> Result<()> {
         sa.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa.sa_mask);
         ensure!(libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut()) == 0, "sigaction");
+        ensure!(libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut()) == 0, "sigaction");
     }
     std::thread::spawn(move || {
         let mut b = [0u8; 1];
         let _ = rd.read(&mut b);
-        warn!("stopped by vold: writing back before the VM stops");
-        match closer.close(Duration::from_millis(300), Duration::from_millis(1500)) {
+        // A write back request gets the whole orderly stop's time, a stop request what is left of vold's.
+        let (lock_wait, max) = if b[0] == b'W' {
+            warn!("vold asks for a write back: the volume goes, writing back before the VM stops");
+            (CLOSE_LOCK_WAIT, CLOSE_MAX)
+        } else {
+            warn!("stopped by vold: writing back before the VM stops");
+            (Duration::from_millis(300), Duration::from_millis(1500))
+        };
+        match closer.close(lock_wait, max) {
             // The stop after the FUSE loop runs already and decides the exit. vold's kill covers a hang.
             fs::Closed::InProgress => {}
             c => exit_for(c),
@@ -220,17 +230,20 @@ fn access_mode(f: &File) -> Result<i32> {
 
 type VmClient = Client<StreamTransport<UnixStream>>;
 
-/// vold waits 23 s for a probe and 33 s for a mount, and holds its lock meanwhile (system/vold fs/Fsvm.cpp), so
+/// vold waits 23 s for a probe and 37 s for a mount, and holds its lock meanwhile (system/vold fs/Fsvm.cpp), so
 /// fsvmd finishes within these, whatever the VM does.
 const PROBE_BUDGET: Duration = Duration::from_secs(20);
-const SERVE_BUDGET: Duration = Duration::from_secs(30);
+/// The probe VM gets this long to end after its answer.
+const PROBE_VM_END: Duration = Duration::from_millis(2500);
+const SERVE_BUDGET: Duration = Duration::from_secs(34);
 /// The orderly stop after vold unmounted the volume: a call still running gets CLOSE_LOCK_WAIT to end, then the VM
 /// writes back as long as its dirty data keeps going down, and unmounts, all within CLOSE_MAX, and stops (3 s). vold
 /// waits 26 s for fsvmd to end on its own (fs/Fsvm.cpp kSyncMs).
 const CLOSE_LOCK_WAIT: Duration = Duration::from_secs(2);
 const CLOSE_MAX: Duration = Duration::from_secs(20);
-/// At most this long for a writable mount's filesystem check, within the budget.
-const CHECK_MAX: Duration = Duration::from_secs(14);
+/// At most this long for a writable mount's filesystem check, within the budget. A check that does not finish leaves
+/// the volume read-only for that mount, and vold reports it as mounted read-only (SystemUI says why).
+const CHECK_MAX: Duration = Duration::from_secs(18);
 /// Kept for the mount itself and the first free-space count.
 const MOUNT_MIN: Duration = Duration::from_secs(8);
 
@@ -276,12 +289,15 @@ fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB, deadline)?;
     client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
     let l = client.layout(args.disk_bytes, args.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
-    drop(vm);
     if l.dropped_labels > 0 {
         warn!("{} volume labels refused", l.dropped_labels);
     }
     info!("disk layout: {:?}, {} partitions", l.table, l.parts.len());
     pipe.write_all(layout::probe_text(&l).as_bytes()).context("telling vold")?;
+    drop(pipe);
+    // The probe VM ends before fsvmd does, so its memory is back (in the pool) when vold starts the next VM. vold
+    // waits 3 s for this exit (fs/Fsvm.cpp Probe).
+    vm.stop_and_wait(PROBE_VM_END);
     Ok(())
 }
 
@@ -373,7 +389,7 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
         disk,
         obb,
         read_only: args.read_only || obb,
-        memory: if obb { layout::MIN_SERVE_MIB } else { layout::serve_memory_mib(args.fs, args.meta_bytes) },
+        memory: if obb { obb_memory_mib(args.disk_bytes) } else { layout::serve_memory_mib(args.fs, args.meta_bytes) },
         disk_bytes: args.disk_bytes,
         block_size: args.block_size,
         partition: args.partition,
@@ -390,7 +406,10 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
         warn!("volume {}: the filesystem was not cleanly unmounted before (the VM checked it)", args.volume);
     }
 
-    pipe.write_all(b"R").context("telling vold")?;
+    // R: served as asked. r: asked writable and served read-only by the VM (its check did not finish, or its driver
+    // found an error), which vold reports as mounted read-only.
+    let ready: &[u8] = if read_only && !served.read_only { b"r" } else { b"R" };
+    pipe.write_all(ready).context("telling vold")?;
     drop(pipe);
 
     let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, Box::new(served));
@@ -420,6 +439,7 @@ fn run() -> Result<()> {
         warn!("oom_score_adj: {e}");
     }
     let args = parse_args()?;
+    check_binary(&args)?;
     let disk = inherited(DISK_FD)?;
     let pipe = inherited(PIPE_FD)?;
     let ft = disk.metadata()?.file_type();
@@ -431,6 +451,21 @@ fn run() -> Result<()> {
         Mode::Probe => probe(&args, disk, pipe),
         Mode::Serve | Mode::Obb => serve(&args, disk, pipe),
     }
+}
+
+/// An OBB VM's memory from the image's size: OBBs are FAT images of a few hundred MiB, whose FAT is small. Up to 2 GiB
+/// the probe VM's size does, larger ones get a serving VM's least.
+fn obb_memory_mib(disk_bytes: u64) -> u32 {
+    if disk_bytes <= 2 << 30 { layout::PROBE_MIB } else { layout::MIN_SERVE_MIB }
+}
+
+/// fsvmd for OBB images runs from its own binary (`fsvmd_obb`, its own SELinux domain without card access and
+/// outside the VM memory pool), and only for OBB images. fsvmd serves cards and probes them, never OBB images.
+fn check_binary(args: &Args) -> Result<()> {
+    let name = std::env::args().next().unwrap_or_default();
+    let is_obb_binary = name.ends_with("/fsvmd_obb") || name == "fsvmd_obb";
+    ensure!(is_obb_binary == (args.mode == Mode::Obb), "{name} does not serve this mode");
+    Ok(())
 }
 
 fn main() {

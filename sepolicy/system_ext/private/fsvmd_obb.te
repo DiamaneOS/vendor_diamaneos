@@ -1,0 +1,36 @@
+# DiamaneOS: fsvmd_obb serves an app's OBB image read-only from the filesystem VM (fsvm/, system/vold
+# model/ObbVolume.cpp). The same program as fsvmd, from its own binary so that it has a domain of its own: no access to
+# SD cards or USB drives at all, and its VM manager is not a client of the VM memory pool, which is kept for cards.
+type fsvmd_obb, domain, coredomain;
+type fsvmd_obb_exec, system_file_type, exec_type, file_type;
+type fsvmd_obb_tmpfs, file_type;
+
+# The fsvmd service starts it for vold (fsvmd/src/launcher.rs), and only the service.
+domain_auto_trans(fsvmd_launcher, fsvmd_obb_exec, fsvmd_obb)
+allow fsvmd_launcher fsvmd_obb:process { signal sigkill };
+allow fsvmd_obb fsvmd_launcher:process sigchld;
+allow fsvmd_obb fsvmd_launcher:fd use;
+neverallow { domain -fsvmd_launcher } fsvmd_obb:process transition;
+neverallow fsvmd_obb fsvmd_launcher:process { signal sigkill sigstop ptrace };
+
+# The descriptors vold hands over: the OBB file (3), read-only, from shared storage (media_rw_data_file) or a card's
+# FUSE mount (fuse), the /dev/fuse descriptor it mounted at /mnt/obb/<id> (4) and the pipe it reports readiness on
+# (5). The VM manager checks the file's label and passes it on, crosvm reads it raw as the VM's disk.
+allow fsvmd_obb vold:fd use;
+allow fsvmd_obb vold:fifo_file write;
+allow fsvmd_obb fuse_device:chr_file { read write getattr };
+allow fsvmd_obb { media_rw_data_file fuse }:file { read getattr };
+
+# The guest kernel and initramfs in the virtualization APEX.
+allow fsvmd_obb system_file:file { open read getattr };
+
+# The VM's instance disk is a memfd, read and written by its VM manager and crosvm.
+tmpfs_domain(fsvmd_obb)
+virtualizationservice_use(fsvmd_obb)
+allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } fsvmd_obb_tmpfs:file { read write getattr };
+allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } vold:fd use;
+allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } { media_rw_data_file fuse }:file { read getattr };
+
+# Read-only, and never a card.
+neverallow { fsvmd_obb fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } { media_rw_data_file fuse }:file { open write append };
+neverallow { fsvmd_obb fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } vold_device:blk_file *;

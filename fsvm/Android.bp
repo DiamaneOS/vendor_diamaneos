@@ -44,14 +44,13 @@ rust_test_host {
     test_suites: ["general-tests"],
 }
 
-rust_binary {
-    name: "fsvmd",
+rust_defaults {
+    name: "fsvmd_defaults",
     crate_name: "fsvmd",
     srcs: ["fsvmd/src/main.rs"],
     edition: "2021",
     prefer_rlib: true,
     system_ext_specific: true,
-    required: ["fsvmd_launcher"],
     rustlibs: [
         "android.system.virtualizationservice-rust",
         "libandroid_logger",
@@ -63,6 +62,22 @@ rust_binary {
         "liblog_rust",
         "libvmclient",
     ],
+}
+
+rust_binary {
+    name: "fsvmd",
+    defaults: ["fsvmd_defaults"],
+    required: [
+        "fsvmd_launcher",
+        "fsvmd_obb",
+    ],
+}
+
+// The same program for OBB images only, under its own name and label (fsvmd_obb.te): no card access, and its VMs
+// stay out of the VM memory pool, which is kept for cards.
+rust_binary {
+    name: "fsvmd_obb",
+    defaults: ["fsvmd_defaults"],
 }
 
 // The fsvmd service init runs (fsvmd.rc): it starts each fsvmd for vold (fsvmd/src/launcher.rs).

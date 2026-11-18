@@ -24,6 +24,7 @@ allow fsvmd_launcher vold:fifo_file write;
 allow fsvmd_launcher vold_device:blk_file { read write getattr };
 allow fsvmd_launcher fuse_device:chr_file { read write getattr };
 allow fsvmd_launcher { media_rw_data_file fuse }:file { read getattr };
+# OBB images are served by fsvmd_obb (fsvmd_obb.te), never by fsvmd.
 # The service may connect to its own sockets as every domain may (domain.te), vold to its socket.
 neverallow { domain -vold -fsvmd_launcher } fsvmd_launcher:unix_stream_socket connectto;
 neverallow { domain -vold -init } fsvmd_socket:sock_file write;
@@ -70,20 +71,10 @@ allowxperm vold vold_device:blk_file ioctl BLKPG;
 neverallowxperm { domain -vold -blkid_untrusted -init } { vold_device block_device }:blk_file ioctl BLKPG;
 neverallow blkid_untrusted self:global_capability_class_set sys_admin;
 
-# Phase 2: an app's OBB image is served from the filesystem VM, read-only, instead of a loop device and a FAT mount
-# in Android's kernel. vold opens the file below /data/media read-only and hands it over. fsvmd checks its size,
-# the VM manager its label, and crosvm reads it as the VM's raw disk. None of them may write it.
-allow fsvmd media_rw_data_file:file { read getattr };
-allow fsvmd_virtualizationmanager media_rw_data_file:file { read getattr };
-allow fsvmd_virtmgr_crosvm media_rw_data_file:file { read getattr };
-neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } media_rw_data_file:file { open write append };
+# An app's OBB image is served by fsvmd_obb (fsvmd_obb.te), from shared storage or a card. fsvmd, which serves the
+# cards themselves, holds no right on OBB files, and none of its domains may open a card or an app's file itself.
+neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } { media_rw_data_file fuse }:file { open write append };
 neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } vold_device:blk_file open;
-
-# OBB images on an SD card or USB drive (a public volume served by another fsvmd): vold opens the file read-only
-# through that volume's FUSE mount (/mnt/media_rw/<uuid>, label fuse) and hands it over. The same read-only rules
-# as for OBB images below /data/media.
-allow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fuse:file { read getattr };
-neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fuse:file { open write append };
 
 # A USB disk with 4096-byte logical blocks keeps them in the VM: fsvmd's VM manager reads the block size of the disk
 # it was handed, and only that.

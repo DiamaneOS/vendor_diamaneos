@@ -346,6 +346,63 @@ impl<T: Transport> Client<T> {
         Ok(n)
     }
 
+    /// Opens a file and answers the VM's handle for it (0 is never one).
+    pub fn open_handle(&mut self, node: u64, write: bool) -> CallResult<u64> {
+        let budget = self.deadlines.meta;
+        let p = self.call(Request { node, flags: write as u16, ..Default::default() }, Op::Open, 8, budget)?;
+        if p.len() != 8 || le_u64(&p, 0) == 0 {
+            return self.fail("open: no handle".to_string());
+        }
+        Ok(le_u64(&p, 0))
+    }
+
+    pub fn close_handle(&mut self, handle: u64) -> CallResult<()> {
+        let budget = self.deadlines.meta;
+        let p = self.call(Request { node2: handle, ..Default::default() }, Op::Close, 0, budget)?;
+        debug_assert!(p.is_empty());
+        Ok(())
+    }
+
+    /// READ through an open file's handle.
+    pub fn read_handle(&mut self, handle: u64, offset: u64, len: u32) -> CallResult<Vec<u8>> {
+        let len = len.min(MAX_IO);
+        let budget = self.deadlines.io;
+        self.call(Request { node2: handle, arg: offset, len, ..Default::default() }, Op::Read, len, budget)
+    }
+
+    /// WRITE through an open file's handle.
+    pub fn write_handle(&mut self, handle: u64, offset: u64, data: &[u8]) -> CallResult<u32> {
+        let data = &data[..data.len().min(MAX_IO as usize)];
+        let budget = self.deadlines.io;
+        let p = self.call(
+            Request { node2: handle, arg: offset, len: data.len() as u32, data, ..Default::default() },
+            Op::Write,
+            WRITE_REPLY_SIZE as u32,
+            budget,
+        )?;
+        if p.len() != WRITE_REPLY_SIZE {
+            return self.fail(format!("write reply {} bytes", p.len()));
+        }
+        let n = le_u32(&p, 0);
+        if n as usize > data.len() {
+            return self.fail(format!("write: {n} written of {}", data.len()));
+        }
+        Ok(n)
+    }
+
+    /// GETATTR through an open file's handle (its size and time even after its name went).
+    pub fn getattr_handle(&mut self, handle: u64) -> CallResult<Attr> {
+        self.attr_call(Request { node2: handle, node: 1, ..Default::default() }, Op::Getattr)
+    }
+
+    /// FSYNC through an open file's handle.
+    pub fn fsync_handle(&mut self, handle: u64, datasync: bool) -> CallResult<()> {
+        let budget = self.deadlines.io;
+        let p = self.call(Request { node2: handle, flags: datasync as u16, ..Default::default() }, Op::Fsync, 0, budget)?;
+        debug_assert!(p.is_empty());
+        Ok(())
+    }
+
     pub fn create(&mut self, parent: u64, name: &[u8], exclusive: bool) -> CallResult<Attr> {
         let name = self.checked(name)?;
         self.attr_call(Request { node: parent, name, flags: exclusive as u16, ..Default::default() }, Op::Create)
