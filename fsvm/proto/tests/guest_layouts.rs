@@ -30,30 +30,37 @@ fn guest_replies_decode_as_expected() {
         eprintln!("FSVM_GUEST_LAYOUTS not set, skipped");
         return;
     };
-    let l = decode_layout(&load(&dir, "mbr_two_fat32"), DISK_BYTES).unwrap();
+    let l = decode_layout(&load(&dir, "mbr_two_fat32"), DISK_BYTES, 512).unwrap();
     assert_eq!((l.table, l.parts.len()), (Table::Mbr, 2));
     assert_eq!(l.parts[0].fs_uuid.as_deref(), Some("6FFF-FAB8"));
     assert_eq!((l.parts[0].label.as_str(), l.parts[0].fs_kind), ("PHOTOS", FS_VFAT));
 
-    let l = decode_layout(&load(&dir, "gpt_public_and_adoptable"), DISK_BYTES).unwrap();
+    let l = decode_layout(&load(&dir, "gpt_public_and_adoptable"), DISK_BYTES, 512).unwrap();
     assert_eq!(l.parts.iter().map(|p| p.class).collect::<Vec<_>>(), [Class::Public, Class::AndroidMeta, Class::AndroidExpand]);
     assert_eq!(l.parts[0].label, "Karte\u{e4}");
     assert_eq!(l.parts[0].fs_kind, FS_EXFAT);
     assert_eq!(guid_text(&l.parts[2].part_guid.unwrap()), "03030303-0303-0303-0303-030303030303");
 
-    let l = decode_layout(&load(&dir, "whole_disk_exfat"), DISK_BYTES).unwrap();
+    let l = decode_layout(&load(&dir, "whole_disk_exfat"), DISK_BYTES, 512).unwrap();
     assert_eq!((l.table, l.parts[0].index, l.parts[0].label.as_str()), (Table::None, 0, "\u{1F600}x"));
-    assert_eq!(decode_layout(&load(&dir, "whole_disk_fat32"), DISK_BYTES).unwrap().parts[0].fs_uuid.as_deref(), Some("CAFE-F00D"));
-    assert_eq!(decode_layout(&load(&dir, "gpt_primary_broken_backup_used"), DISK_BYTES).unwrap().parts.len(), 1);
-    assert!(decode_layout(&load(&dir, "blank"), DISK_BYTES).unwrap().parts.is_empty());
-    assert!(decode_layout(&load(&dir, "mbr_bad_boot_indicator"), DISK_BYTES).unwrap().parts.is_empty());
-    let l = decode_layout(&load(&dir, "mbr_unknown_filesystem"), DISK_BYTES).unwrap();
+    assert_eq!(decode_layout(&load(&dir, "whole_disk_fat32"), DISK_BYTES, 512).unwrap().parts[0].fs_uuid.as_deref(), Some("CAFE-F00D"));
+    assert_eq!(decode_layout(&load(&dir, "gpt_primary_broken_backup_used"), DISK_BYTES, 512).unwrap().parts.len(), 1);
+    assert!(decode_layout(&load(&dir, "blank"), DISK_BYTES, 512).unwrap().parts.is_empty());
+    assert!(decode_layout(&load(&dir, "mbr_bad_boot_indicator"), DISK_BYTES, 512).unwrap().parts.is_empty());
+    let l = decode_layout(&load(&dir, "mbr_unknown_filesystem"), DISK_BYTES, 512).unwrap();
     assert_eq!((l.parts[0].fs_kind, l.parts[0].fs_uuid.clone()), (0, None));
-    assert_eq!(decode_layout(&load(&dir, "exfat_bad_label"), DISK_BYTES).unwrap().parts[0].label, "");
+    assert_eq!(decode_layout(&load(&dir, "exfat_bad_label"), DISK_BYTES, 512).unwrap().parts[0].label, "");
+
+    // Logical partitions in an extended partition, numbered as Linux numbers them.
+    let l = decode_layout(&load(&dir, "mbr_logical"), DISK_BYTES, 512).unwrap();
+    assert_eq!(l.parts.iter().map(|p| p.index).collect::<Vec<_>>(), [1, 5, 7]);
+    assert_eq!(l.parts[1].label, "LOGICAL");
+    // A GPT read from 4096-byte blocks is checked with that block size's clearances.
+    assert!(decode_layout(&load(&dir, "gpt_4k_blocks"), DISK_BYTES, 4096).is_ok());
 
     // Overlaps the guest reported as read are refused here.
-    assert!(matches!(decode_layout(&load(&dir, "gpt_overlap"), DISK_BYTES), Err(LayoutError::Overlap(..))));
-    assert!(matches!(decode_layout(&load(&dir, "mbr_overlap"), DISK_BYTES), Err(LayoutError::Overlap(..))));
+    assert!(matches!(decode_layout(&load(&dir, "gpt_overlap"), DISK_BYTES, 512), Err(LayoutError::Overlap(..))));
+    assert!(matches!(decode_layout(&load(&dir, "mbr_overlap"), DISK_BYTES, 512), Err(LayoutError::Overlap(..))));
     // The same replies against a disk of another size are refused too.
-    assert!(matches!(decode_layout(&load(&dir, "mbr_two_fat32"), DISK_BYTES * 2), Err(LayoutError::DiskSize { .. })));
+    assert!(matches!(decode_layout(&load(&dir, "mbr_two_fat32"), DISK_BYTES * 2, 512), Err(LayoutError::DiskSize { .. })));
 }

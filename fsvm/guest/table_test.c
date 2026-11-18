@@ -45,11 +45,15 @@ static int failures;
 
 static const char *current = "";
 static unsigned sector_size = 512;
+/* A sector whose read fails, as on a card with a bad spot or a loose contact (UINT64_MAX: none). */
+static uint64_t bad_sector = UINT64_MAX;
 
 static int rd(void *ctx, uint64_t off, void *buf, size_t len)
 {
 	(void)ctx;
 	if (off > sizeof(disk) || len > sizeof(disk) - off)
+		return -1;
+	if (bad_sector != UINT64_MAX && off < (bad_sector + 1) * 512 && off + len > bad_sector * 512)
 		return -1;
 	memcpy(buf, disk + off, len);
 	return 0;
@@ -140,6 +144,23 @@ static void make_exfat(uint64_t sector, uint32_t serial, const uint16_t *label, 
 		put16(root + 2 + 2 * i, label[i]);
 }
 
+/* An EBR at `sector`: the logical partition (relative to the EBR) and the link (relative to the extended start). */
+static void ebr(uint32_t sector, uint8_t type, uint32_t start, uint32_t count, uint32_t next, uint32_t next_count)
+{
+	uint8_t *b = disk + (uint64_t)sector * 512;
+	memset(b + 446, 0, 64);
+	b[446 + 4] = type;
+	put32(b + 446 + 8, start);
+	put32(b + 446 + 12, count);
+	if (next_count) {
+		b[462 + 4] = 0x05;
+		put32(b + 462 + 8, next);
+		put32(b + 462 + 12, next_count);
+	}
+	b[510] = 0x55;
+	b[511] = 0xAA;
+}
+
 static void mbr(int slot, uint8_t boot, uint8_t type, uint32_t start, uint32_t count)
 {
 	uint8_t *p = disk + 446 + 16 * slot;
@@ -211,6 +232,7 @@ static void reset(const char *name)
 {
 	current = name;
 	sector_size = 512;
+	bad_sector = UINT64_MAX;
 	memset(disk, 0, sizeof(disk));
 }
 
@@ -375,6 +397,79 @@ int main(int argc, char **argv)
 	/* The same disk read as 512-byte blocks finds no GPT header at LBA 1: nothing Android can use, no guess. */
 	sector_size = 512;
 	CHECK(run(&l) != 0 || l.h.count == 0);
+
+	/* Logical partitions: an extended partition at 4096 with two logical FAT32 partitions (5 and 6) and a Linux
+	 * one between them that still takes a number, as Linux numbers them. */
+	reset("mbr_logical");
+	mbr(0, 0, 0x0c, 2048, 2048);
+	mbr(1, 0, 0x0f, 4096, 12288);
+	ebr(4096, 0x0b, 64, 2048, 2112, 2112);      /* p5 at 4160 */
+	ebr(4096 + 2112, 0x83, 64, 1000, 4224, 3000); /* p6, Linux, not reported */
+	ebr(4096 + 4224, 0x0c, 64, 2048, 0, 0);     /* p7 at 8384 */
+	make_fat32(2048, 1, NULL);
+	make_fat32(4160, 0x55556666, "LOGICAL");
+	make_fat32(8384, 7, NULL);
+	CHECK(run(&l) == 0);
+	CHECK(l.h.table == FSVM_TABLE_MBR && l.h.count == 3);
+	CHECK(l.e[1].index == 5 && l.e[1].start == 4160 && l.e[1].length == 2048 && l.e[1].fs_kind == FSVM_FS_VFAT);
+	CHECK(l.e[1].label_len == 7 && !memcmp(l.e[1].label, "LOGICAL", 7));
+	CHECK(l.e[2].index == 7 && l.e[2].start == 8384);
+
+	reset("mbr_logical_loop");
+	mbr(0, 0, 0x05, 4096, 12288);
+	ebr(4096, 0x0b, 64, 512, 2048, 2048);
+	ebr(4096 + 2048, 0x0b, 64, 512, 0, 2048); /* links back to the first EBR */
+	make_fat32(4160, 1, NULL);
+	make_fat32(6208, 2, NULL);
+	CHECK(run(&l) == -EINVAL);
+
+	reset("mbr_logical_outside");
+	mbr(0, 0, 0x05, 4096, 4096);
+	ebr(4096, 0x0b, 64, 8192, 0, 0); /* past the end of the extended partition */
+	CHECK(run(&l) == -EINVAL);
+
+	reset("mbr_logical_long_chain");
+	mbr(0, 0, 0x05, 2048, 20000);
+	for (uint32_t i = 0; i < 40; i++)
+		ebr(2048 + i * 100, 0x83, 10, 50, (i + 1) * 100, 100);
+	CHECK(run(&l) == -E2BIG);
+
+	reset("mbr_two_extended");
+	mbr(0, 0, 0x05, 2048, 4096);
+	mbr(1, 0, 0x0f, 8192, 4096);
+	CHECK(run(&l) == -EINVAL);
+
+	reset("mbr_logical_in_slot_three");
+	mbr(0, 0, 0x05, 4096, 8192);
+	ebr(4096, 0x0b, 64, 512, 0, 0);
+	put32(disk + 4096 * 512 + 446 + 32 + 12, 10); /* a third entry with a size */
+	CHECK(run(&l) == -EINVAL);
+
+	/* A read error on a boot sector is not "no filesystem": the whole layout fails, so no format offer. */
+	reset("read_error_boot_sector");
+	mbr(0, 0, 0x0c, 2048, 4096);
+	make_fat32(2048, 1, NULL);
+	bad_sector = 2048;
+	CHECK(run(&l) == -EIO);
+	reset("read_error_logical_ebr");
+	mbr(0, 0, 0x05, 4096, 8192);
+	ebr(4096, 0x0b, 64, 512, 0, 0);
+	bad_sector = 4096;
+	CHECK(run(&l) == -EIO);
+	reset("read_error_gpt_partition");
+	{
+		struct gpt_part p[] = { { basic, 1, 2048, 6143 } };
+		make_gpt(p, 1, 128);
+		make_fat32(2048, 1, NULL);
+	}
+	bad_sector = 2048;
+	CHECK(run(&l) == -EIO);
+	/* A label that cannot be read is only left out. */
+	reset("read_error_label");
+	mbr(0, 0, 0x0c, 2048, 4096);
+	make_fat32(2048, 1, "GONE");
+	bad_sector = 2048 + 32 + 2 * 16;
+	CHECK(run(&l) == 0 && l.h.count == 1 && l.e[0].fs_kind == FSVM_FS_VFAT && l.e[0].label_len == 0);
 
 	reset("blank");
 	CHECK(run(&l) == 0 && l.h.count == 0);

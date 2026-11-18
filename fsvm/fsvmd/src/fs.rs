@@ -17,12 +17,12 @@
 //! Android's own, and owner, group and mode come from vold's settings, never from the card.
 
 use fsvm_proto::client::{CallError, CallResult};
-use fsvm_proto::{Attr, Client, Kind, StreamTransport, MAX_IO};
+use fsvm_proto::{Attr, Client, Kind, StreamTransport, MAX_IO, MAX_OPEN_LISTING_BYTES};
 use fuse::filesystem::{
     Context, DirEntry, DirectoryIterator, Entry, FileSystem, FsOptions, OpenOptions, SetattrValid, ZeroCopyReader,
     ZeroCopyWriter,
 };
-use log::{error, warn};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::io;
@@ -61,9 +61,12 @@ struct Node {
 
 struct Listing {
     entries: Vec<(CString, Kind, u64)>,
+    /// What fsvm_proto counted for it (MAX_LISTING_BYTES).
+    bytes: usize,
 }
 
-/// Most directory listings open at once. Each holds up to 65536 names.
+/// Most directory listings open at once. Each holds at most MAX_LISTING_BYTES, all together at most
+/// MAX_OPEN_LISTING_BYTES.
 const MAX_LISTINGS: usize = 64;
 /// Most new VMs for one mount within RESTART_WINDOW. After that fsvmd exits and vold reports the card as not opened.
 const MAX_RESTARTS: usize = 3;
@@ -88,11 +91,14 @@ struct State {
     by_name: HashMap<(u64, Vec<u8>), u64>,
     next_ino: u64,
     listings: HashMap<u64, Listing>,
+    listing_bytes: usize,
     next_handle: u64,
+    /// Set once the filesystem was written back and unmounted in the VM before a stop: nothing is served after.
+    closed: bool,
 }
 
 pub struct FsvmFs {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
     read_only: Arc<AtomicBool>,
     gid: u32,
     dir_mode: u32,
@@ -115,7 +121,7 @@ impl FsvmFs {
         by_guest.insert(root_guest, ROOT);
         let read_only = Arc::new(AtomicBool::new(read_only || obb));
         FsvmFs {
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 client,
                 root_guest,
                 session,
@@ -126,13 +132,20 @@ impl FsvmFs {
                 by_name: HashMap::new(),
                 next_ino: ROOT + 1,
                 listings: HashMap::new(),
+                listing_bytes: 0,
                 next_handle: 1,
-            }),
+                closed: false,
+            })),
             read_only,
             gid,
             dir_mode: if obb { 0o550 } else { 0o770 },
             file_mode: if obb { 0o440 } else { 0o660 },
         }
+    }
+
+    /// A handle that outlives the FUSE loop, for the orderly stop (Closer::close).
+    pub fn closer(&self) -> Closer {
+        Closer { state: self.state.clone() }
     }
 
     #[allow(clippy::useless_conversion)]
@@ -262,7 +275,26 @@ impl State {
     }
 
     /// Runs one call on a node: resolves the VM's id, and on a stale id or a broken session tries once more.
-    fn call<T>(&mut self, ino: u64, mut f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>) -> io::Result<T> {
+    fn call<T>(&mut self, ino: u64, f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>) -> io::Result<T> {
+        self.call_with(ino, true, f)
+    }
+
+    /// The same for a call that is not safe to repeat (create, mkdir, unlink, rmdir): when the session broke during
+    /// it, the old VM may have done it, so it is not sent again. The app gets EIO, and the next call goes to the new
+    /// VM. A stale id is retried: the VM refused that call before doing anything.
+    fn call_once<T>(&mut self, ino: u64, f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>) -> io::Result<T> {
+        self.call_with(ino, false, f)
+    }
+
+    fn call_with<T>(
+        &mut self,
+        ino: u64,
+        replay: bool,
+        mut f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>,
+    ) -> io::Result<T> {
+        if self.closed {
+            return Err(err(libc::EIO));
+        }
         for attempt in 0..3 {
             let last = attempt == 2;
             let r = match self.resolve(ino, 0) {
@@ -272,7 +304,39 @@ impl State {
             match r {
                 Ok(v) => return Ok(v),
                 Err(CallError::Errno(libc::ESTALE)) if !last => self.invalidate(ino),
-                Err(CallError::Broken(why)) if !last => self.recover(&why),
+                Err(CallError::Broken(why)) if !last && replay => self.recover(&why),
+                Err(CallError::Broken(why)) => {
+                    self.recover(&why);
+                    return Err(err(libc::EIO));
+                }
+                Err(e) => return Err(call_err(e)),
+            }
+        }
+        Err(err(libc::EIO))
+    }
+
+    /// A rename resolves both directories on every attempt, so neither id is stale after a new VM took over. Not
+    /// repeated after a broken session (call_once).
+    fn rename_call(&mut self, olddir: u64, from: &[u8], newdir: u64, to: &[u8]) -> io::Result<()> {
+        if self.closed {
+            return Err(err(libc::EIO));
+        }
+        for attempt in 0..3 {
+            let last = attempt == 2;
+            let r = match (self.resolve(olddir, 0), self.resolve(newdir, 0)) {
+                (Ok(a), Ok(b)) => self.client.rename(a, from, b, to),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            };
+            match r {
+                Ok(()) => return Ok(()),
+                Err(CallError::Errno(libc::ESTALE)) if !last => {
+                    self.invalidate(olddir);
+                    self.invalidate(newdir);
+                }
+                Err(CallError::Broken(why)) => {
+                    self.recover(&why);
+                    return Err(err(libc::EIO));
+                }
                 Err(e) => return Err(call_err(e)),
             }
         }
@@ -330,6 +394,51 @@ impl State {
                 if let Some(g) = n.guest {
                     self.by_guest.remove(&g);
                 }
+            }
+        }
+    }
+}
+
+/// Writes the volume back and unmounts it in the VM before the VM is stopped, so an eject loses nothing and leaves
+/// the card clean. Used when the FUSE loop ended (vold unmounted the volume) and on SIGTERM (vold's stop).
+pub struct Closer {
+    state: Arc<Mutex<State>>,
+}
+
+impl Closer {
+    /// Waits up to `lock_wait` for a call in progress, then gives the VM `budget` to write back and unmount.
+    pub fn close(&self, lock_wait: Duration, budget: Duration) -> bool {
+        let until = Instant::now() + lock_wait;
+        let mut guard = loop {
+            match self.state.try_lock() {
+                Ok(g) => break g,
+                Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    error!("a call to the filesystem VM is still running, stopping without writing back");
+                    return false;
+                }
+            }
+        };
+        if guard.closed {
+            return true;
+        }
+        guard.closed = true;
+        if guard.client.is_broken() {
+            error!("the filesystem VM session is broken, stopping without writing back");
+            return false;
+        }
+        let t = Instant::now();
+        match guard.client.unmount(budget) {
+            Ok(()) => {
+                info!("written back and unmounted in the VM in {:?}, the volume is clean", t.elapsed());
+                true
+            }
+            Err(e) => {
+                error!("writing back and unmounting in the VM failed after {:?}: {e:?}", t.elapsed());
+                false
             }
         }
     }
@@ -499,13 +608,24 @@ impl FileSystem for FsvmFs {
         Ok(n as usize)
     }
 
+    /// close(): every write already reached the VM's filesystem (FUSE writes here are write-through), and the
+    /// filesystem writes it back within about two seconds, as the kernel's FAT driver did with close. An app that
+    /// needs the data on the card calls fsync, and an eject writes everything back first (Closer).
     fn flush(&self, _ctx: Context, _ino: u64, _h: u64, _lock_owner: u64) -> io::Result<()> {
         Ok(())
     }
 
-    fn fsync(&self, _ctx: Context, ino: u64, _datasync: bool, _h: u64) -> io::Result<()> {
+    /// fsync and fdatasync: the file's data, and for fsync its directory entry and times, are on the card when this
+    /// returns.
+    fn fsync(&self, _ctx: Context, ino: u64, datasync: bool, _h: u64) -> io::Result<()> {
         let mut s = self.state.lock().unwrap();
-        s.call(ino, |c, g| c.fsync(g))
+        s.call(ino, |c, g| c.fsync(g, datasync))
+    }
+
+    fn fsyncdir(&self, _ctx: Context, ino: u64, datasync: bool, _h: u64) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        s.is_dir(ino)?;
+        s.call(ino, |c, g| c.fsync(g, datasync))
     }
 
     fn create(
@@ -521,7 +641,7 @@ impl FileSystem for FsvmFs {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
         s.is_dir(parent)?;
-        let a = s.call(parent, |c, g| c.create(g, name.to_bytes(), flags as i32 & libc::O_EXCL != 0))?;
+        let a = s.call_once(parent, |c, g| c.create(g, name.to_bytes(), flags as i32 & libc::O_EXCL != 0))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         let entry = Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT };
         Ok((entry, Some(ino), OpenOptions::empty()))
@@ -539,7 +659,7 @@ impl FileSystem for FsvmFs {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
         s.is_dir(parent)?;
-        let a = s.call(parent, |c, g| c.mkdir(g, name.to_bytes()))?;
+        let a = s.call_once(parent, |c, g| c.mkdir(g, name.to_bytes()))?;
         let ino = s.map(parent, name.to_bytes(), &a)?;
         Ok(Entry { inode: ino, generation: 0, attr: self.stat(ino, &a), attr_timeout: TIMEOUT, entry_timeout: TIMEOUT })
     }
@@ -548,7 +668,7 @@ impl FileSystem for FsvmFs {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
         s.is_dir(parent)?;
-        s.call(parent, |c, g| c.unlink(g, name.to_bytes()))?;
+        s.call_once(parent, |c, g| c.unlink(g, name.to_bytes()))?;
         s.drop_child(parent, name.to_bytes());
         Ok(())
     }
@@ -557,7 +677,7 @@ impl FileSystem for FsvmFs {
         self.writable()?;
         let mut s = self.state.lock().unwrap();
         s.is_dir(parent)?;
-        s.call(parent, |c, g| c.rmdir(g, name.to_bytes()))?;
+        s.call_once(parent, |c, g| c.rmdir(g, name.to_bytes()))?;
         s.drop_child(parent, name.to_bytes());
         Ok(())
     }
@@ -579,9 +699,7 @@ impl FileSystem for FsvmFs {
         let mut s = self.state.lock().unwrap();
         s.is_dir(olddir)?;
         s.is_dir(newdir)?;
-        // Both directories' ids must be current. Resolve the target first, then run the call on the source.
-        let to = s.call(newdir, |_, g| Ok(g))?;
-        s.call(olddir, |c, from| c.rename(from, oldname.to_bytes(), to, newname.to_bytes()))?;
+        s.rename_call(olddir, oldname.to_bytes(), newdir, newname.to_bytes())?;
         s.drop_child(newdir, newname.to_bytes());
         s.rename_node(olddir, oldname.to_bytes(), newdir, newname.to_bytes());
         Ok(())
@@ -594,6 +712,11 @@ impl FileSystem for FsvmFs {
             return Err(err(libc::EMFILE));
         }
         let listing = s.call(ino, |c, g| c.list(g))?;
+        if s.listing_bytes + listing.bytes > MAX_OPEN_LISTING_BYTES {
+            warn!("open directory listings would take more than {MAX_OPEN_LISTING_BYTES} bytes, refusing one more");
+            return Err(err(libc::ENOMEM));
+        }
+        let bytes = listing.bytes;
         if listing.dropped > 0 || listing.duplicates > 0 || listing.truncated {
             warn!(
                 "directory listing cleaned: {} refused, {} duplicates, truncated {}",
@@ -614,7 +737,8 @@ impl FileSystem for FsvmFs {
         }
         let h = s.next_handle;
         s.next_handle += 1;
-        s.listings.insert(h, Listing { entries });
+        s.listing_bytes += bytes;
+        s.listings.insert(h, Listing { entries, bytes });
         Ok((Some(h), OpenOptions::empty()))
     }
 
@@ -632,7 +756,10 @@ impl FileSystem for FsvmFs {
     }
 
     fn releasedir(&self, _ctx: Context, _ino: u64, _flags: u32, h: u64) -> io::Result<()> {
-        self.state.lock().unwrap().listings.remove(&h);
+        let mut s = self.state.lock().unwrap();
+        if let Some(l) = s.listings.remove(&h) {
+            s.listing_bytes -= l.bytes;
+        }
         Ok(())
     }
 

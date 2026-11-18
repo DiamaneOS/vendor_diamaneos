@@ -1,9 +1,11 @@
 # DiamaneOS: vold asks this service for one fsvmd per probe, SD card or USB volume, or OBB image (system/vold
 # fs/Fsvm.cpp, fsvmd/src/launcher.rs). It runs as the system user without capabilities, and so does every fsvmd it
-# starts, so vold changes no ids. Only vold may connect to its socket (fsvmd.te).
-service fsvmd /system_ext/bin/fsvmd --launcher
+# starts, so vold changes no ids. Only vold may connect to its socket (fsvmd.te). It is kept clear of the low memory
+# killer: its death ends every served card.
+service fsvmd /system_ext/bin/fsvmd_launcher
     class core
     user system
     group system
     capabilities
     socket fsvmd seqpacket 0600 root root
+    oom_score_adjust -600

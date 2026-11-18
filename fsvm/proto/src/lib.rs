@@ -64,6 +64,13 @@ pub const MAX_DIR_ENTRIES_PER_PAGE: u32 = 512;
 pub const MAX_DIR_ENTRIES: usize = 65536;
 /// Most READDIR pages for one directory listing.
 pub const MAX_DIR_PAGES: usize = 1024;
+/// Memory one listing may take (names plus a fixed charge per entry), and all open listings of a volume together.
+/// Entries beyond are not shown.
+pub const MAX_LISTING_BYTES: usize = 4 << 20;
+pub const MAX_OPEN_LISTING_BYTES: usize = 16 << 20;
+/// What one listed entry costs besides its name.
+pub const LISTING_ENTRY_COST: usize = 64;
+
 /// Largest file size accepted from the VM (16 TiB, beyond any exFAT card sold today).
 pub const MAX_FILE_SIZE: u64 = 1 << 44;
 /// Modification times are clamped into the range FAT and exFAT can store, 1980 to 2107, plus the epoch for files
@@ -93,6 +100,9 @@ pub enum Op {
     Forget = 16,
     Layout = 17,
     Mount = 18,
+    /// Writes everything back, unmounts the filesystem in the VM (which marks it clean) and answers 0, or an errno
+    /// when either failed. fsvmd sends it before every orderly stop of the VM.
+    Unmount = 19,
 }
 
 /// The kinds of node a filesystem on a card can hold. FAT and exFAT have no links or special files.
@@ -287,6 +297,8 @@ pub fn encode_attr(a: &Attr) -> [u8; ATTR_SIZE] {
 pub struct Hello {
     pub fs_kind: u32,
     pub read_only: bool,
+    /// The filesystem was marked dirty when the VM mounted it (it was not cleanly unmounted before).
+    pub was_dirty: bool,
     pub root: u64,
 }
 
@@ -301,14 +313,14 @@ pub fn decode_hello(b: &[u8]) -> Result<Hello, ProtoError> {
     if fs_kind != 0 && fs_kind != FS_VFAT && fs_kind != FS_EXFAT {
         return Err(ProtoError::BadAttr("filesystem kind"));
     }
-    if le_u32(b, 8) & !1 != 0 || le_u32(b, 12) != 0 {
+    if le_u32(b, 8) & !3 != 0 || le_u32(b, 12) != 0 {
         return Err(ProtoError::BadAttr("hello flags"));
     }
     let root = le_u64(b, 16);
     if root == 0 {
         return Err(ProtoError::BadAttr("root node 0"));
     }
-    Ok(Hello { fs_kind, read_only: le_u32(b, 8) & 1 != 0, root })
+    Ok(Hello { fs_kind, read_only: le_u32(b, 8) & 1 != 0, was_dirty: le_u32(b, 8) & 2 != 0, root })
 }
 
 /// Filesystem totals, checked.
@@ -398,6 +410,8 @@ pub fn encode_dir_page(next_cookie: u64, entries: &[(&[u8], Attr)]) -> Vec<u8> {
 #[derive(Debug, Default)]
 pub struct Listing {
     pub entries: Vec<(String, Attr)>,
+    /// Memory the entries take, as MAX_LISTING_BYTES counts it.
+    pub bytes: usize,
     /// Entries refused for their name or attributes.
     pub dropped: u32,
     /// Entries that repeat an earlier name, exactly or without case.
@@ -411,7 +425,7 @@ impl Listing {
     pub fn add_page(&mut self, page: DirPage, seen: &mut std::collections::HashSet<String>) -> bool {
         self.dropped += page.dropped;
         for (name, attr) in page.entries {
-            if self.entries.len() >= MAX_DIR_ENTRIES {
+            if self.entries.len() >= MAX_DIR_ENTRIES || self.bytes + name.len() + LISTING_ENTRY_COST > MAX_LISTING_BYTES {
                 self.truncated = true;
                 return false;
             }
@@ -419,6 +433,7 @@ impl Listing {
                 self.duplicates += 1;
                 continue;
             }
+            self.bytes += name.len() + LISTING_ENTRY_COST;
             self.entries.push((name, attr));
         }
         true
@@ -522,8 +537,10 @@ mod tests {
         h[0..4].copy_from_slice(&VERSION.to_le_bytes());
         h[4..8].copy_from_slice(&FS_EXFAT.to_le_bytes());
         h[16..24].copy_from_slice(&1u64.to_le_bytes());
-        assert_eq!(decode_hello(&h).unwrap(), Hello { fs_kind: FS_EXFAT, read_only: false, root: 1 });
+        assert_eq!(decode_hello(&h).unwrap(), Hello { fs_kind: FS_EXFAT, read_only: false, was_dirty: false, root: 1 });
         h[8] = 2;
+        assert!(decode_hello(&h).unwrap().was_dirty);
+        h[8] = 4;
         assert!(decode_hello(&h).is_err());
         h[8] = 0;
         h[4] = 0;

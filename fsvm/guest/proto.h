@@ -48,7 +48,10 @@ enum {
 	FSVM_LAYOUT = 17, /* the partitions this VM read from its disk (layout.rs) */
 	FSVM_MOUNT = 18,  /* arg: partition index (0: whole disk), node: start, node2: length, flags bit 0: read-only,
 			   * len: milliseconds the filesystem check may take (0: no check) */
+	FSVM_UNMOUNT = 19, /* write everything back and unmount (the filesystem is marked clean), before a stop */
 };
+/* FSVM_FSYNC flags bit 0: data only (fdatasync). */
+#define FSVM_FSYNC_DATA 1u
 
 #define FSVM_MAX_IO (128u * 1024u)
 #define FSVM_MAX_NAME 1020u
@@ -101,7 +104,7 @@ struct fsvm_attr {
 struct fsvm_hello {
 	uint32_t version;
 	uint32_t fs_kind;
-	uint32_t flags; /* bit 0: mounted read-only */
+	uint32_t flags; /* bit 0: mounted read-only, bit 1: the filesystem was marked dirty when mounted */
 	uint32_t reserved;
 	uint64_t root;
 } __attribute__((packed));

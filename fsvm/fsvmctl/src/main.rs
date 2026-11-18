@@ -15,7 +15,7 @@
 //! fsvmctl: a test client for the filesystem VM, through the same checking client fsvmd uses. Test builds only.
 //!
 //! ```text
-//! fsvmctl CID [--disk-bytes N] [--part I] [--ro] layout | hello | ls PATH | cat PATH | put LOCAL PATH | mkdir PATH |
+//! fsvmctl CID [--disk-bytes N] [--block-size 512|4096] [--part I] [--ro] layout | hello | ls PATH | cat PATH | put LOCAL PATH | mkdir PATH |
 //!         rm PATH | stat
 //! ```
 //! PATH is relative to the volume's root, "" or "/" for the root. `cat` writes the file to stdout. A fresh VM has
@@ -75,16 +75,17 @@ fn split(path: &str) -> (&str, &str) {
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: fsvmctl CID [--disk-bytes N] [--part I] [--ro] layout|hello|ls|cat|put|mkdir|rm|stat ...");
+        eprintln!("usage: fsvmctl CID [--disk-bytes N] [--block-size N] [--part I] [--ro] layout|hello|ls|cat|put|mkdir|rm|stat ...");
         exit(2);
     }
     let cid: u32 = args[1].parse().unwrap_or_else(|_| exit(2));
-    let (mut disk_bytes, mut part, mut ro) = (0u64, None::<u32>, false);
+    let (mut disk_bytes, mut part, mut ro, mut block_size) = (0u64, None::<u32>, false, 512u32);
     while args.len() > 2 && args[2].starts_with("--") {
         let flag = args.remove(2);
         match flag.as_str() {
             "--ro" => ro = true,
             "--disk-bytes" => disk_bytes = args.remove(2).parse().unwrap_or_else(|_| exit(2)),
+            "--block-size" => block_size = args.remove(2).parse().unwrap_or_else(|_| exit(2)),
             "--part" => part = Some(args.remove(2).parse().unwrap_or_else(|_| exit(2))),
             _ => exit(2),
         }
@@ -94,7 +95,7 @@ fn main() {
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
     if arg(2) == "layout" || hello.fs_kind == 0 {
         let t = std::time::Instant::now();
-        let l = c.layout(disk_bytes).unwrap_or_else(|e| die("layout", e));
+        let l = c.layout(disk_bytes, block_size).unwrap_or_else(|e| die("layout", e));
         if arg(2) == "layout" {
             println!("table {:?}, {} partitions, {} labels refused, {} ms", l.table, l.parts.len(), l.dropped_labels, t.elapsed().as_millis());
             for p in &l.parts {
@@ -168,7 +169,7 @@ fn main() {
                 }
                 off += n as usize;
             }
-            c.fsync(a.node).unwrap_or_else(|e| die("fsync", e));
+            c.fsync(a.node, false).unwrap_or_else(|e| die("fsync", e));
             println!("wrote {} bytes", data.len());
         }
         "mkdir" => {

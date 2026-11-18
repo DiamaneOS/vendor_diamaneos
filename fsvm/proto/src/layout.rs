@@ -46,11 +46,26 @@ pub const MAX_LAYOUT_ENTRIES: usize = 16;
 pub const MAX_LAYOUT_PAYLOAD: usize = LAYOUT_HEADER + MAX_LAYOUT_ENTRIES * LAYOUT_ENTRY;
 /// Longest label in bytes. FAT labels have 11 bytes, exFAT labels 11 UTF-16 units.
 pub const MAX_LABEL_BYTES: usize = 47;
-/// Highest partition number: 4 primary MBR partitions, 128 GPT entries.
-pub const MAX_MBR_INDEX: u32 = 4;
+/// Highest partition number: 4 primary MBR partitions and up to 32 logical ones (numbered from 5, as Linux does,
+/// the guest follows at most 32 links of the chain), 128 GPT entries.
+pub const MAX_MBR_INDEX: u32 = 36;
 pub const MAX_GPT_INDEX: u32 = 128;
-/// Sectors a GPT occupies at each end of the disk with its usual 128 entries: the protective MBR and the header,
-/// then 32 sectors of entries at the start, the entries and the backup header at the end.
+/// Bytes of the usual 128 GPT entries.
+const GPT_ENTRY_BYTES: u64 = 128 * 128;
+
+/// 512-byte sectors a GPT occupies at the start of a disk with `block_size`-byte logical blocks: the protective MBR
+/// and the header (one block each), then the entries. 34 for 512-byte blocks, 48 for 4096-byte blocks.
+pub fn gpt_head_sectors(block_size: u32) -> u64 {
+    let bs = block_size as u64;
+    (2 + GPT_ENTRY_BYTES.div_ceil(bs)) * bs / 512
+}
+
+/// The same at the end: the backup entries and the backup header. 33 for 512-byte blocks, 40 for 4096-byte blocks.
+pub fn gpt_tail_sectors(block_size: u32) -> u64 {
+    let bs = block_size as u64;
+    (1 + GPT_ENTRY_BYTES.div_ceil(bs)) * bs / 512
+}
+
 pub const GPT_HEAD_SECTORS: u64 = 34;
 pub const GPT_TAIL_SECTORS: u64 = 33;
 
@@ -143,6 +158,7 @@ pub enum LayoutError {
     TooManyAdoptable,
     Meta(u32),
     WholeDisk,
+    BlockSize(u32),
 }
 
 fn is_zero(b: &[u8]) -> bool {
@@ -160,8 +176,12 @@ fn check_label(raw: &[u8]) -> Option<String> {
     names::check_name(s.as_bytes()).ok().map(str::to_string)
 }
 
-/// Decodes and checks a LAYOUT reply. `disk_bytes` is the disk size Android's kernel reports.
-pub fn decode_layout(b: &[u8], disk_bytes: u64) -> Result<Layout, LayoutError> {
+/// Decodes and checks a LAYOUT reply. `disk_bytes` is the disk size and `block_size` its logical block size (512 or
+/// 4096) as Android's kernel reports them.
+pub fn decode_layout(b: &[u8], disk_bytes: u64, block_size: u32) -> Result<Layout, LayoutError> {
+    if block_size != 512 && block_size != 4096 {
+        return Err(LayoutError::BlockSize(block_size));
+    }
     if b.len() < LAYOUT_HEADER || b.len() > MAX_LAYOUT_PAYLOAD {
         return Err(LayoutError::Size);
     }
@@ -191,7 +211,7 @@ pub fn decode_layout(b: &[u8], disk_bytes: u64) -> Result<Layout, LayoutError> {
     let (lo, hi) = match table {
         Table::None => (0, disk_sectors),
         Table::Mbr => (1, disk_sectors),
-        Table::Gpt => (GPT_HEAD_SECTORS, disk_sectors.saturating_sub(GPT_TAIL_SECTORS)),
+        Table::Gpt => (gpt_head_sectors(block_size), disk_sectors.saturating_sub(gpt_tail_sectors(block_size))),
     };
 
     let mut parts = Vec::with_capacity(count as usize);
@@ -455,7 +475,7 @@ mod tests {
     #[test]
     fn honest_mbr_and_gpt() {
         let b = encode_layout(DISK, 1, &[fat_part(1, 2048, DISK - 2048)]);
-        let l = decode_layout(&b, DISK * 512).unwrap();
+        let l = decode_layout(&b, DISK * 512, 512).unwrap();
         assert_eq!(l.table, Table::Mbr);
         assert_eq!(l.parts[0].fs_uuid.as_deref(), Some("6FFF-FAB8"));
         assert_eq!(l.parts[0].label, "CARD");
@@ -464,7 +484,7 @@ mod tests {
         // Adoptable storage as vold partitions it: metadata, then the encrypted rest.
         let meta = gpt(1, 2048, 32768, GPT_ANDROID_META, 1);
         let expand = gpt(2, 34816, DISK - 34816 - 33, GPT_ANDROID_EXPAND, 2);
-        let l = decode_layout(&encode_layout(DISK, 2, &[meta, expand]), DISK * 512).unwrap();
+        let l = decode_layout(&encode_layout(DISK, 2, &[meta, expand]), DISK * 512, 512).unwrap();
         assert_eq!(l.parts[1].class, Class::AndroidExpand);
         assert_eq!(guid_text(&l.parts[1].part_guid.unwrap()), "02020202-0202-0202-0202-020202020202");
     }
@@ -478,19 +498,19 @@ mod tests {
     #[test]
     fn whole_disk_filesystem() {
         let p = RawPart { index: 0, start: 0, length: DISK, fs_kind: crate::FS_EXFAT, serial: Some(1), ..Default::default() };
-        let l = decode_layout(&encode_layout(DISK, 0, &[p.clone()]), DISK * 512).unwrap();
+        let l = decode_layout(&encode_layout(DISK, 0, &[p.clone()]), DISK * 512, 512).unwrap();
         assert_eq!(l.table, Table::None);
         assert_eq!(l.parts[0].fs_uuid.as_deref(), Some("0000-0001"));
         // Not the whole disk, or no filesystem: refused.
         let mut q = p.clone();
         q.length -= 1;
-        assert!(decode_layout(&encode_layout(DISK, 0, &[q]), DISK * 512).is_err());
+        assert!(decode_layout(&encode_layout(DISK, 0, &[q]), DISK * 512, 512).is_err());
         let mut q = p;
         q.fs_kind = 0;
         q.serial = None;
-        assert!(decode_layout(&encode_layout(DISK, 0, &[q]), DISK * 512).is_err());
+        assert!(decode_layout(&encode_layout(DISK, 0, &[q]), DISK * 512, 512).is_err());
         // An empty layout is fine: nothing Android can use.
-        assert!(decode_layout(&encode_layout(DISK, 0, &[]), DISK * 512).unwrap().parts.is_empty());
+        assert!(decode_layout(&encode_layout(DISK, 0, &[]), DISK * 512, 512).unwrap().parts.is_empty());
     }
 
     #[test]
@@ -503,35 +523,49 @@ mod tests {
             fat_part(1, DISK, 1),                // starts at the end
         ];
         for p in bad {
-            assert!(matches!(decode_layout(&encode_layout(DISK, 1, &[p.clone()]), DISK * 512), Err(LayoutError::Range { .. })), "{p:?}");
+            assert!(matches!(decode_layout(&encode_layout(DISK, 1, &[p.clone()]), DISK * 512, 512), Err(LayoutError::Range { .. })), "{p:?}");
         }
+        // MBR logical partitions are numbered from 5, up to 36.
+        assert!(decode_layout(&encode_layout(DISK, 1, &[fat_part(5, 2048, 4096)]), DISK * 512, 512).is_ok());
+        assert!(matches!(decode_layout(&encode_layout(DISK, 1, &[fat_part(37, 2048, 4096)]), DISK * 512, 512), Err(LayoutError::Index(37))));
+        // On a disk with 4096-byte blocks the GPT takes 48 sectors at the start and 40 at the end.
+        assert_eq!((gpt_head_sectors(512), gpt_tail_sectors(512)), (34, 33));
+        assert_eq!((gpt_head_sectors(4096), gpt_tail_sectors(4096)), (48, 40));
+        let head = gpt(1, 34, 100, GPT_BASIC_DATA, 1);
+        assert!(decode_layout(&encode_layout(DISK, 2, &[head.clone()]), DISK * 512, 512).is_ok());
+        assert!(matches!(decode_layout(&encode_layout(DISK, 2, &[head]), DISK * 512, 4096), Err(LayoutError::Range { .. })));
+        let tail = gpt(1, DISK - 133, 100, GPT_BASIC_DATA, 1);
+        assert!(decode_layout(&encode_layout(DISK, 2, &[tail.clone()]), DISK * 512, 512).is_ok());
+        assert!(matches!(decode_layout(&encode_layout(DISK, 2, &[tail]), DISK * 512, 4096), Err(LayoutError::Range { .. })));
+        assert!(decode_layout(&encode_layout(DISK, 2, &[gpt(1, 48, 100, GPT_BASIC_DATA, 1)]), DISK * 512, 4096).is_ok());
+        assert!(matches!(decode_layout(&encode_layout(DISK, 0, &[]), DISK * 512, 1024), Err(LayoutError::BlockSize(1024))));
         // GPT partitions must stay clear of both tables.
         let p = gpt(1, 2, 100, GPT_BASIC_DATA, 1);
-        assert!(matches!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512), Err(LayoutError::Range { .. })));
+        assert!(matches!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512, 512), Err(LayoutError::Range { .. })));
         let p = gpt(1, 2048, DISK - 2048, GPT_BASIC_DATA, 1);
-        assert!(matches!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512), Err(LayoutError::Range { .. })));
+        assert!(matches!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512, 512), Err(LayoutError::Range { .. })));
     }
 
     #[test]
     fn hostile_overlaps_and_duplicates() {
         let a = fat_part(1, 2048, 100_000);
         let b = fat_part(2, 50_000, 100_000);
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[a.clone(), b]), DISK * 512), Err(LayoutError::Overlap(1, 2)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[a.clone(), b]), DISK * 512, 512), Err(LayoutError::Overlap(1, 2)));
         // The same range twice, under two numbers.
         let c = fat_part(3, 2048, 100_000);
-        assert!(matches!(decode_layout(&encode_layout(DISK, 1, &[a.clone(), c]), DISK * 512), Err(LayoutError::Overlap(..))));
+        assert!(matches!(decode_layout(&encode_layout(DISK, 1, &[a.clone(), c]), DISK * 512, 512), Err(LayoutError::Overlap(..))));
         // Adjacent is fine.
         let d = fat_part(2, 102_048, 100);
-        assert!(decode_layout(&encode_layout(DISK, 1, &[a.clone(), d]), DISK * 512).is_ok());
+        assert!(decode_layout(&encode_layout(DISK, 1, &[a.clone(), d]), DISK * 512, 512).is_ok());
         // The same number twice.
         let e = fat_part(1, 300_000, 100);
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[a, e]), DISK * 512), Err(LayoutError::DuplicateIndex(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[a, e]), DISK * 512, 512), Err(LayoutError::DuplicateIndex(1)));
         // Two adoptable partitions, or the same unique GUID twice.
         let x = gpt(1, 2048, 1000, GPT_ANDROID_EXPAND, 1);
         let y = gpt(2, 4096, 1000, GPT_ANDROID_EXPAND, 2);
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[x.clone(), y]), DISK * 512), Err(LayoutError::TooManyAdoptable));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[x.clone(), y]), DISK * 512, 512), Err(LayoutError::TooManyAdoptable));
         let z = gpt(2, 4096, 1000, GPT_BASIC_DATA, 1);
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[x, z]), DISK * 512), Err(LayoutError::DuplicateGuid(2)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[x, z]), DISK * 512, 512), Err(LayoutError::DuplicateGuid(2)));
     }
 
     #[test]
@@ -539,61 +573,61 @@ mod tests {
         // Hundreds of entries: refused from the header, without reading them.
         let mut b = encode_layout(DISK, 2, &[]);
         b[12..16].copy_from_slice(&300u32.to_le_bytes());
-        assert_eq!(decode_layout(&b, DISK * 512), Err(LayoutError::Count(300)));
+        assert_eq!(decode_layout(&b, DISK * 512, 512), Err(LayoutError::Count(300)));
         // 17 well-formed entries: one too many.
         let many: Vec<RawPart> = (1..=17).map(|i| gpt(i, 2048 + i as u64 * 4096, 2048, GPT_BASIC_DATA, i as u8)).collect();
-        assert!(decode_layout(&encode_layout(DISK, 2, &many), DISK * 512).is_err());
+        assert!(decode_layout(&encode_layout(DISK, 2, &many), DISK * 512, 512).is_err());
         let sixteen: Vec<RawPart> = (1..=16).map(|i| gpt(i, 2048 + i as u64 * 4096, 2048, GPT_BASIC_DATA, i as u8)).collect();
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &sixteen), DISK * 512).unwrap().parts.len(), 16);
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &sixteen), DISK * 512, 512).unwrap().parts.len(), 16);
         // A count that does not match the payload, trailing bytes, a disk of another size.
         let mut b = encode_layout(DISK, 1, &[fat_part(1, 2048, 100)]);
         b.push(0);
-        assert_eq!(decode_layout(&b, DISK * 512), Err(LayoutError::Size));
+        assert_eq!(decode_layout(&b, DISK * 512, 512), Err(LayoutError::Size));
         let b = encode_layout(DISK, 1, &[fat_part(1, 2048, 100)]);
-        assert!(matches!(decode_layout(&b, DISK * 512 + 512), Err(LayoutError::DiskSize { .. })));
-        assert!(matches!(decode_layout(&b, DISK * 512 + 1), Err(LayoutError::DiskSize { .. })));
-        assert!(matches!(decode_layout(&encode_layout(u64::MAX, 1, &[]), 0), Err(LayoutError::DiskSize { .. })));
-        assert_eq!(decode_layout(&b[..20], DISK * 512), Err(LayoutError::Size));
+        assert!(matches!(decode_layout(&b, DISK * 512 + 512, 512), Err(LayoutError::DiskSize { .. })));
+        assert!(matches!(decode_layout(&b, DISK * 512 + 1, 512), Err(LayoutError::DiskSize { .. })));
+        assert!(matches!(decode_layout(&encode_layout(u64::MAX, 1, &[]), 0, 512), Err(LayoutError::DiskSize { .. })));
+        assert_eq!(decode_layout(&b[..20], DISK * 512, 512), Err(LayoutError::Size));
         let mut r = b.clone();
         r[20] = 1;
-        assert_eq!(decode_layout(&r, DISK * 512), Err(LayoutError::Reserved));
+        assert_eq!(decode_layout(&r, DISK * 512, 512), Err(LayoutError::Reserved));
     }
 
     #[test]
     fn hostile_types_and_fields() {
         // Partition numbers outside the table's range.
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[fat_part(5, 2048, 100)]), DISK * 512), Err(LayoutError::Index(5)));
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[fat_part(0, 2048, 100)]), DISK * 512), Err(LayoutError::Index(0)));
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[gpt(129, 2048, 100, GPT_BASIC_DATA, 1)]), DISK * 512), Err(LayoutError::Index(129)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[fat_part(37, 2048, 100)]), DISK * 512, 512), Err(LayoutError::Index(37)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[fat_part(0, 2048, 100)]), DISK * 512, 512), Err(LayoutError::Index(0)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[gpt(129, 2048, 100, GPT_BASIC_DATA, 1)]), DISK * 512, 512), Err(LayoutError::Index(129)));
         // Types Android does not use are refused, not passed on.
         let mut p = fat_part(1, 2048, 100);
         p.mbr_type = 0x83;
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512), Err(LayoutError::Type(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512, 512), Err(LayoutError::Type(1)));
         let linux = guid(0x0FC63DAF, 0x8483, 0x4772, [0x8E, 0x79, 0x3D, 0x69, 0xD8, 0x47, 0x7D, 0xE4]);
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[gpt(1, 2048, 100, linux, 1)]), DISK * 512), Err(LayoutError::Type(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[gpt(1, 2048, 100, linux, 1)]), DISK * 512, 512), Err(LayoutError::Type(1)));
         // GPT fields on an MBR entry, an MBR type on a GPT entry, a zero unique GUID.
         let mut p = fat_part(1, 2048, 100);
         p.part_guid = [1; 16];
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512), Err(LayoutError::TypeFields(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512, 512), Err(LayoutError::TypeFields(1)));
         let mut p = gpt(1, 2048, 100, GPT_BASIC_DATA, 1);
         p.mbr_type = 0x0c;
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512), Err(LayoutError::TypeFields(1)));
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[gpt(1, 2048, 100, GPT_BASIC_DATA, 0)]), DISK * 512), Err(LayoutError::Guid(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512, 512), Err(LayoutError::TypeFields(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[gpt(1, 2048, 100, GPT_BASIC_DATA, 0)]), DISK * 512, 512), Err(LayoutError::Guid(1)));
         // A filesystem on adoptable storage, an unknown filesystem kind, metadata larger than the partition.
         let mut p = gpt(1, 2048, 100, GPT_ANDROID_EXPAND, 1);
         p.fs_kind = crate::FS_VFAT;
-        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512), Err(LayoutError::FsKind(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 2, &[p]), DISK * 512, 512), Err(LayoutError::FsKind(1)));
         let mut p = fat_part(1, 2048, 100);
         p.fs_kind = 7;
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512), Err(LayoutError::FsKind(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512, 512), Err(LayoutError::FsKind(1)));
         let mut p = fat_part(1, 2048, 1000);
         p.meta_bytes = 1000 * 512;
-        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512), Err(LayoutError::Meta(1)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512, 512), Err(LayoutError::Meta(1)));
         // Unknown table kinds and flags.
-        assert_eq!(decode_layout(&encode_layout(DISK, 3, &[]), DISK * 512), Err(LayoutError::TableKind(3)));
+        assert_eq!(decode_layout(&encode_layout(DISK, 3, &[]), DISK * 512, 512), Err(LayoutError::TableKind(3)));
         let mut b = encode_layout(DISK, 1, &[fat_part(1, 2048, 100)]);
         b[LAYOUT_HEADER + 4] = 2;
-        assert_eq!(decode_layout(&b, DISK * 512), Err(LayoutError::Reserved));
+        assert_eq!(decode_layout(&b, DISK * 512, 512), Err(LayoutError::Reserved));
     }
 
     #[test]
@@ -608,7 +642,7 @@ mod tests {
         ] {
             let mut p = fat_part(1, 2048, 100);
             p.label = raw;
-            let l = decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512).unwrap();
+            let l = decode_layout(&encode_layout(DISK, 1, &[p]), DISK * 512, 512).unwrap();
             match want {
                 Some(w) => assert_eq!(l.parts[0].label, w),
                 None => assert_eq!((l.parts[0].label.as_str(), l.dropped_labels), ("", 1)),
@@ -617,7 +651,7 @@ mod tests {
         // Bytes after the label must be zero.
         let mut b = encode_layout(DISK, 1, &[fat_part(1, 2048, 100)]);
         b[LAYOUT_HEADER + 120] = 1;
-        assert_eq!(decode_layout(&b, DISK * 512), Err(LayoutError::Reserved));
+        assert_eq!(decode_layout(&b, DISK * 512, 512), Err(LayoutError::Reserved));
     }
 
     #[test]
@@ -636,7 +670,7 @@ mod tests {
             label: b"Karte".to_vec(),
             ..Default::default()
         };
-        let l = decode_layout(&encode_layout(DISK, 2, &[public, meta, expand]), DISK * 512).unwrap();
+        let l = decode_layout(&encode_layout(DISK, 2, &[public, meta, expand]), DISK * 512, 512).unwrap();
         // The same text vold_tests parses (system/vold tests/Fsvm_test.cpp).
         assert_eq!(
             probe_text(&l),
@@ -646,7 +680,7 @@ mod tests {
              PART 3 expand 8192 100000 - - 03030303-0303-0303-0303-030303030303 0 -\n\
              END\n"
         );
-        let none = decode_layout(&encode_layout(DISK, 0, &[]), DISK * 512).unwrap();
+        let none = decode_layout(&encode_layout(DISK, 0, &[]), DISK * 512, 512).unwrap();
         assert_eq!(probe_text(&none), "LAYOUT 1 none 0\nEND\n");
     }
 

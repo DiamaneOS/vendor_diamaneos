@@ -16,10 +16,12 @@ card -> vold (opens the whole disk, runs fsck in fsck_untrusted on a partition a
 
 - `proto/`: the protocol and the checking client (`libfsvm_proto`), with unit tests and tests against a hostile
   server (`cargo test` on any machine, `fsvm_proto_test` and `fsvm_proto_hostile_test` in the tree).
-- `fsvmd/`: the daemon that serves each public volume. vold asks init's fsvmd service (`fsvmd.rc`, `launcher.rs`)
-  to start one, as the system user without capabilities.
+- `fsvmd/`: the daemon that serves each public volume. vold asks init's fsvmd service (`fsvmd_launcher`,
+  `fsvmd.rc`, `launcher.rs`, a domain of its own) to start one, as the system user without capabilities. Before
+  every orderly stop fsvmd has the VM write the volume back and unmount it, so an eject loses nothing.
 - `guest/`: the VM's `/init` (`fsvm_guest_init`, static), its partition table reader (`table.c`, host-tested by
-  `fsvm_guest_table_test` on hostile tables) and its initramfs (`fsvm_guest_initrd`).
+  `fsvm_guest_table_test` on hostile tables) and its initramfs (`fsvm_guest_initrd`). `fsvm_guest_initrd_selftest`
+  is the same with a self test for the host harness (`scripts/p2-harness.py`), in no image.
 - `kernel/`: the phase 2 kernel change (`CONFIG_BLK_NO_EXTERNAL_PART_SCAN`, kernel_common-6.18 and kernel_qcom-6.18).
 - `patches/`: the changes to system/vold, packages/modules/Virtualization, external/crosvm and vendor/diamaneos, and
   in `patches/p2/` phase 2 on top of them, plus frameworks/base (the failure notice).

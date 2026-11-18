@@ -5,17 +5,33 @@ type fsvmd_exec, system_file_type, exec_type, file_type;
 type fsvmd_tmpfs, file_type;
 type fsvmd_socket, file_type, coredomain_socket;
 
-# init runs the fsvmd service (fsvmd.rc) as the system user without capabilities. vold asks it over its socket for
-# one fsvmd per probe, volume or OBB image, and the service starts it (fsvmd/src/launcher.rs), so vold changes no ids
-# and holds neither setuid nor setgid. vold stops fsvmd through the service. Only vold may connect.
-init_daemon_domain(fsvmd)
-allow fsvmd fsvmd_exec:file execute_no_trans;
-allow fsvmd self:unix_stream_socket { accept read write getopt shutdown };
-allow fsvmd self:process { signal sigkill };
-unix_socket_connect(vold, fsvmd, fsvmd)
-# fsvmd connects to its own sockets (virtualizationservice_use, for its VM manager).
-neverallow { domain -vold -fsvmd } fsvmd:unix_stream_socket connectto;
-neverallow { domain -init } fsvmd:process transition;
+# init runs the fsvmd service (fsvmd_launcher, fsvmd.rc) as the system user without capabilities, in a domain of its
+# own. vold asks it over its socket for one fsvmd per probe, volume or OBB image, and the service starts it
+# (fsvmd/src/launcher.rs), so vold changes no ids and holds neither setuid nor setgid. vold stops fsvmd through the
+# service. Only vold may connect, and a fsvmd can neither signal nor trace the service.
+type fsvmd_launcher, domain, coredomain;
+type fsvmd_launcher_exec, system_file_type, exec_type, file_type;
+init_daemon_domain(fsvmd_launcher)
+domain_auto_trans(fsvmd_launcher, fsvmd_exec, fsvmd)
+allow fsvmd_launcher self:unix_stream_socket { accept listen read write getopt shutdown };
+allow fsvmd_launcher fsvmd:process { signal sigkill };
+allow fsvmd fsvmd_launcher:process sigchld;
+allow fsvmd fsvmd_launcher:fd use;
+unix_socket_connect(vold, fsvmd, fsvmd_launcher)
+# The descriptors vold sends with a request pass through the service to the fsvmd it starts.
+allow fsvmd_launcher vold:fd use;
+allow fsvmd_launcher vold:fifo_file write;
+allow fsvmd_launcher vold_device:blk_file { read write getattr };
+allow fsvmd_launcher fuse_device:chr_file { read write getattr };
+allow fsvmd_launcher { media_rw_data_file fuse }:file { read getattr };
+# The service may connect to its own sockets as every domain may (domain.te), vold to its socket.
+neverallow { domain -vold -fsvmd_launcher } fsvmd_launcher:unix_stream_socket connectto;
+neverallow { domain -vold -init } fsvmd_socket:sock_file write;
+neverallow { domain -init } fsvmd_launcher:process transition;
+neverallow { domain -fsvmd_launcher } fsvmd:process transition;
+neverallow fsvmd fsvmd_launcher:process { signal sigkill sigstop ptrace };
+neverallow fsvmd_launcher { vold_device fuse_device }:{ blk_file chr_file } open;
+neverallow fsvmd_launcher { media_rw_data_file fuse }:file { open write append };
 neverallow vold self:global_capability_class_set { setuid setgid };
 
 # The descriptors vold hands over through the socket: the volume's block device (3), the /dev/fuse descriptor it
@@ -44,12 +60,14 @@ allow fsvmd_virtualizationmanager vold_device:blk_file { read write getattr };
 allow fsvmd_virtmgr_crosvm vold_device:blk_file { read write getattr };
 
 # Phase 2: Android's kernel reads no partition table of an SD card or USB disk (CONFIG_BLK_NO_EXTERNAL_PART_SCAN).
-# vold, and only vold, adds a partition to it with BLKPG: the adoptable storage partition, and a public volume's
-# partition for the time of an fsck or format, at the range the filesystem VM read and fsvmd checked. The kernel
-# allows one such partition per disk at a time and refuses rescans and resizing.
+# vold, and only vold, adds a partition to it with BLKPG: the adoptable storage partition, a public volume's
+# partition next to it on a mixed card (so that the VM gets only that range), and a public volume's partition for a
+# format, at the range the filesystem VM read and fsvmd checked. The kernel allows two such partitions per disk at a
+# time and refuses rescans and resizing.
 allowxperm vold vold_device:blk_file ioctl BLKPG;
-# blkid_untrusted holds ioctl on vold_device without an ioctl list, but no CAP_SYS_ADMIN, which BLKPG needs.
-neverallowxperm { domain -vold -blkid_untrusted } vold_device:blk_file ioctl BLKPG;
+# blkid_untrusted holds ioctl on vold_device without an ioctl list, but no CAP_SYS_ADMIN, which BLKPG needs. The
+# kernel's own nodes of a USB disk carry block_device (init holds ioctl on every device node).
+neverallowxperm { domain -vold -blkid_untrusted -init } { vold_device block_device }:blk_file ioctl BLKPG;
 neverallow blkid_untrusted self:global_capability_class_set sys_admin;
 
 # Phase 2: an app's OBB image is served from the filesystem VM, read-only, instead of a loop device and a FAT mount
@@ -60,6 +78,12 @@ allow fsvmd_virtualizationmanager media_rw_data_file:file { read getattr };
 allow fsvmd_virtmgr_crosvm media_rw_data_file:file { read getattr };
 neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } media_rw_data_file:file { open write append };
 neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } vold_device:blk_file open;
+
+# OBB images on an SD card or USB drive (a public volume served by another fsvmd): vold opens the file read-only
+# through that volume's FUSE mount (/mnt/media_rw/<uuid>, label fuse) and hands it over. The same read-only rules
+# as for OBB images below /data/media.
+allow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fuse:file { read getattr };
+neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fuse:file { open write append };
 
 # A USB disk with 4096-byte logical blocks keeps them in the VM: fsvmd's VM manager reads the block size of the disk
 # it was handed, and only that.

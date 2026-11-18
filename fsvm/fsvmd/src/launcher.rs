@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The fsvmd service (`fsvmd --launcher`, started by init from fsvmd.rc): vold asks it over `/dev/socket/fsvmd` for
+//! The fsvmd service (`fsvmd_launcher`, started by init from fsvmd.rc): vold asks it over `/dev/socket/fsvmd` for
 //! one fsvmd process per probe, volume or OBB image. init runs the service as the system user without capabilities,
-//! and every fsvmd it starts inherits exactly that, so vold changes no ids and needs neither setuid nor setgid.
+//! and every fsvmd it starts inherits exactly that, so vold changes no ids and needs neither setuid nor setgid. The
+//! service is a binary and an SELinux domain of its own (`fsvmd_launcher`), and each fsvmd enters `fsvmd` on exec,
+//! so a fsvmd cannot signal or trace the service.
 //!
 //! One request per connection, one SOCK_SEQPACKET message: `FSVMD1\0`, one digit whose bits say which descriptors
 //! follow (1: descriptor 3, the disk or OBB file, 2: descriptor 4, /dev/fuse, 4: descriptor 5, the pipe to vold) and
@@ -44,13 +46,22 @@ const REQUEST_WITHIN: Duration = Duration::from_secs(5);
 
 static CHILDREN: AtomicUsize = AtomicUsize::new(0);
 
-/// Runs the service: accepts vold's requests on init's socket, for ever.
+/// Runs the service on init's socket, for ever: requests from root (vold) only.
 pub fn run() -> Result<()> {
     let fd: RawFd = std::env::var(SOCKET_ENV).context("no socket from init")?.parse().context("socket from init")?;
-    // SAFETY: init created this listening socket for the service, and nothing else in this process uses it.
-    let listener = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: F_SETFD only changes the descriptor flags of the listening socket.
+    // SAFETY: init created this socket for the service, and nothing else in this process uses it.
+    run_on(unsafe { OwnedFd::from_raw_fd(fd) }, FSVMD, 0)
+}
+
+/// Accepts requests on `listener` from `allowed_uid` and runs `exe` for each.
+pub fn run_on(listener: OwnedFd, exe: &'static str, allowed_uid: u32) -> Result<()> {
+    let fd = listener.as_raw_fd();
+    // SAFETY: F_SETFD only changes the descriptor flags of the socket.
     ensure!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == 0, "F_SETFD on the socket");
+    // init listens on the stream and seqpacket sockets it creates. Listening again only sets the backlog, so the
+    // service does not depend on that.
+    // SAFETY: listen on the socket this process owns.
+    ensure!(unsafe { libc::listen(fd, 16) } == 0, "listen: {}", std::io::Error::last_os_error());
     // fsvmd children are reaped here, through their pidfds. SIGCHLD ignored would reap them behind its back.
     // SAFETY: restores the default disposition of SIGCHLD, before any child exists.
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) };
@@ -72,7 +83,7 @@ pub fn run() -> Result<()> {
         let conn = unsafe { OwnedFd::from_raw_fd(c) };
         // SELinux lets only vold connect (fsvmd.te). vold runs as root, so anything else is refused here too.
         match peer_uid(&conn) {
-            Ok(0) => {}
+            Ok(uid) if uid == allowed_uid => {}
             Ok(uid) => {
                 warn!("request from uid {uid} refused");
                 continue;
@@ -83,7 +94,7 @@ pub fn run() -> Result<()> {
             }
         }
         std::thread::spawn(move || {
-            if let Err(e) = handle(conn, FSVMD) {
+            if let Err(e) = handle(conn, exe) {
                 warn!("request: {e:?}");
             }
         });
@@ -267,7 +278,14 @@ unsafe fn in_child(slots: &[RawFd; 3], argv: &[*const libc::c_char]) -> ! {
             libc::close(target);
         }
     }
-    libc::syscall(libc::SYS_close_range, 6 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint);
+    if libc::syscall(libc::SYS_close_range, 6 as libc::c_uint, libc::c_uint::MAX, 0 as libc::c_uint) != 0 {
+        // A kernel without close_range: every descriptor up to the limit, one by one.
+        let mut rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 { rl.rlim_cur.min(1 << 16) as RawFd } else { 1024 };
+        for fd in 6..top {
+            libc::close(fd);
+        }
+    }
     libc::execv(argv[0], argv.as_ptr());
     libc::_exit(127)
 }
@@ -308,8 +326,14 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
         // SAFETY: poll on two pollfds of descriptors this process owns.
         if unsafe { libc::poll(p.as_mut_ptr(), 2, -1) } < 0 {
             let e = std::io::Error::last_os_error();
-            ensure!(e.raw_os_error() == Some(libc::EINTR), "poll: {e}");
-            continue;
+            if e.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            // Never leave the child running unwatched or unreaped.
+            signal(&pidfd, libc::SIGKILL);
+            let status = reap(pid);
+            send(conn, &format!("X {status}"));
+            bail!("poll: {e}");
         }
         if p[0].revents != 0 {
             break;
@@ -481,6 +505,45 @@ mod tests {
         let mut out = Vec::new();
         rd.read_to_end(&mut out).unwrap();
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    /// The service listens itself: a socket that was bound but never listened on still takes vold's connection.
+    #[test]
+    fn run_listens_and_serves() {
+        let dir = std::env::temp_dir().join(format!("fsvmd-launcher-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sock");
+        let _ = std::fs::remove_file(&path);
+        let cpath = CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: a new socket, bound to a path of our own.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+        assert!(fd >= 0);
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (i, b) in cpath.as_bytes().iter().enumerate() {
+            addr.sun_path[i] = *b as libc::c_char;
+        }
+        let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+        assert_eq!(unsafe { libc::bind(fd, (&addr as *const libc::sockaddr_un).cast(), len) }, 0);
+        let listener = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: getuid has no preconditions.
+        let me = unsafe { libc::getuid() };
+        std::thread::spawn(move || run_on(listener, "/bin/sh", me));
+        let mut vold = None;
+        for _ in 0..50 {
+            let c = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+            if unsafe { libc::connect(c, (&addr as *const libc::sockaddr_un).cast(), len) } == 0 {
+                vold = Some(unsafe { OwnedFd::from_raw_fd(c) });
+                break;
+            }
+            unsafe { libc::close(c) };
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let vold = vold.expect("the service never listened");
+        request(&vold, 0, &["-c", "exit 0"], &[]);
+        assert!(answer(&vold).starts_with("P "));
+        assert_eq!(answer(&vold), "X 0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

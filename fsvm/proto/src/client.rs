@@ -99,6 +99,8 @@ pub struct Deadlines {
     /// answer from the kernel's count and keep the short `meta` deadline. vold waits for all of a mount while it holds
     /// its lock (system/vold fs/Fsvm.cpp), so this stays well under a minute.
     pub mount: Duration,
+    /// One whole directory listing, all its pages together.
+    pub listing: Duration,
 }
 
 impl Default for Deadlines {
@@ -111,6 +113,7 @@ impl Default for Deadlines {
             mutate: Duration::from_secs(15),
             io: Duration::from_secs(15),
             mount: Duration::from_secs(30),
+            listing: Duration::from_secs(30),
         }
     }
 }
@@ -197,6 +200,8 @@ impl<T: Transport> Client<T> {
         };
         let p = self.call(req, op, ATTR_SIZE as u32, budget)?;
         match decode_attr(&p) {
+            // The id of a listed name without a slot belongs in READDIR replies only.
+            Ok(a) if a.node == NODE_LISTED => self.fail(format!("{op:?} attr: the listed-name id")),
             Ok(a) => Ok(a),
             Err(e) => self.fail(format!("{op:?} attr: {e:?}")),
         }
@@ -226,11 +231,12 @@ impl<T: Transport> Client<T> {
         }
     }
 
-    /// Reads the partition layout the VM found on its disk, checked against the size Android knows.
-    pub fn layout(&mut self, disk_bytes: u64) -> CallResult<layout::Layout> {
+    /// Reads the partition layout the VM found on its disk, checked against the size and logical block size Android
+    /// knows.
+    pub fn layout(&mut self, disk_bytes: u64, block_size: u32) -> CallResult<layout::Layout> {
         let budget = self.deadlines.hello;
         let p = self.call(Request::default(), Op::Layout, layout::MAX_LAYOUT_PAYLOAD as u32, budget)?;
-        match layout::decode_layout(&p, disk_bytes) {
+        match layout::decode_layout(&p, disk_bytes, block_size) {
             Ok(l) => Ok(l),
             Err(e) => self.fail(format!("layout: {e:?}")),
         }
@@ -276,13 +282,20 @@ impl<T: Transport> Client<T> {
         self.attr_call(Request { node, ..Default::default() }, Op::Getattr)
     }
 
-    /// Reads a whole directory, page by page, deduplicated and capped.
+    /// Reads a whole directory, page by page, deduplicated and capped in entries, bytes and time
+    /// (`deadlines.listing` for all pages together). What is not read in time is not shown.
     pub fn list(&mut self, dir: u64) -> CallResult<Listing> {
         let mut listing = Listing::default();
         let mut seen = std::collections::HashSet::new();
         let mut cookie = 0u64;
+        let deadline = Instant::now() + self.deadlines.listing;
         for _ in 0..MAX_DIR_PAGES {
-            let budget = self.deadlines.meta;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                listing.truncated = true;
+                return Ok(listing);
+            }
+            let budget = self.deadlines.meta.min(left);
             let p = self.call(Request { node: dir, arg: cookie, ..Default::default() }, Op::Readdir, MAX_DIR_PAYLOAD as u32, budget)?;
             let page = match decode_dir_page(&p) {
                 Ok(page) => page,
@@ -379,10 +392,19 @@ impl<T: Transport> Client<T> {
         }
     }
 
-    pub fn fsync(&mut self, node: u64) -> CallResult<()> {
+    /// Writes a file's or directory's data (and with `datasync` false its metadata) to the card.
+    pub fn fsync(&mut self, node: u64, datasync: bool) -> CallResult<()> {
         // A flush to a slow card can take a while.
         let budget = self.deadlines.io;
-        let p = self.call(Request { node, ..Default::default() }, Op::Fsync, 0, budget)?;
+        let p = self.call(Request { node, flags: datasync as u16, ..Default::default() }, Op::Fsync, 0, budget)?;
+        debug_assert!(p.is_empty());
+        Ok(())
+    }
+
+    /// Writes everything back and unmounts the filesystem in the VM, which marks it clean. The VM can be stopped
+    /// afterwards without losing anything. Errno when the VM could not write back or unmount.
+    pub fn unmount(&mut self, budget: Duration) -> CallResult<()> {
+        let p = self.call(Request::default(), Op::Unmount, 0, budget)?;
         debug_assert!(p.is_empty());
         Ok(())
     }

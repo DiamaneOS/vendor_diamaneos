@@ -51,7 +51,7 @@ rust_binary {
     edition: "2021",
     prefer_rlib: true,
     system_ext_specific: true,
-    init_rc: ["fsvmd/fsvmd.rc"],
+    required: ["fsvmd_launcher"],
     rustlibs: [
         "android.system.virtualizationservice-rust",
         "libandroid_logger",
@@ -65,11 +65,28 @@ rust_binary {
     ],
 }
 
+// The fsvmd service init runs (fsvmd.rc): it starts each fsvmd for vold (fsvmd/src/launcher.rs).
+rust_binary {
+    name: "fsvmd_launcher",
+    crate_name: "fsvmd_launcher",
+    srcs: ["fsvmd/src/launcher_main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    system_ext_specific: true,
+    init_rc: ["fsvmd/fsvmd.rc"],
+    rustlibs: [
+        "libandroid_logger",
+        "libanyhow",
+        "liblibc",
+        "liblog_rust",
+    ],
+}
+
 // The fsvmd service's request handling on the host: descriptors, exit codes, stop, kill, vold going away and refused
 // requests (fsvmd/src/launcher.rs).
 rust_test_host {
     name: "fsvmd_launcher_test",
-    crate_name: "fsvmd_launcher",
+    crate_name: "fsvmd_launcher_test",
     srcs: ["fsvmd/src/launcher.rs"],
     edition: "2021",
     rustlibs: [
@@ -94,8 +111,8 @@ rust_binary {
     ],
 }
 
-cc_binary {
-    name: "fsvm_guest_init",
+cc_defaults {
+    name: "fsvm_guest_init_defaults",
     srcs: [
         "guest/fsvm_guest.c",
         "guest/table.c",
@@ -110,6 +127,19 @@ cc_binary {
     ],
     installable: false,
     compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fsvm_guest_init",
+    defaults: ["fsvm_guest_init_defaults"],
+}
+
+// The same /init with the self test the host harness drives (scripts/p2-harness.py, `fsvm.selftest=` on the
+// kernel command line). Only in fsvm_guest_initrd_selftest, which no image ships.
+cc_binary {
+    name: "fsvm_guest_init_selftest",
+    defaults: ["fsvm_guest_init_defaults"],
+    cflags: ["-DFSVM_SELFTEST"],
 }
 
 // The guest's partition table reader on hostile tables, on the host (guest/table_test.c).
@@ -146,6 +176,20 @@ genrule {
     ],
     out: ["fsvm_initrd.img"],
     cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init) " +
+        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat)",
+}
+
+// For the host harness only.
+genrule {
+    name: "fsvm_guest_initrd_selftest",
+    tools: ["fsvm_mkinitrd"],
+    device_first_srcs: [
+        ":fsvm_guest_init_selftest",
+        ":fsvm_fsck_msdos",
+        ":fsvm_fsck_exfat",
+    ],
+    out: ["fsvm_initrd_selftest.img"],
+    cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init_selftest) " +
         "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat)",
 }
 

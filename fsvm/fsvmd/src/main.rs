@@ -13,11 +13,11 @@
 // limitations under the License.
 
 //! fsvmd: SD cards, USB drives and OBB images for Android, with their partition tables and filesystems parsed only
-//! inside a protected VM. init runs it as a service (`fsvmd --launcher`, fsvmd.rc, launcher.rs), which starts one
+//! inside a protected VM. init runs the fsvmd service (`fsvmd_launcher`, fsvmd.rc, launcher.rs), which starts one
 //! fsvmd for each request of vold's, in one of three modes:
 //!
 //! ```text
-//! fsvmd --probe --disk-bytes <n>
+//! fsvmd --probe --disk-bytes <n> --block-size <512|4096>
 //! fsvmd --volume <id> --gid <gid> --disk-bytes <n> --partition <i> --start <s> --length <l> --fs <vfat|exfat|->
 //!       --meta-bytes <m> [--read-only]
 //! fsvmd --obb --volume <id> --gid <gid> --disk-bytes <n>
@@ -45,7 +45,6 @@
 //! ```
 
 mod fs;
-mod launcher;
 mod vm;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -53,7 +52,8 @@ use fsvm_proto::layout::{self, Class, Table};
 use fsvm_proto::{Client, Deadlines, StreamTransport, FS_EXFAT, FS_VFAT, MAX_IO, PORT};
 use log::{error, info, warn};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
@@ -77,6 +77,7 @@ struct Args {
     gid: u32,
     read_only: bool,
     disk_bytes: u64,
+    block_size: u32,
     partition: u32,
     start: u64,
     length: u64,
@@ -91,6 +92,7 @@ fn parse_args() -> Result<Args> {
         gid: u32::MAX,
         read_only: false,
         disk_bytes: 0,
+        block_size: 512,
         partition: u32::MAX,
         start: 0,
         length: 0,
@@ -107,6 +109,7 @@ fn parse_args() -> Result<Args> {
             "--gid" => a.gid = val()?.parse()?,
             "--read-only" => a.read_only = true,
             "--disk-bytes" => a.disk_bytes = val()?.parse()?,
+            "--block-size" => a.block_size = val()?.parse()?,
             "--partition" => a.partition = val()?.parse()?,
             "--start" => a.start = val()?.parse()?,
             "--length" => a.length = val()?.parse()?,
@@ -123,6 +126,7 @@ fn parse_args() -> Result<Args> {
         }
     }
     ensure!(a.disk_bytes > 0 && a.disk_bytes % 512 == 0, "--disk-bytes must be a positive multiple of 512");
+    ensure!(a.block_size == 512 || a.block_size == 4096, "--block-size must be 512 or 4096");
     match a.mode {
         Mode::Probe => {}
         Mode::Serve => ensure!(
@@ -134,17 +138,61 @@ fn parse_args() -> Result<Args> {
     Ok(a)
 }
 
-/// fsvmd holds no capabilities: init starts the service as the system user without any, and every fsvmd it starts
-/// inherits that.
+/// fsvmd holds no capabilities: init starts the service as the system user without any (fsvmd.rc `capabilities`
+/// drops the bounding set too), and every fsvmd it starts inherits that. A service definition that keeps any is
+/// refused here.
 fn check_no_capabilities() -> Result<()> {
     let status = std::fs::read_to_string("/proc/self/status")?;
+    let mut seen = 0;
     for line in status.lines() {
-        if let Some(v) = line.strip_prefix("CapEff:") {
-            ensure!(u64::from_str_radix(v.trim(), 16)? == 0, "running with capabilities, refusing");
-            return Ok(());
+        for set in ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"] {
+            if let Some(v) = line.strip_prefix(set) {
+                ensure!(u64::from_str_radix(v.trim(), 16)? == 0, "running with capabilities ({set}), refusing");
+                seen += 1;
+            }
         }
     }
-    bail!("no CapEff in /proc/self/status")
+    ensure!(seen == 5, "capability sets missing from /proc/self/status");
+    Ok(())
+}
+
+/// The write end of the pipe SIGTERM wakes the closing thread through (watch_sigterm).
+static TERM_PIPE: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    let fd = TERM_PIPE.load(Ordering::Relaxed);
+    if fd >= 0 {
+        // SAFETY: write is async-signal-safe, on a pipe this process created and never closes.
+        unsafe { libc::write(fd, b"T".as_ptr().cast(), 1) };
+    }
+}
+
+/// vold's stop of a fsvmd that did not end on its own after its FUSE mount went: the volume is written back and
+/// unmounted in the VM if that is still possible in the time vold gives, then fsvmd exits and the VM stops.
+fn watch_sigterm(closer: fs::Closer) -> Result<()> {
+    let mut p = [0; 2];
+    // SAFETY: pipe2 writes two new descriptors into `p`.
+    ensure!(unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } == 0, "pipe2");
+    // SAFETY: p[0] is a new descriptor that nothing else owns.
+    let mut rd = unsafe { File::from_raw_fd(p[0]) };
+    TERM_PIPE.store(p[1], Ordering::Relaxed);
+    // SAFETY: a zeroed sigaction with only the handler set, for SIGTERM. Handlers reset to the default on exec, so
+    // the VM manager fsvmd starts is not affected.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa.sa_mask);
+        ensure!(libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut()) == 0, "sigaction");
+    }
+    std::thread::spawn(move || {
+        let mut b = [0u8; 1];
+        let _ = rd.read(&mut b);
+        warn!("stopped by vold: writing back before the VM stops");
+        closer.close(Duration::from_millis(300), Duration::from_millis(1500));
+        std::process::exit(0);
+    });
+    Ok(())
 }
 
 /// Takes ownership of an inherited descriptor and marks it close-on-exec, so that the VM manager fsvmd starts gets
@@ -173,6 +221,10 @@ type VmClient = Client<StreamTransport<UnixStream>>;
 /// fsvmd finishes within these, whatever the VM does.
 const PROBE_BUDGET: Duration = Duration::from_secs(20);
 const SERVE_BUDGET: Duration = Duration::from_secs(30);
+/// The orderly stop after vold unmounted the volume: a call still running gets this long to end, then the VM gets
+/// CLOSE_BUDGET to write back and unmount. vold waits 12 s for fsvmd to end on its own (fs/Fsvm.cpp kSyncMs).
+const CLOSE_LOCK_WAIT: Duration = Duration::from_secs(2);
+const CLOSE_BUDGET: Duration = Duration::from_secs(9);
 /// At most this long for a writable mount's filesystem check, within the budget.
 const CHECK_MAX: Duration = Duration::from_secs(14);
 /// Kept for the mount itself and the first free-space count.
@@ -219,7 +271,7 @@ fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     let deadline = Instant::now() + PROBE_BUDGET;
     let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB, deadline)?;
     client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
-    let l = client.layout(args.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
+    let l = client.layout(args.disk_bytes, args.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
     drop(vm);
     if l.dropped_labels > 0 {
         warn!("{} volume labels refused", l.dropped_labels);
@@ -236,6 +288,7 @@ struct Served {
     read_only: bool,
     memory: u32,
     disk_bytes: u64,
+    block_size: u32,
     partition: u32,
     start: u64,
     length: u64,
@@ -253,7 +306,7 @@ impl Served {
         info!("volume {}: starting the filesystem VM with {} MiB", self.volume, self.memory);
         let (vm, mut client) = start_vm(&self.disk, !self.read_only, self.memory, deadline)?;
         client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
-        let l = client.layout(self.disk_bytes).map_err(|e| anyhow!("layout: {e:?}"))?;
+        let l = client.layout(self.disk_bytes, self.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
         let part = if self.obb {
             ensure!(l.table == Table::None && l.parts.len() == 1, "an OBB must be one filesystem without a partition table");
             l.parts[0].clone()
@@ -305,6 +358,7 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
         read_only: args.read_only || obb,
         memory: if obb { layout::MIN_SERVE_MIB } else { layout::serve_memory_mib(args.fs, args.meta_bytes) },
         disk_bytes: args.disk_bytes,
+        block_size: args.block_size,
         partition: args.partition,
         start: args.start,
         length: args.length,
@@ -315,6 +369,9 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     let (client, hello) = served.bring_up(SERVE_BUDGET)?;
     let read_only = served.read_only || hello.read_only;
     info!("volume {}: VM serves filesystem kind {}, read-only {}", args.volume, hello.fs_kind, read_only);
+    if hello.was_dirty {
+        warn!("volume {}: the filesystem was not cleanly unmounted before (the VM checked it)", args.volume);
+    }
 
     pipe.write_all(b"R").context("telling vold")?;
     drop(pipe);
@@ -322,16 +379,18 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     let filesystem = fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, Box::new(served));
     let mut config = fuse::FuseConfig::new();
     config.dev_fuse(fuse_dev).max_read(MAX_IO).max_write(MAX_IO).num_threads(1);
+    let closer = filesystem.closer();
+    watch_sigterm(filesystem.closer())?;
     let r = config.enter_message_loop(filesystem);
     info!("volume {}: FUSE loop ended: {r:?}", args.volume);
+    // vold unmounted the volume. Everything is written back and the filesystem unmounted in the VM (marked clean)
+    // before the VM stops with this process. vold waits for this (fs/Fsvm.cpp Stop).
+    closer.close(CLOSE_LOCK_WAIT, CLOSE_BUDGET);
     Ok(())
 }
 
 fn run() -> Result<()> {
     check_no_capabilities()?;
-    if std::env::args().nth(1).as_deref() == Some("--launcher") {
-        return launcher::run();
-    }
     let args = parse_args()?;
     let disk = inherited(DISK_FD)?;
     let pipe = inherited(PIPE_FD)?;

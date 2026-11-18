@@ -23,6 +23,9 @@
  *
  * Static, single threaded, PID 1. It never returns.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* syncfs and accept4 with glibc, for the host compile check (bionic has them anyway) */
+#endif
 #include "proto.h"
 #include "table.h"
 
@@ -56,8 +59,10 @@
 
 static uint32_t fs_kind; /* 0 until MOUNT succeeded */
 static int read_only;
+static int was_dirty; /* the mounted filesystem was marked dirty before this VM mounted it */
 static uint32_t mounted_index;
 static uint64_t mounted_start, mounted_length;
+static char mounted_dev[32];
 static uint64_t disk_sectors;
 static int layout_state; /* 0 not read, 1 read, negative errno */
 static struct fsvm_layout layout;
@@ -135,6 +140,13 @@ static void hash_rebuild(void)
 			slot_insert(n);
 }
 
+/* After a slot's path changed or went: rebuilds the hash when deleted marks piled up. */
+static void hash_maybe_rebuild(void)
+{
+	if (hash_deleted > HASH_SIZE / 4)
+		hash_rebuild();
+}
+
 static void slot_remove(uint32_t slot)
 {
 	uint32_t i = hash_str(node_path[slot]) & (HASH_SIZE - 1);
@@ -143,8 +155,7 @@ static void slot_remove(uint32_t slot)
 			return;
 		if (hash_slot[i] == slot) {
 			hash_slot[i] = UINT32_MAX;
-			if (++hash_deleted > HASH_SIZE / 4)
-				hash_rebuild();
+			hash_deleted++;
 			return;
 		}
 	}
@@ -161,6 +172,7 @@ static void slot_free(uint32_t slot)
 	node_path[slot] = NULL;
 	node_used[slot] = 0;
 	node_gen[slot]++;
+	hash_maybe_rebuild();
 }
 
 /* Takes back the least recently used slot (second chance). */
@@ -268,6 +280,7 @@ static void node_rename(const char *from, const char *to)
 		free(p);
 		node_path[n] = moved;
 		slot_insert(n);
+		hash_maybe_rebuild();
 	}
 }
 
@@ -480,6 +493,12 @@ static int do_write(int s, const struct fsvm_req *q, const char *rel, const uint
 
 static int read_layout(void);
 static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro, uint32_t check_ms);
+static int do_unmount(void);
+
+static uint32_t hello_flags(void)
+{
+	return (read_only ? 1u : 0u) | (was_dirty ? 2u : 0u);
+}
 
 static int handle(int s, struct fsvm_req *q, const char *name, const char *name2, const uint8_t *data)
 {
@@ -489,9 +508,11 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 
 	switch (q->op) {
 	case FSVM_HELLO: {
-		struct fsvm_hello h = { FSVM_VERSION, fs_kind, read_only ? 1u : 0u, 0, 1 };
+		struct fsvm_hello h = { FSVM_VERSION, fs_kind, hello_flags(), 0, 1 };
 		return reply(s, q->id, 0, &h, sizeof(h));
 	}
+	case FSVM_UNMOUNT:
+		return reply(s, q->id, do_unmount(), NULL, 0);
 	case FSVM_LAYOUT:
 		r = read_layout();
 		if (r)
@@ -503,7 +524,7 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		r = do_mount((uint32_t)q->arg, q->node, q->node2, q->flags & 1, q->len);
 		if (r)
 			return reply(s, q->id, r, NULL, 0);
-		struct fsvm_hello h = { FSVM_VERSION, fs_kind, read_only ? 1u : 0u, 0, 1 };
+		struct fsvm_hello h = { FSVM_VERSION, fs_kind, hello_flags(), 0, 1 };
 		return reply(s, q->id, 0, &h, sizeof(h));
 	}
 	default:
@@ -604,7 +625,7 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		int fd = open(p, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
 		if (fd < 0)
 			return reply(s, q->id, -errno, NULL, 0);
-		r = fsync(fd) ? -errno : 0;
+		r = ((q->flags & FSVM_FSYNC_DATA) ? fdatasync(fd) : fsync(fd)) ? -errno : 0;
 		close(fd);
 		return reply(s, q->id, r, NULL, 0);
 	}
@@ -710,7 +731,9 @@ static int try_mount(const char *dev, int want_ro)
 		{ "vfat", "utf8,shortname=mixed,errors=remount-ro", FSVM_FS_VFAT },
 		{ "exfat", "iocharset=utf8,errors=remount-ro", FSVM_FS_EXFAT },
 	};
-	unsigned long base = MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | (want_ro ? MS_RDONLY : 0);
+	/* MS_DIRSYNC as vold mounted cards (fs/Vfat.cpp, fs/Exfat.cpp): directory changes reach the card at once, so
+	 * a card pulled without eject keeps its directory structure. */
+	unsigned long base = MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | MS_DIRSYNC | (want_ro ? MS_RDONLY : 0);
 	for (unsigned i = 0; i < sizeof(fs) / sizeof(fs[0]); i++) {
 		if (!mount(dev, MNT, fs[i].type, base, fs[i].opts)) {
 			fs_kind = fs[i].kind;
@@ -779,22 +802,81 @@ static int exfat_dirty(const char *dev)
 }
 
 /*
+ * Whether a volume is marked dirty. exFAT: VolumeFlags. FAT has two marks: the state byte in the boot sector
+ * (offset 0x41 on FAT32, 0x25 on FAT12 and FAT16, bit 0), which Linux's driver sets while it has the volume mounted
+ * writable, and on FAT32 the clean-shutdown bit in the second FAT entry (0x08000000), which Windows and fsck_msdos
+ * use. Either one counts. Runs only while the volume is not mounted.
+ */
+static int volume_dirty(const char *dev, uint32_t kind)
+{
+	if (kind == FSVM_FS_EXFAT)
+		return exfat_dirty(dev);
+	uint8_t b[512], f[8];
+	int fd = open(dev, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	int r = 0;
+	if (pread(fd, b, sizeof(b), 0) == (ssize_t)sizeof(b)) {
+		int fat32 = !(b[22] | b[23]);
+		uint32_t bps = (uint32_t)(b[11] | b[12] << 8), reserved = (uint32_t)(b[14] | b[15] << 8);
+		r = b[fat32 ? 0x41 : 0x25] & 1;
+		/* The clean bit on FAT32 only: FAT12 has none, and telling FAT16 from FAT12 needs the cluster count. */
+		if (!r && fat32 && bps >= 512 && pread(fd, f, sizeof(f), (off_t)reserved * bps) == (ssize_t)sizeof(f)) {
+			uint32_t e1 = (uint32_t)f[4] | (uint32_t)f[5] << 8 | (uint32_t)f[6] << 16 | (uint32_t)f[7] << 24;
+			r = !(e1 & 0x08000000u);
+		}
+	}
+	close(fd);
+	return r;
+}
+
+/*
  * The filesystem check before a writable mount, here in the VM rather than on Android, with the tools vold used
  * (fsck_msdos and fsck.exfat, built static from the pinned tree). As on most systems it runs when the volume is
  * marked dirty: fsck_msdos -p checks only then, and fsck.exfat runs only when the exFAT dirty flag is set.
  * Returns 0 to mount as asked, 1 to mount read-only (the check did not finish), or a negative errno to refuse.
  */
+/*
+ * After a FAT check passed: clears the state byte Linux's driver set (fsck_msdos fixes the FAT's own clean bit, not
+ * this one). Linux keeps the byte set when it mounts a volume that already had it, so without this a card stopped
+ * once without an orderly unmount would get a full check on every mount. dosfstools' fsck clears it the same way.
+ */
+static void clear_fat_state(const char *dev)
+{
+	uint8_t b[512];
+	int fd = open(dev, O_RDWR | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	if (pread(fd, b, sizeof(b), 0) == (ssize_t)sizeof(b) && b[510] == 0x55 && b[511] == 0xAA) {
+		unsigned at = (b[22] | b[23]) ? 0x25 : 0x41;
+		if (b[at] & 1) {
+			uint8_t v = b[at] & (uint8_t)~1u;
+			if (pwrite(fd, &v, 1, at) != 1 || fsync(fd))
+				logline("clearing the FAT state byte", dev, errno);
+		}
+	}
+	close(fd);
+}
+
 static int check_volume(const char *dev, uint32_t kind, uint32_t budget_ms)
 {
 	if (!budget_ms)
 		return 0;
 	int64_t deadline = now_ms() + budget_ms;
 	if (kind == FSVM_FS_VFAT) {
-		char *argv[] = { "/bin/fsck_msdos", "-p", "-y", (char *)dev, NULL };
+		/* -f: fsck_msdos -p looks only at the FAT's clean bit, Linux marks the boot sector. A volume either marks as
+		 * dirty is checked fully. */
+		char *argv[] = { "/bin/fsck_msdos", "-p", "-y", (char *)dev, NULL, NULL };
+		if (volume_dirty(dev, kind)) {
+			argv[3] = "-f";
+			argv[4] = (char *)dev;
+		}
 		for (int pass = 1;; pass++) {
 			int r = run_checker(argv, deadline);
-			if (r == 0)
+			if (r == 0) {
+				clear_fat_state(dev);
 				return 0;
+			}
 			if (r == 4 && pass <= 3)
 				continue; /* modified, check again, as vold did */
 			if (r == -ETIMEDOUT || r == -ECHILD) {
@@ -857,6 +939,7 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 			return -EINVAL;
 		}
 	}
+	was_dirty = volume_dirty(dev, e->fs_kind);
 	if (!want_ro) {
 		r = check_volume(dev, e->fs_kind, check_ms);
 		if (r < 0)
@@ -872,13 +955,50 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	mounted_index = index;
 	mounted_start = start;
 	mounted_length = length;
+	snprintf(mounted_dev, sizeof(mounted_dev), "%s", dev);
 	struct statfs sf;
 	(void)statfs(MNT, &sf);
-	logline("mounted", dev, 0);
+	logline(was_dirty ? "mounted, it was not cleanly unmounted before" : "mounted", dev, 0);
 	return 0;
 }
 
-/* ---- Self test (host harness only, from the kernel command line) ---- */
+/*
+ * Before every orderly stop: writes everything back and unmounts, which marks the filesystem clean. Nothing is
+ * served afterwards. 0, or a negative errno when the filesystem could not be written back or unmounted (fsvmd then
+ * still stops the VM: it has nothing better).
+ */
+static int do_unmount(void)
+{
+	if (!fs_kind)
+		return 0;
+	int r = 0;
+	int d = open(MNT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (d < 0 || syncfs(d))
+		r = -EIO;
+	if (d >= 0)
+		close(d);
+	if (umount(MNT)) {
+		r = -errno;
+		logline("unmount", MNT, errno);
+		return r;
+	}
+	uint32_t kind = fs_kind;
+	fs_kind = 0;
+	/* The disk's own cache: crosvm writes the card on a flush. */
+	int b = open(mounted_dev, O_RDONLY | O_CLOEXEC);
+	if (b < 0 || fsync(b))
+		r = r ? r : -EIO;
+	if (b >= 0)
+		close(b);
+	if (!r && !read_only && volume_dirty(mounted_dev, kind))
+		r = -EIO;
+	logline(r ? "unmounted, not clean" : "unmounted, clean", mounted_dev, -r);
+	return r;
+}
+
+/* ---- Self test (host harness only: fsvm_guest_init_selftest, never in the VM's initramfs) ---- */
+
+#ifdef FSVM_SELFTEST
 
 /* The value of `fsvm.selftest=` on the kernel command line, or -1. pvmfw passes no such argument to a real VM. */
 static int selftest_arg(void)
@@ -919,7 +1039,8 @@ static void selftest(int want)
 	}
 	int64_t t0 = now_ms();
 	r = do_mount(pick->index, pick->start, pick->length, 0, 20000);
-	snprintf(line, sizeof(line), "%d after %lld ms, read-only %d", r, (long long)(now_ms() - t0), read_only);
+	snprintf(line, sizeof(line), "%d after %lld ms, read-only %d, was dirty %d", r, (long long)(now_ms() - t0),
+		 read_only, was_dirty);
 	logline("selftest mount", line, 0);
 	if (r) {
 		logline("selftest result", "mount failed", 0);
@@ -947,7 +1068,20 @@ static void selftest(int want)
 	snprintf(line, sizeof(line), "%s, %u entries, %llu free blocks", ok ? "ok" : "failed", entries,
 		 ok ? (unsigned long long)sf.f_bfree : 0ULL);
 	logline("selftest result", line, 0);
-	umount(MNT);
+	/* The orderly stop fsvmd asks for: written back, unmounted, clean. */
+	snprintf(line, sizeof(line), "%d", do_unmount());
+	logline("selftest unmount", line, 0);
+}
+#endif
+
+static void write_proc(const char *path, const char *value)
+{
+	int fd = open(path, O_WRONLY | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	if (write(fd, value, strlen(value)) < 0)
+		logline("setting", path, errno);
+	close(fd);
 }
 
 int main(void)
@@ -989,12 +1123,21 @@ int main(void)
 	}
 	disk_sectors = bytes / 512;
 
+	/*
+	 * Written data reaches the card within about two seconds (the kernel's default is 30), so a VM that is killed
+	 * without an orderly stop (fsvmd or its service killed, a broken session) loses at most that much.
+	 */
+	write_proc("/proc/sys/vm/dirty_expire_centisecs", "100");
+	write_proc("/proc/sys/vm/dirty_writeback_centisecs", "100");
+
+#ifdef FSVM_SELFTEST
 	int want = selftest_arg();
 	if (want >= 0) {
 		selftest(want);
 		sync();
 		reboot(RB_POWER_OFF);
 	}
+#endif
 
 	int ls = socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	struct sockaddr_vm a = { 0 };

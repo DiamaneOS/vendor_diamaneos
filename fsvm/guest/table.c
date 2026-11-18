@@ -20,12 +20,17 @@
  *
  * - A FAT or exFAT boot sector at sector 0: a filesystem on the whole disk, no table (checked first, as blkid does,
  *   because a FAT boot sector also ends in 55 AA).
- * - An MBR: the four primary entries. Types vold serves (06 07 0b 0c 0e) are reported. Extended partitions and
- *   the logical partitions in them are not.
+ * - An MBR: the four primary entries, and the logical partitions in one extended partition (05 0f 85), numbered
+ *   from 5 in chain order as Linux numbers them. Types vold serves (06 07 0b 0c 0e) are reported. The chain is
+ *   bounded: at most MAX_EBRS links, each one later on the disk than the last and inside the extended partition,
+ *   and every logical partition inside it too. Anything else refuses the whole table.
  * - A GPT (protective MBR type ee): the primary header and entries, or the backup when the primary fails its
  *   checksums. Only the types vold uses are reported: basic data, android_meta and android_expand.
  * - For each public partition: FAT or exFAT, its serial (the volume UUID), its label, and how much metadata its
  *   filesystem driver needs (one FAT, or the exFAT allocation bitmap).
+ *
+ * A read error is never "no filesystem": it fails the whole layout (-EIO), so Android shows the disk as not opened
+ * and never offers to format it. Only a boot sector that was read and matches nothing is reported as unknown.
  */
 #include "table.h"
 
@@ -37,6 +42,7 @@
 #define GPT_MAX_ENTRIES 128u
 #define GPT_ENTRY_SIZE 128u
 #define LABEL_SCAN_MAX (64u * 1024u)
+#define MAX_EBRS 32u
 
 static const uint8_t gpt_basic_data[16] = { 0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44,
 					    0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7 };
@@ -162,19 +168,22 @@ static int is_fat(const uint8_t *b)
 
 /*
  * Fills the filesystem fields of `e` from the partition at byte offset `off` with `bytes` bytes. Leaves fs_kind 0
- * when nothing is recognised.
+ * when the boot sector was read and nothing is recognised. Returns -EIO when the boot sector could not be read.
+ * A label that cannot be read is only left out.
  */
-static void probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, struct fsvm_layout_entry *e)
+static int probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, struct fsvm_layout_entry *e)
 {
 	uint8_t b[SECTOR];
-	if (bytes < SECTOR || rd(ctx, off, b, sizeof(b)))
-		return;
+	if (bytes < SECTOR)
+		return 0;
+	if (rd(ctx, off, b, sizeof(b)))
+		return -EIO;
 
 	if (is_exfat(b)) {
 		uint32_t heap = le32(b + 88), clusters = le32(b + 92), root = le32(b + 96);
 		unsigned bps_shift = b[108], spc_shift = b[109];
 		if (bps_shift < 9 || bps_shift > 12 || spc_shift > 25 - bps_shift)
-			return;
+			return 0;
 		e->fs_kind = FSVM_FS_EXFAT;
 		e->serial = le32(b + 100);
 		e->flags |= 1;
@@ -184,7 +193,7 @@ static void probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, s
 		uint64_t at = off + (((uint64_t)heap + (((uint64_t)root - 2) << spc_shift)) << bps_shift);
 		size_t want = cluster < LABEL_SCAN_MAX ? (size_t)cluster : LABEL_SCAN_MAX;
 		if (root < 2 || at + want > off + bytes || at < off || rd(ctx, at, scan, want))
-			return;
+			return 0;
 		for (size_t i = 0; i + 32 <= want; i += 32) {
 			uint8_t type = scan[i];
 			if (type == 0x00)
@@ -196,11 +205,11 @@ static void probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, s
 				break;
 			}
 		}
-		return;
+		return 0;
 	}
 
 	if (!is_fat(b))
-		return;
+		return 0;
 	uint32_t bps = le16(b + 11), spc = b[13], reserved = le16(b + 14), fats = b[16];
 	uint32_t root_entries = le16(b + 17), fat16 = le16(b + 22);
 	int is32 = fat16 == 0;
@@ -236,12 +245,13 @@ static void probe_fs(fsvm_read_fn rd, void *ctx, uint64_t off, uint64_t bytes, s
 				continue;
 			if ((d[11] & 0x18) == 0x08) {
 				fat_label(e, d);
-				return;
+				return 0;
 			}
 		}
 	}
 	if (ext[0] == 0x29 && memcmp(ext + 5, "NO NAME    ", 11))
 		fat_label(e, ext + 5);
+	return 0;
 }
 
 /* ---- Tables ---- */
@@ -314,10 +324,76 @@ static int read_gpt_at(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsign
 			return r;
 		memcpy(x->type_guid, p, 16);
 		memcpy(x->part_guid, p + 16, 16);
-		if (!memcmp(p, gpt_basic_data, 16))
-			probe_fs(rd, ctx, s * ss, (e - s + 1) * ss, x);
+		if (!memcmp(p, gpt_basic_data, 16)) {
+			r = probe_fs(rd, ctx, s * ss, (e - s + 1) * ss, x);
+			if (r)
+				return r;
+		}
 	}
 	return 0;
+}
+
+static int mbr_public(uint8_t type)
+{
+	return type == 0x06 || type == 0x07 || type == 0x0b || type == 0x0c || type == 0x0e;
+}
+
+static int mbr_extended(uint8_t type)
+{
+	return type == 0x05 || type == 0x0f || type == 0x85;
+}
+
+/*
+ * The logical partitions of the extended partition at LBAs [`xs`, `xs` + `xn`). Each EBR holds one logical
+ * partition (relative to the EBR) and the link to the next EBR (relative to the extended partition). Linux numbers
+ * every logical partition with a size from 5 in chain order, served types or not, and so does this.
+ */
+static int read_logical(fsvm_read_fn rd, void *ctx, unsigned ss, uint64_t f, uint64_t xs, uint64_t xn,
+			struct fsvm_layout *l)
+{
+	uint8_t b[SECTOR];
+	uint64_t ebr = xs;
+	uint32_t number = 5;
+	for (unsigned hop = 0;; hop++) {
+		if (hop >= MAX_EBRS)
+			return -E2BIG;
+		if (rd(ctx, ebr * ss, b, sizeof(b)))
+			return -EIO;
+		if (b[510] != 0x55 || b[511] != 0xAA)
+			return hop ? -EINVAL : 0; /* an empty extended partition */
+		const uint8_t *p = b + 446;
+		/* Only the first two entries are used. Anything in the last two is not a chain vold or Linux agree on. */
+		if (le32(p + 32 + 12) || le32(p + 48 + 12))
+			return -EINVAL;
+		const uint8_t *d = p, *link = p + 16;
+		if (mbr_extended(d[4]) || (le32(link + 12) && !mbr_extended(link[4])))
+			return -EINVAL;
+		uint64_t s = le32(d + 8), n = le32(d + 12);
+		if (n) {
+			/* Inside the extended partition, after its EBR. */
+			if (!s || ebr + s < ebr || ebr + s + n > xs + xn)
+				return -EINVAL;
+			if (mbr_public(d[4])) {
+				struct fsvm_layout_entry *e;
+				int r = add_entry(l, number, (ebr + s) * f, n * f, &e);
+				if (r)
+					return r;
+				e->mbr_type = d[4];
+				r = probe_fs(rd, ctx, (ebr + s) * ss, n * ss, e);
+				if (r)
+					return r;
+			}
+			number++;
+		}
+		uint64_t ls = le32(link + 8), ln = le32(link + 12);
+		if (!ln)
+			return 0;
+		/* The next EBR: later on the disk than this one (no loops), inside the extended partition. */
+		uint64_t next = xs + ls;
+		if (next <= ebr || next >= xs + xn || next + ln > xs + xn)
+			return -EINVAL;
+		ebr = next;
+	}
 }
 
 int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned sector_size,
@@ -338,7 +414,9 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned
 	if (is_exfat(b) || is_fat(b)) {
 		struct fsvm_layout_entry *e;
 		add_entry(l, 0, 0, disk_sectors, &e);
-		probe_fs(rd, ctx, 0, disk_sectors * SECTOR, e);
+		int r = probe_fs(rd, ctx, 0, disk_sectors * SECTOR, e);
+		if (r)
+			return r;
 		if (!e->fs_kind)
 			l->h.count = 0;
 		return 0;
@@ -362,11 +440,18 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned
 	}
 
 	l->h.table = FSVM_TABLE_MBR;
+	int extended = -1;
 	for (int i = 0; i < 4; i++) {
 		const uint8_t *q = p + 16 * i;
 		uint8_t type = q[4];
 		uint64_t s = le32(q + 8), n = le32(q + 12);
-		if (type != 0x06 && type != 0x07 && type != 0x0b && type != 0x0c && type != 0x0e)
+		if (mbr_extended(type) && n) {
+			if (extended >= 0 || !s || s + n > lbas)
+				return -EINVAL; /* one extended partition, inside the disk */
+			extended = i;
+			continue;
+		}
+		if (!mbr_public(type))
 			continue;
 		if (!n || !s || s + n > lbas)
 			return -EINVAL;
@@ -375,7 +460,13 @@ int fsvm_read_layout(fsvm_read_fn rd, void *ctx, uint64_t disk_sectors, unsigned
 		if (r)
 			return r;
 		e->mbr_type = type;
-		probe_fs(rd, ctx, s * ss, n * ss, e);
+		r = probe_fs(rd, ctx, s * ss, n * ss, e);
+		if (r)
+			return r;
+	}
+	if (extended >= 0) {
+		const uint8_t *q = p + 16 * extended;
+		return read_logical(rd, ctx, ss, f, le32(q + 8), le32(q + 12), l);
 	}
 	return 0;
 }
