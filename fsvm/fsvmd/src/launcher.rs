@@ -298,9 +298,10 @@ pub fn fits(kind: SlotKind, argv: &[CString]) -> Result<()> {
     let first = argv.get(1).map(|a| a.as_bytes()).unwrap_or_default();
     let ok = match kind {
         SlotKind::Any => true,
-        SlotKind::Probe => first == b"--probe",
+        // A format of a card's volume in its VM runs where probes run: one at a time, under vold's lock.
+        SlotKind::Probe => first == b"--probe" || first == b"--format",
         SlotKind::Obb => first == b"--obb",
-        SlotKind::Volume => first != b"--probe" && first != b"--obb",
+        SlotKind::Volume => first != b"--probe" && first != b"--obb" && first != b"--format",
     };
     ensure!(ok, "a {} request on a {kind:?} slot", String::from_utf8_lossy(first));
     Ok(())
@@ -717,6 +718,8 @@ mod tests {
         };
         assert!(fits(SlotKind::Probe, &argv(&["--probe"])).is_ok());
         assert!(fits(SlotKind::Probe, &argv(&["--volume", "x"])).is_err());
+        assert!(fits(SlotKind::Probe, &argv(&["--format", "exfat"])).is_ok());
+        assert!(fits(SlotKind::Volume, &argv(&["--format", "exfat"])).is_err());
         assert!(fits(SlotKind::Volume, &argv(&["--volume", "x"])).is_ok());
         assert!(fits(SlotKind::Volume, &argv(&["--probe"])).is_err());
         assert!(fits(SlotKind::Volume, &argv(&["--obb"])).is_err());

@@ -69,6 +69,8 @@ enum Mode {
     Probe,
     Serve,
     Obb,
+    /// Formats the volume in the VM (`--format vfat|exfat`), so that no mkfs runs on Android.
+    Format,
 }
 
 #[derive(Debug)]
@@ -105,6 +107,14 @@ fn parse_args() -> Result<Args> {
         let mut val = || it.next().with_context(|| arg.clone());
         match arg.as_str() {
             "--probe" => a.mode = Mode::Probe,
+            "--format" => {
+                a.mode = Mode::Format;
+                a.fs = match val()?.as_str() {
+                    "vfat" => FS_VFAT,
+                    "exfat" => FS_EXFAT,
+                    other => bail!("--format {other}"),
+                }
+            }
             "--obb" => a.mode = Mode::Obb,
             "--volume" => a.volume = val()?,
             "--gid" => a.gid = val()?.parse()?,
@@ -130,6 +140,7 @@ fn parse_args() -> Result<Args> {
     ensure!(a.block_size == 512 || a.block_size == 4096, "--block-size must be 512 or 4096");
     match a.mode {
         Mode::Probe => {}
+        Mode::Format => ensure!(a.fs == FS_VFAT || a.fs == FS_EXFAT, "--format needs vfat or exfat"),
         Mode::Serve => ensure!(
             !a.volume.is_empty() && a.gid != u32::MAX && a.partition != u32::MAX && a.length > 0 && a.fs != u32::MAX,
             "--volume, --gid, --partition, --start, --length and --fs are required"
@@ -283,6 +294,24 @@ fn start_vm(disk: &File, writable: bool, memory_mib: u32, deadline: Instant) -> 
         return Ok((vm, client));
     }
     Err(last)
+}
+
+/// vold waits 45 s for a format (fs/Fsvm.cpp Format) and holds its lock meanwhile, as it did for mkfs on Android.
+const FORMAT_BUDGET: Duration = Duration::from_secs(40);
+
+/// Formats the disk vold handed over (a partition's range, or a whole-disk volume) in a VM, writes `OK` to vold and
+/// stops the VM. vold then reads the new filesystem with a probe.
+fn format(args: &Args, disk: File, mut pipe: File) -> Result<()> {
+    ensure!(access_mode(&disk)? == libc::O_RDWR, "a format needs the disk writable");
+    let deadline = Instant::now() + FORMAT_BUDGET;
+    let (vm, mut client) = start_vm(&disk, true, layout::MIN_SERVE_MIB, deadline)?;
+    let budget = left(deadline)?.saturating_sub(Duration::from_secs(3));
+    client.format(args.fs, budget).map_err(|e| anyhow!("format: {e:?}"))?;
+    info!("formatted in the VM as {}", if args.fs == FS_EXFAT { "exfat" } else { "vfat" });
+    pipe.write_all(b"OK\n").context("telling vold")?;
+    drop(pipe);
+    vm.stop_and_wait(PROBE_VM_END);
+    Ok(())
 }
 
 fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
@@ -484,6 +513,7 @@ fn run() -> Result<()> {
     info!("seccomp filter on ({how} anything else)");
     match args.mode {
         Mode::Probe => probe(&args, disk, pipe),
+        Mode::Format => format(&args, disk, pipe),
         Mode::Serve | Mode::Obb => serve(&args, disk, pipe),
     }
 }

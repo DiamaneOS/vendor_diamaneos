@@ -197,10 +197,13 @@ genrule {
         ":fsvm_guest_init",
         ":fsvm_fsck_msdos",
         ":fsvm_fsck_exfat",
+        ":fsvm_newfs_msdos",
+        ":fsvm_mkfs_exfat",
     ],
     out: ["fsvm_initrd.img"],
     cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init) " +
-        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat)",
+        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat) " +
+        "newfs_msdos=$(location :fsvm_newfs_msdos) mkfs.exfat=$(location :fsvm_mkfs_exfat)",
 }
 
 // For the host harness only.
@@ -211,10 +214,13 @@ genrule {
         ":fsvm_guest_init_selftest",
         ":fsvm_fsck_msdos",
         ":fsvm_fsck_exfat",
+        ":fsvm_newfs_msdos",
+        ":fsvm_mkfs_exfat",
     ],
     out: ["fsvm_initrd_selftest.img"],
     cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init_selftest) " +
-        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat)",
+        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat) " +
+        "newfs_msdos=$(location :fsvm_newfs_msdos) mkfs.exfat=$(location :fsvm_mkfs_exfat)",
 }
 
 // The filesystem checks vold ran on Android (fsck_untrusted) now run in the VM, before a writable mount. Static
@@ -313,4 +319,52 @@ rust_test_host {
         "liblibc",
     ],
     test_suites: ["general-tests"],
+}
+
+// Formatting runs in the VM too (protocol FORMAT): no mkfs runs on Android for a card or USB drive. Static builds of
+// the pinned tree's own newfs_msdos and mkfs.exfat, with their projects' flags, as for the checkers above.
+license {
+    name: "fsvm_newfs_msdos_license",
+    license_kinds: ["SPDX-license-identifier-BSD"],
+    license_text: ["guest/fsck/NOTICE.newfs_msdos"],
+}
+
+cc_binary {
+    name: "fsvm_newfs_msdos",
+    licenses: ["fsvm_newfs_msdos_license"],
+    srcs: [
+        "guest/fsck/newfs_msdos_mkfs_msdos.c",
+        "guest/fsck/newfs_msdos_newfs_msdos.c",
+    ],
+    // As external/newfs_msdos builds newfs_msdos (its freebsd-compat.h is found through this).
+    include_dirs: ["external/newfs_msdos"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-function",
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+        "-D_FILE_OFFSET_BITS=64",
+        "-include external/newfs_msdos/freebsd-compat.h",
+    ],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fsvm_mkfs_exfat",
+    licenses: ["fsvm_fsck_exfat_license"],
+    srcs: [
+        "guest/fsck/mkfs_exfat_mkfs.c",
+        "guest/fsck/mkfs_exfat_upcase.c",
+    ],
+    // As external/exfatprogs builds mkfs.exfat.
+    defaults: ["exfatprogs-defaults"],
+    static_libs: ["libexfat"],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
 }

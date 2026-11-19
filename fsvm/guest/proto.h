@@ -58,6 +58,9 @@ enum {
 			    * struct fsvm_check. arg 1: the switch once it ended, len: milliseconds a repair may take.
 			    * Unmounts, repairs when needed, marks the volume clean and mounts it writable: 0, or an errno
 			    * and the volume stays read-only */
+	FSVM_FORMAT = 24,  /* arg: FSVM_FS_VFAT or FSVM_FS_EXFAT, len: milliseconds it may take. Formats the whole disk
+			    * (a partition's range, or a whole-disk volume) with the pinned tree's newfs_msdos or mkfs.exfat,
+			    * as vold did on Android. Only with nothing mounted. 0, or an errno */
 };
 /* FSVM_CHECK arg 0 states */
 enum {

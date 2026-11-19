@@ -118,6 +118,9 @@ pub enum Op {
     /// unmounts, repairs if needed, marks the volume clean and mounts it writable, or answers an errno and leaves it
     /// read-only.
     Check = 23,
+    /// Formats the VM's whole disk (`arg`: FS_VFAT or FS_EXFAT, `len`: milliseconds it may take) with the pinned
+    /// tree's newfs_msdos or mkfs.exfat, as vold did on Android. Only with nothing mounted.
+    Format = 24,
 }
 
 /// How the check after a mount goes (CHECK `arg` 0).

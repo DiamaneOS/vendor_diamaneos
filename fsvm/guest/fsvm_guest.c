@@ -646,6 +646,7 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 static int do_unmount(void);
 static int check_poll(struct fsvm_check *c);
 static int check_switch(uint32_t repair_ms);
+static int do_format(uint32_t kind, uint32_t budget_ms);
 
 /* Dirty plus Writeback from /proc/meminfo, in bytes: what this VM still has to write to its disk. */
 static uint64_t dirty_bytes(void)
@@ -703,6 +704,8 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 			return reply(s, q->id, r, NULL, 0);
 		return reply(s, q->id, 0, &c, sizeof(c));
 	}
+	case FSVM_FORMAT:
+		return reply(s, q->id, q->arg > UINT32_MAX ? -EINVAL : do_format((uint32_t)q->arg, q->len), NULL, 0);
 	case FSVM_LAYOUT:
 		r = read_layout();
 		if (r)
@@ -1142,6 +1145,28 @@ static int check_volume(const char *dev, uint32_t kind, uint32_t budget_ms)
 	return -EIO;
 }
 
+/*
+ * Formats the whole disk, as vold formatted a public volume on Android before (fs/Vfat.cpp, fs/Exfat.cpp, the same
+ * arguments): newfs_msdos -O android -A, or mkfs.exfat -n External. Afterwards the layout is read again from the
+ * disk, so that LAYOUT reports the new filesystem.
+ */
+static int do_format(uint32_t kind, uint32_t budget_ms)
+{
+	if (fs_kind || (kind != FSVM_FS_VFAT && kind != FSVM_FS_EXFAT) || !budget_ms)
+		return -EINVAL;
+	char *fat[] = { "/bin/newfs_msdos", "-O", "android", "-A", DISK, NULL };
+	char *exf[] = { "/bin/mkfs.exfat", "-n", "External", DISK, NULL };
+	int r = run_checker(kind == FSVM_FS_EXFAT ? exf : fat, now_ms() + budget_ms);
+	int b = open(DISK, O_RDONLY | O_CLOEXEC);
+	if (b < 0 || fsync(b))
+		r = r ? r : -EIO;
+	if (b >= 0)
+		close(b);
+	layout_state = 0;
+	logline(r ? "format failed" : "formatted", kind == FSVM_FS_EXFAT ? "exfat" : "vfat", r < 0 ? -r : 0);
+	return r == 0 ? 0 : (r == -ETIMEDOUT ? -ETIMEDOUT : -EIO);
+}
+
 /* ---- The check after the mount (FSVM_CHECK) ----
  *
  * A writable mount of a volume marked dirty is read-only at once. The check runs here while the volume is served
@@ -1535,6 +1560,19 @@ static int selftest_arg(void)
 static void selftest(int want)
 {
 	char line[160];
+	/* fsvm.format=1 or 2: format the disk in the VM first (FAT32 or exFAT), as FSVM_FORMAT does for vold. */
+	char fcmd[1024] = "";
+	int ffd = open("/proc/cmdline", O_RDONLY | O_CLOEXEC);
+	if (ffd >= 0) {
+		ssize_t n = read(ffd, fcmd, sizeof(fcmd) - 1);
+		fcmd[n > 0 ? n : 0] = 0;
+		close(ffd);
+	}
+	const char *fmt = strstr(fcmd, "fsvm.format=");
+	if (fmt) {
+		snprintf(line, sizeof(line), "%d", do_format((uint32_t)atoi(fmt + 12), 60000));
+		logline("selftest format", line, 0);
+	}
 	int r = read_layout();
 	snprintf(line, sizeof(line), "%d table %u count %u", r, layout.h.table, layout.h.count);
 	logline("selftest layout", line, 0);

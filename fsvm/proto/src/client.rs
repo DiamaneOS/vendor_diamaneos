@@ -286,6 +286,14 @@ impl<T: Transport> Client<T> {
         }
     }
 
+    /// Formats the VM's whole disk as `fs` (FS_VFAT or FS_EXFAT) within `budget`.
+    pub fn format(&mut self, fs: u32, budget: Duration) -> CallResult<()> {
+        let ms = budget.as_millis().min(u32::MAX as u128) as u32;
+        let p = self.call(Request { arg: fs as u64, len: ms, ..Default::default() }, Op::Format, 0, budget + Duration::from_secs(2))?;
+        debug_assert!(p.is_empty());
+        Ok(())
+    }
+
     /// Starts the check after the mount, or tells how it goes and how long it ran.
     pub fn check_poll(&mut self) -> CallResult<(CheckState, Duration)> {
         let budget = self.deadlines.meta;
