@@ -31,3 +31,8 @@ neverallow decode_service_app port_type:tcp_socket name_connect;
 # Only the decode service enters its VM manager's domain, by running the VM manager.
 neverallow { domain -decode_service_app } decode_service_app_virtualizationmanager:process transition;
 neverallow domain decode_service_app_virtualizationmanager:process dyntransition;
+
+# The decode service's VM takes its RAM from the boot pool (device gunyah_vm_pool.te declares the attributes and
+# gives the node to their members). Without this its VM gets scattered memory and crosvm refuses to start it.
+typeattribute decode_service_app_virtualizationmanager gunyah_vm_pool_client;
+typeattribute decode_service_app_virtmgr_crosvm gunyah_vm_pool_crosvm;
