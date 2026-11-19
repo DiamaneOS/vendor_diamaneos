@@ -165,7 +165,7 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
     let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
     std::thread::spawn(move || FakeVm::new().serve(vm_end));
     let client = Client::new(StreamTransport(our_end), Deadlines::default());
-    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, false, 0, false, false, Box::new(NoRestart));
+    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, false, false, 0, false, false, Box::new(NoRestart));
     let (done_tx, done_rx) = mpsc::channel();
     let trace = std::env::args().any(|a| a == "--trace");
     // The listener goes over an atomic, not a channel: with an empty list (--trace) every system call of the FUSE
@@ -218,6 +218,85 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
     }
     check(seen.is_empty(), &format!("calls outside fsvmd's seccomp list: {}", names.join(", ")))?;
     println!("fsvmd_fuse_test: the FUSE thread kept to fsvmd's seccomp list");
+    checked(mnt, &target, false)?;
+    println!("fsvmd_fuse_test: a dirty volume: read-only while checked, writable after the switch, vold told W");
+    checked(mnt, &target, true)?;
+    println!("fsvmd_fuse_test: the switch's answer lost: the new VM's clean mount makes the volume writable, vold told W");
+    Ok(())
+}
+
+/// Mounts FUSE at `target` with vold's options, as `mounted` does.
+fn fuse_mount(target: &CString) -> Result<std::fs::File, String> {
+    use std::os::fd::AsRawFd;
+    let dev = std::fs::OpenOptions::new().read(true).write(true).open("/dev/fuse").map_err(|e| format!("/dev/fuse: {e}"))?;
+    let opts = CString::new(format!(
+        "fd={},rootmode=40000,default_permissions,allow_other,user_id=0,group_id=0,max_read=131072",
+        dev.as_raw_fd()
+    ))
+    .unwrap();
+    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOATIME;
+    // SAFETY: plain system call on valid strings.
+    if unsafe { libc::mount(c"/dev/fuse".as_ptr(), target.as_ptr(), c"fuse".as_ptr(), flags, opts.as_ptr().cast()) } != 0 {
+        return Err(format!("mounting FUSE: {}", std::io::Error::last_os_error()));
+    }
+    Ok(dev)
+}
+
+/// A new VM after a broken session: an honest one that mounted the volume clean and writable.
+struct CleanRestart;
+
+impl fs::Session for CleanRestart {
+    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+        let (vm_end, our_end) = UnixStream::pair()?;
+        std::thread::spawn(move || FakeVm::new().serve(vm_end));
+        let hello = fsvm_proto::Hello {
+            fs_kind: fsvm_proto::FS_VFAT,
+            read_only: false,
+            was_dirty: false,
+            check_pending: false,
+            root: ROOT_GUEST,
+        };
+        Ok((Client::new(StreamTransport(our_end), Deadlines::default()), hello))
+    }
+    fn stop_vm(&mut self, _within: Duration) {}
+}
+
+/// The check after the mount (fs::FsvmFs::spawn_checker) for a volume the VM found dirty: writes are refused while it
+/// runs, vold hears W once the switch made it writable, and writes work then. `lose_switch`: the VM goes away during
+/// the switch (its answer lost, as when it is killed after marking the volume clean), and the new VM's clean mount
+/// must make the volume writable (review M5 of 2026-11-19: the read-only flag was a latch).
+fn checked(mnt: &std::path::Path, target: &CString, lose_switch: bool) -> Result<(), String> {
+    let dev = fuse_mount(target)?;
+    let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::new();
+    vm.check = Some(CheckPlan { polls: 0, lose_switch });
+    std::thread::spawn(move || vm.serve(vm_end));
+    let client = Client::new(StreamTransport(our_end), Deadlines::default());
+    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, false, true, 0, false, true, Box::new(CleanRestart));
+    let (told_tx, told_rx) = mpsc::channel::<u8>();
+    let told_tx = std::sync::Mutex::new(told_tx);
+    filesystem.spawn_checker(Box::new(move |what: u8| {
+        let _ = told_tx.lock().unwrap().send(what);
+    }));
+    let closer = filesystem.closer();
+    let (end_tx, end_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = end_tx.send(format!("{:?}", fs::serve_fuse(dev, filesystem)));
+    });
+    let file = mnt.join("checked.txt");
+    let early = std::fs::write(&file, b"too early");
+    check(early.as_ref().err().and_then(|e| e.raw_os_error()) == Some(libc::EROFS), &format!("a write while checking: {early:?}"))?;
+    let told = told_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "vold was told nothing within 10 s")?;
+    check(told == b'W', &format!("vold was told {:?}, not W", told as char))?;
+    std::fs::write(&file, b"after the check").map_err(|e| format!("a write after the switch: {e}"))?;
+    check(std::fs::read(&file).map_err(|e| e.to_string())? == b"after the check", "read back after the switch")?;
+    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+    // SAFETY: plain system call on a valid string.
+    check(unsafe { libc::umount2(target.as_ptr(), 0) } == 0, "unmount after the check")?;
+    end_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "the FUSE loop did not end after the unmount")?;
+    check(closer.close(Duration::from_secs(1), Duration::from_secs(5)) == fs::Closed::Clean, "orderly stop")?;
+    // Nothing more for vold, and the Checker went with the volume.
+    check(told_rx.recv_timeout(Duration::from_millis(1500)).is_err(), "vold was told more after the stop")?;
     Ok(())
 }
 
@@ -393,7 +472,18 @@ struct FakeVm {
     nodes: HashMap<u64, FakeNode>,
     handles: HashMap<u64, u64>,
     next: u64,
+    /// A volume mounted read-only with a check pending (CHECK): the check runs one poll, then passes.
+    check: Option<CheckPlan>,
 }
+
+struct CheckPlan {
+    polls: u32,
+    /// The VM goes away at the switch, without an answer.
+    lose_switch: bool,
+}
+
+/// handle()'s answer for "end the session here".
+const GONE: i32 = -1;
 
 struct FakeNode {
     kind: Kind,
@@ -413,7 +503,7 @@ impl FakeVm {
     fn new() -> Self {
         let mut nodes = HashMap::new();
         nodes.insert(ROOT_GUEST, FakeNode { kind: Kind::Dir, parent: ROOT_GUEST, name: Vec::new(), data: Vec::new() });
-        FakeVm { nodes, handles: HashMap::new(), next: 100 }
+        FakeVm { nodes, handles: HashMap::new(), next: 100, check: None }
     }
 
     fn attr(&self, id: u64) -> Vec<u8> {
@@ -443,6 +533,9 @@ impl FakeVm {
             }
             let target = if node2 != 0 && matches!(op, 3 | 5 | 6 | 15) { self.handles.get(&node2).copied().unwrap_or(0) } else { node };
             let r = self.handle(op, flags, target, node2, arg, len, &name, &name2, &data);
+            if r == Err(GONE) {
+                return;
+            }
             let (status, payload) = match r {
                 Ok(p) => (0i32, p),
                 Err(e) => (-e, Vec::new()),
@@ -576,6 +669,22 @@ impl FakeVm {
             }
             22 => {
                 self.handles.remove(&node2);
+                Ok(Vec::new())
+            }
+            // CHECK: poll (arg 0) or switch (arg 1). Writes are refused while it is pending.
+            23 => {
+                let plan = self.check.as_mut().ok_or(libc::EINVAL)?;
+                if arg == 0 {
+                    plan.polls += 1;
+                    let state: u32 = if plan.polls > 1 { 1 } else { 0 };
+                    let mut p = state.to_le_bytes().to_vec();
+                    p.extend_from_slice(&(plan.polls * 1000).to_le_bytes());
+                    return Ok(p);
+                }
+                if plan.lose_switch {
+                    return Err(GONE);
+                }
+                self.check = None;
                 Ok(Vec::new())
             }
             _ => Err(libc::EINVAL),

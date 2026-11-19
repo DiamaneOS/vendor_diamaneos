@@ -8,6 +8,7 @@ type fsvmd_obb_tmpfs, file_type;
 # The fsvmd service starts it for vold (fsvmd/src/launcher.rs), and only the service.
 domain_auto_trans(fsvmd_launcher, fsvmd_obb_exec, fsvmd_obb)
 allow fsvmd_launcher fsvmd_obb:process { signal sigkill };
+allow fsvmd_launcher { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm }:process sigkill;
 allow fsvmd_obb fsvmd_launcher:process sigchld;
 allow fsvmd_obb fsvmd_launcher:fd use;
 neverallow { domain -fsvmd_launcher } fsvmd_obb:process transition;
@@ -29,6 +30,8 @@ tmpfs_domain(fsvmd_obb)
 virtualizationservice_use(fsvmd_obb)
 # The same client as fsvmd: its timeouts on the vsock socket its VM manager made.
 allow fsvmd_obb fsvmd_obb_virtualizationmanager:vsock_socket setopt;
+allow fsvmd_obb fsvmd_obb_virtualizationmanager:dir search;
+allow fsvmd_obb fsvmd_obb_virtualizationmanager:file { open read };
 allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } fsvmd_obb_tmpfs:file { read write getattr };
 allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } vold:fd use;
 allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } { media_rw_data_file fuse }:file { read getattr };

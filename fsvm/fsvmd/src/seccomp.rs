@@ -19,16 +19,19 @@
 //! - make the system calls in `ALLOWED`: what serving FUSE, talking to the VM over vsock and to its VM manager over
 //!   RPC binder, logging and the allocator need. fsvmd starts no program after this (no execve, no fork: clone only
 //!   with CLONE_THREAD) and opens no socket but a Unix one (liblog's).
-//! - signal itself and nothing else: kill, tgkill, rt_sigqueueinfo and rt_tgsigqueueinfo only with its own pid,
-//!   pidfd_send_signal only through a pidfd it holds (pidfd_open and pidfd_getfd are refused, so it holds none but
-//!   those of its own children), tkill never. One exception, its own child's: kill of the VM manager's process group,
-//!   which vmclient sends when the VM manager ended, so that its crosvm goes too. Signals to anything else are
-//!   refused with EPERM on every build.
+//! - signal itself: kill, tgkill, rt_sigqueueinfo and rt_tgsigqueueinfo only with its own pid, tkill never. One
+//!   exception, its own child's: kill of the VM manager's process group, which vmclient sends when the VM manager
+//!   ended, so that its crosvm goes too. pidfd_open and pidfd_getfd are refused. pidfd_send_signal is allowed: the
+//!   filter cannot see what a descriptor names, and an open /proc/<pid> directory works as a pidfd too. That other
+//!   processes stay out of reach is not the filter's doing but the slot's own user (DAC), /proc's hidepid and
+//!   SELinux (fsvmd.te), so nothing should rely on the filter for it.
 //! - use ioctl only for the descriptor flags and FIONREAD.
 //!
-//! Anything else: the process is killed on user builds (fail closed: vold sees fsvmd end and reports the card as not
-//! opened), and logged (audit type 1326) and allowed on debuggable builds, so that a phone run collects what is
-//! missing (scripts/p3-phone.sh reads the log).
+//! Anything else is logged (audit type 1326) and allowed, on every build for now (KILL_ON_USER_BUILDS): the list
+//! was traced on a glibc host, and a call it misses would make every card "could not be opened" on a user build.
+//! scripts/p3-phone.sh seccomp-gate runs the whole card matrix on a phone and fails on any such line. Once that run
+//! is clean on record, KILL_ON_USER_BUILDS goes to true and user builds kill the process instead (fail closed: vold
+//! sees fsvmd end and reports the card as not opened). Debuggable builds always log.
 //!
 //! Where the list comes from: the FUSE and protocol path was traced on the host (fsvmd/tests/fuse_host.rs runs the
 //! real FsvmFs on a real FUSE mount with this filter, unknown calls reported to a supervisor through
@@ -269,10 +272,17 @@ pub fn install(filter: &[Insn], flags: libc::c_uint) -> Result<libc::c_long> {
     // SAFETY: seccomp reads the program, which stays valid for the call. The kernel copies it.
     let r = unsafe { libc::syscall(libc::SYS_seccomp, SECCOMP_SET_MODE_FILTER, flags, &prog as *const Prog) };
     ensure!(r >= 0, "seccomp: {}", std::io::Error::last_os_error());
+    // With TSYNC a positive result is the id of a thread that could not take the filter, and then no thread has it.
+    ensure!(flags & SECCOMP_FILTER_FLAG_TSYNC == 0 || r == 0, "seccomp: thread {r} could not take the filter");
     Ok(r)
 }
 
-/// Whether this is a debuggable build (ro.debuggable=1): the filter then logs instead of killing.
+/// Whether user builds kill on a call outside the list. false until scripts/p3-phone.sh seccomp-gate passed on a
+/// phone with the whole matrix and zero audit type 1326 lines for fsvmd (review H1 of 2026-11-19). The switch is
+/// this one line, in its own commit, with the clean run's log named in the message.
+pub const KILL_ON_USER_BUILDS: bool = false;
+
+/// Whether this is a debuggable build (ro.debuggable=1): the filter then always logs instead of killing.
 #[cfg(target_os = "android")]
 pub fn debuggable() -> bool {
     let mut v = [0u8; 92]; // PROP_VALUE_MAX
@@ -286,27 +296,46 @@ pub fn debuggable() -> bool {
     true
 }
 
-/// The children of this process (its VM manager), from /proc.
+/// The parent pid in the text of /proc/<pid>/stat: the fourth field, after the name in parentheses (which may itself
+/// hold spaces and parentheses, so the last ")" ends it).
+pub fn parent_in_stat(stat: &str) -> Option<u32> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The children of this process (its VM manager), from the parent ids in /proc/<pid>/stat. The phone kernel has no
+/// CONFIG_PROC_CHILDREN, so /proc/self/task/*/children does not exist there. /proc shows fsvmd only the processes
+/// of its slot's own user (hidepid), and the service that started it (the parent) is skipped.
 fn own_children() -> Vec<u32> {
+    let me = std::process::id();
+    // SAFETY: getppid cannot fail.
+    let parent = unsafe { libc::getppid() } as u32;
     let mut out = Vec::new();
-    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
-        for t in tasks.flatten() {
-            if let Ok(c) = std::fs::read_to_string(t.path().join("children")) {
-                out.extend(c.split_whitespace().filter_map(|p| p.parse::<u32>().ok()));
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for e in entries.flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+            if pid == me || pid == parent {
+                continue;
+            }
+            if let Ok(stat) = std::fs::read_to_string(e.path().join("stat")) {
+                if parent_in_stat(&stat) == Some(me) {
+                    out.push(pid);
+                }
             }
         }
     }
     out
 }
 
-/// fsvmd's own filter: kill on user builds, log on debuggable builds, on every thread. Its VM manager runs already.
+/// fsvmd's own filter, on every thread: log on debuggable builds, and on user builds too until KILL_ON_USER_BUILDS.
+/// Its VM manager runs already and is its one child.
 pub fn install_for_fsvmd() -> Result<&'static str> {
-    let debuggable = debuggable();
-    let default = if debuggable { RET_LOG } else { RET_KILL_PROCESS };
+    let kill = KILL_ON_USER_BUILDS && !debuggable();
+    let default = if kill { RET_KILL_PROCESS } else { RET_LOG };
     let children = own_children();
-    ensure!(children.len() <= 4, "{} children before the filter", children.len());
+    ensure!(!children.is_empty() && children.len() <= 4, "{} children before the filter", children.len());
     install(&build(std::process::id(), &children, default), SECCOMP_FILTER_FLAG_TSYNC)?;
-    Ok(if debuggable { "logging" } else { "killing" })
+    Ok(if kill { "killing" } else { "logging" })
 }
 
 #[cfg(test)]
@@ -335,6 +364,25 @@ mod tests {
                 c => panic!("code {c:#x}"),
             }
         }
+    }
+
+    #[test]
+    fn parent_ids_from_stat() {
+        assert_eq!(parent_in_stat("812 (virtmgr_fsvmd) S 790 812 0 0 -1 4194560 0"), Some(790));
+        // A name with spaces and parentheses of its own.
+        assert_eq!(parent_in_stat("9 (a) b (c) d) R 4 9 0"), Some(4));
+        assert_eq!(parent_in_stat("9 (x"), None);
+        assert_eq!(parent_in_stat(""), None);
+    }
+
+    /// The lookup the filter's group exception relies on, against a real child.
+    #[test]
+    fn finds_its_own_child() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let found = own_children();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(found.contains(&child.id()), "{found:?} lacks {}", child.id());
     }
 
     #[test]

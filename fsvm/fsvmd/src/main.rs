@@ -432,7 +432,8 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
         vm: None,
     };
     let (client, hello) = served.bring_up(SERVE_BUDGET)?;
-    let read_only = served.read_only || hello.read_only;
+    let asked_read_only = served.read_only;
+    let read_only = asked_read_only || hello.read_only;
     info!("volume {}: VM serves filesystem kind {}, read-only {}", args.volume, hello.fs_kind, read_only);
     if hello.was_dirty {
         warn!("volume {}: the filesystem was not cleanly unmounted before (the VM checks it)", args.volume);
@@ -440,7 +441,8 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
 
     // R: served as asked. c: asked writable, served read-only while the VM checks it, then W (writable now) or F (it
     // stays read-only) follow on the same pipe. r: asked writable and served read-only by the VM (a write-protected
-    // card, or its driver found an error). vold reports r and F as mounted read-only.
+    // card, or its driver found an error). Later, c again when a new VM after a broken session checks the volume
+    // again. vold reports r, c and F as mounted read-only.
     let ready: &[u8] = if hello.check_pending {
         b"c"
     } else if read_only && !served.read_only {
@@ -454,12 +456,12 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     }
 
     let filesystem =
-        fs::FsvmFs::new(client, hello.root, read_only, args.gid, obb, hello.check_pending, Box::new(served));
+        fs::FsvmFs::new(client, hello.root, asked_read_only, read_only, args.gid, obb, hello.check_pending, Box::new(served));
     if !obb {
         // The pipe stays open for the check's end (also for a check a new VM starts after a broken session).
         let pipe = std::sync::Mutex::new(pipe);
-        filesystem.spawn_checker(Box::new(move |writable| {
-            let _ = pipe.lock().map(|mut p| p.write_all(if writable { b"W" } else { b"F" }));
+        filesystem.spawn_checker(Box::new(move |what: u8| {
+            let _ = pipe.lock().map(|mut p| p.write_all(&[what]));
         }));
     } else {
         drop(pipe);

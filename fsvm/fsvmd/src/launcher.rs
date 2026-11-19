@@ -52,6 +52,14 @@ const MAX_ARGS: usize = 32;
 const MAX_CHILDREN: usize = 1;
 /// The slots, as fsvmd.rc and config.fs name them.
 pub const SLOTS: &[&str] = &["probe", "0", "1", "2", "3", "4", "5", "obb_0", "obb_1", "obb_2", "obb_3"];
+/// The user of the first slot (config.fs AID_VENDOR_FSVMD_PROBE). Each slot's user is this plus its place in SLOTS,
+/// which scripts/p3-slots-check.py checks against config.fs.
+pub const FIRST_UID: u32 = 2970;
+
+/// The user a slot's service must run as.
+pub fn slot_uid(slot: &str) -> Option<u32> {
+    SLOTS.iter().position(|s| *s == slot).map(|i| FIRST_UID + i as u32)
+}
 /// After vold went away, fsvmd gets this long for its orderly stop (it writes back in up to 1.8 s) before a kill.
 const VOLD_GONE_GRACE: Duration = Duration::from_secs(3);
 /// vold sends its request right after connecting.
@@ -86,18 +94,17 @@ pub fn run(slot: &str) -> Result<()> {
     let kind = slot_kind(slot)?;
     // SAFETY: getuid cannot fail.
     let uid = unsafe { libc::getuid() };
-    ensure!(uid != 0 && uid != 1000, "the fsvmd_{slot} service runs as uid {uid}, not its slot's own user");
+    // No two slots share a user: init must have started this one as exactly its slot's user.
+    ensure!(Some(uid) == slot_uid(slot), "the fsvmd_{slot} service runs as uid {uid}, not its slot's own user");
     let env = format!("{SOCKET_ENV}_{slot}");
     let fd: RawFd = std::env::var(&env).context("no socket from init")?.parse().context("socket from init")?;
     let exe = if kind == SlotKind::Obb { FSVMD_OBB } else { FSVMD };
     // SAFETY: init created this socket for the service, and nothing else in this process uses it.
-    run_on(unsafe { OwnedFd::from_raw_fd(fd) }, exe, kind, 0, MAX_CHILDREN)
+    run_on(unsafe { OwnedFd::from_raw_fd(fd) }, exe, kind, 0, Limit::new(MAX_CHILDREN).sweeping())
 }
 
-/// Accepts requests of `kind` on `listener` from `allowed_uid` and runs `exe` for each, at most `max_children` at a
-/// time.
-pub fn run_on(listener: OwnedFd, exe: &'static str, kind: SlotKind, allowed_uid: u32, max_children: usize) -> Result<()> {
-    let limit = Limit::new(max_children);
+/// Accepts requests of `kind` on `listener` from `allowed_uid` and runs `exe` for each, within `limit`.
+pub fn run_on(listener: OwnedFd, exe: &'static str, kind: SlotKind, allowed_uid: u32, limit: Limit) -> Result<()> {
     let fd = listener.as_raw_fd();
     // SAFETY: F_SETFD only changes the descriptor flags of the socket.
     ensure!(unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == 0, "F_SETFD on the socket");
@@ -167,11 +174,19 @@ fn peer_uid(conn: &OwnedFd) -> Result<u32> {
 pub struct Limit {
     running: Arc<AtomicUsize>,
     max: usize,
+    sweep: bool,
 }
 
 impl Limit {
     pub fn new(max: usize) -> Self {
-        Limit { running: Arc::new(AtomicUsize::new(0)), max }
+        Limit { running: Arc::new(AtomicUsize::new(0)), max, sweep: false }
+    }
+
+    /// After each child ended, kill every other process of this user (sweep). Only for the service, which runs as its
+    /// slot's own user with one child at a time: never in the host tests.
+    pub fn sweeping(mut self) -> Self {
+        self.sweep = true;
+        self
     }
 }
 
@@ -205,7 +220,7 @@ pub fn handle(conn: OwnedFd, exe: &str, kind: SlotKind, limit: &Limit) -> Result
             return Err(e);
         }
     };
-    let Some(_slot) = Slot::take(limit) else {
+    let Some(slot) = Slot::take(limit) else {
         send(&conn, &format!("E {}", libc::EBUSY));
         bail!("this slot runs a fsvmd already");
     };
@@ -219,7 +234,34 @@ pub fn handle(conn: OwnedFd, exe: &str, kind: SlotKind, limit: &Limit) -> Result
     // The child has its copies. Ours go, so that the child alone holds the disk, FUSE and the pipe.
     drop(fds);
     info!("fsvmd {pid} started: {}", argv.get(1).map(|a| a.to_string_lossy()).unwrap_or_default());
-    supervise(&conn, pid)
+    let ended = Ended { slot: Some(slot), sweep: limit.sweep };
+    supervise(&conn, pid, ended)
+}
+
+/// What follows the child's end, before vold hears of it: the leftovers of the slot's user go, then the slot is free,
+/// so that vold's next request for this slot (the probe slot has no other) never meets EBUSY.
+struct Ended {
+    slot: Option<Slot>,
+    sweep: bool,
+}
+
+impl Ended {
+    fn finish(&mut self, conn: &OwnedFd, answer: &str) {
+        if self.sweep {
+            sweep();
+        }
+        drop(self.slot.take());
+        send(conn, answer);
+    }
+}
+
+/// Kills every process of this service's user but the service itself (kill -1 never reaches the caller): a VM
+/// manager or crosvm that outlived fsvmd. One user per slot, so that is exactly the slot's leftovers.
+fn sweep() {
+    // SAFETY: kill with -1 signals the processes this one may signal, which DAC limits to its own user.
+    if unsafe { libc::kill(-1, libc::SIGKILL) } == 0 {
+        warn!("processes of this slot outlived fsvmd, killed");
+    }
 }
 
 fn wait_readable(fd: &OwnedFd, within: Duration) -> Result<bool> {
@@ -377,7 +419,7 @@ fn signal(pidfd: &OwnedFd, sig: libc::c_int) {
 }
 
 /// Passes vold's stop and kill to the child, kills it when vold goes away, and reports how it ended.
-fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
+fn supervise(conn: &OwnedFd, pid: libc::pid_t, mut ended: Ended) -> Result<()> {
     // SAFETY: `pid` is this process's own child and not reaped yet, so it names that child.
     let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as RawFd;
     if raw < 0 {
@@ -385,7 +427,7 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
         // SAFETY: as above, the pid still names the unreaped child.
         unsafe { libc::kill(pid, libc::SIGKILL) };
         reap(pid);
-        send(conn, &format!("E {}", e.raw_os_error().unwrap_or(libc::EIO)));
+        ended.finish(conn, &format!("E {}", e.raw_os_error().unwrap_or(libc::EIO)));
         bail!("pidfd_open: {e}");
     }
     // SAFETY: pidfd_open returned a new descriptor that nothing else owns.
@@ -421,7 +463,7 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
             // Never leave the child running unwatched or unreaped.
             signal(&pidfd, libc::SIGKILL);
             let status = reap(pid);
-            send(conn, &format!("X {status}"));
+            ended.finish(conn, &format!("X {status}"));
             bail!("poll: {e}");
         }
         if p[0].revents != 0 {
@@ -450,7 +492,7 @@ fn supervise(conn: &OwnedFd, pid: libc::pid_t) -> Result<()> {
     }
     let status = reap(pid);
     info!("fsvmd {pid} ended: {status}");
-    send(conn, &format!("X {status}"));
+    ended.finish(conn, &format!("X {status}"));
     Ok(())
 }
 
@@ -647,7 +689,7 @@ mod tests {
         let listener = unsafe { OwnedFd::from_raw_fd(fd) };
         // SAFETY: getuid has no preconditions.
         let me = unsafe { libc::getuid() };
-        std::thread::spawn(move || run_on(listener, "/bin/sh", SlotKind::Any, me, 1));
+        std::thread::spawn(move || run_on(listener, "/bin/sh", SlotKind::Any, me, Limit::new(1)));
         let mut vold = None;
         for _ in 0..50 {
             let c = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
@@ -676,6 +718,14 @@ mod tests {
         assert_eq!(answer(&second), format!("E {}", libc::EBUSY));
         assert_eq!(answer(&vold), "X 0");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slot_users() {
+        assert_eq!(slot_uid("probe"), Some(2970));
+        assert_eq!(slot_uid("5"), Some(2976));
+        assert_eq!(slot_uid("obb_3"), Some(2980));
+        assert_eq!(slot_uid("6"), None);
     }
 
     #[test]

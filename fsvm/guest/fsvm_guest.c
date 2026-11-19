@@ -44,9 +44,11 @@
 #include <sys/mount.h>
 #include <sys/ioctl.h>
 #include <sys/reboot.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -62,6 +64,9 @@ static uint32_t fs_kind; /* 0 until MOUNT succeeded */
 static int read_only;
 static int was_dirty; /* the mounted filesystem was marked dirty before this VM mounted it */
 static int check_pending; /* mounted read-only until the check after the mount passes (FSVM_CHECK) */
+/* Remounted writable after a check that passed: the driver keeps the dirty mark it found for this mount's life, so the
+ * orderly unmount marks the volume clean by hand (do_unmount). */
+static int clean_at_unmount;
 static uint32_t mounted_index;
 static uint64_t mounted_start, mounted_length;
 static char mounted_dev[32];
@@ -952,6 +957,10 @@ static int read_layout(void)
 	return r;
 }
 
+#define VFAT_OPTS "utf8,shortname=mixed,errors=remount-ro"
+#define EXFAT_OPTS "iocharset=utf8,errors=remount-ro"
+#define MOUNT_FLAGS (MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | MS_DIRSYNC)
+
 static int try_mount(const char *dev, int want_ro)
 {
 	static const struct {
@@ -959,13 +968,13 @@ static int try_mount(const char *dev, int want_ro)
 		const char *opts;
 		uint32_t kind;
 	} fs[] = {
-		{ "vfat", "utf8,shortname=mixed,errors=remount-ro", FSVM_FS_VFAT },
-		{ "exfat", "iocharset=utf8,errors=remount-ro", FSVM_FS_EXFAT },
+		{ "vfat", VFAT_OPTS, FSVM_FS_VFAT },
+		{ "exfat", EXFAT_OPTS, FSVM_FS_EXFAT },
 	};
 	/* MS_DIRSYNC as vold mounted cards (fs/Vfat.cpp, fs/Exfat.cpp): a directory change waits until it is on the disk.
 	 * Android's VM manager opens a card with O_DIRECT, so that means on the card, not in Android's page cache, and a
 	 * card pulled without eject keeps its directory structure. */
-	unsigned long base = MS_NOSUID | MS_NODEV | MS_NOEXEC | MS_NOATIME | MS_DIRSYNC | (want_ro ? MS_RDONLY : 0);
+	unsigned long base = MOUNT_FLAGS | (want_ro ? MS_RDONLY : 0);
 	for (unsigned i = 0; i < sizeof(fs) / sizeof(fs[0]); i++) {
 		if (!mount(dev, MNT, fs[i].type, base, fs[i].opts)) {
 			fs_kind = fs[i].kind;
@@ -1208,6 +1217,21 @@ static int fat_only_dirty(void)
 	return mark;
 }
 
+/* In the forked checker of the check without writes: its output goes to CHECK_OUT, at most 1 MiB of it (the
+ * initramfs is RAM, and a damaged or crafted card can make fsck_msdos print without end). Writes past that fail, the
+ * check goes on. */
+static void checker_output(void)
+{
+	int out = open(CHECK_OUT, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (out >= 0) {
+		dup2(out, 1);
+		dup2(out, 2);
+	}
+	struct rlimit fsize = { 1 << 20, 1 << 20 };
+	signal(SIGXFSZ, SIG_IGN);
+	setrlimit(RLIMIT_FSIZE, &fsize);
+}
+
 static void check_start(void)
 {
 	char *fat[] = { "/bin/fsck_msdos", "-n", "-f", mounted_dev, NULL };
@@ -1225,11 +1249,7 @@ static void check_start(void)
 		return;
 	}
 	if (pid == 0) {
-		int out = open(CHECK_OUT, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-		if (out >= 0) {
-			dup2(out, 1);
-			dup2(out, 2);
-		}
+		checker_output();
 		execv(argv[0], argv);
 		_exit(127);
 	}
@@ -1335,11 +1355,7 @@ static int verify_after_repair(const char *dev, uint32_t kind, int64_t deadline_
 	if (pid < 0)
 		return 0;
 	if (pid == 0) {
-		int out = open(CHECK_OUT, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-		if (out >= 0) {
-			dup2(out, 1);
-			dup2(out, 2);
-		}
+		checker_output();
 		execv(argv[0], argv);
 		_exit(127);
 	}
@@ -1368,6 +1384,21 @@ static int check_switch(uint32_t repair_ms)
 	char dev[32];
 	snprintf(dev, sizeof(dev), "%s", mounted_dev);
 	uint32_t kind = fs_kind;
+	if (check_state == FSVM_CHECK_PASSED) {
+		/* Nothing to repair: writable in place. Open files stay open and nothing waits. The driver keeps the dirty
+		 * mark it found at the mount while the volume is mounted (FAT's sbi->dirty, exFAT's persistent flag), which
+		 * is right while it is written, and the orderly unmount marks it clean (do_unmount). */
+		if (!mount(NULL, MNT, NULL, MS_REMOUNT | MOUNT_FLAGS, kind == FSVM_FS_EXFAT ? EXFAT_OPTS : VFAT_OPTS)) {
+			read_only = 0;
+			check_pending = 0;
+			check_state = FSVM_CHECK_NONE;
+			was_dirty = 0;
+			clean_at_unmount = 1;
+			logline("checked, writable now (remounted)", dev, 0);
+			return 0;
+		}
+		logline("remount for the switch, unmounting instead", MNT, errno);
+	}
 	handle_suspend_all();
 	if (umount(MNT)) {
 		int e = errno;
@@ -1513,6 +1544,9 @@ static int do_unmount(void)
 	int d = open(MNT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (d < 0 || syncfs(d))
 		r = -EIO;
+	/* A remounted volume whose driver hit an error (errors=remount-ro) is not marked clean. */
+	struct statvfs v;
+	int went_ro = !read_only && (d < 0 || fstatvfs(d, &v) || (v.f_flag & ST_RDONLY));
 	if (d >= 0)
 		close(d);
 	if (umount(MNT)) {
@@ -1528,6 +1562,12 @@ static int do_unmount(void)
 		r = r ? r : -EIO;
 	if (b >= 0)
 		close(b);
+	/* Remounted writable after its check: the driver left its dirty mark, marked clean here once all is on the disk. */
+	if (clean_at_unmount) {
+		clean_at_unmount = 0;
+		if (!r && !went_ro)
+			r = mark_clean(mounted_dev, kind);
+	}
 	/* Clean means the mark Linux's driver set while mounted is gone: on FAT the boot sector byte (a FAT32 card whose
 	 * FAT never carried the clean bit would otherwise read as not clean), on exFAT the volume flag. */
 	if (!r && !read_only && (kind == FSVM_FS_EXFAT ? exfat_dirty(mounted_dev) : fat_linux_dirty(mounted_dev)))

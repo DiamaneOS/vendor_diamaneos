@@ -19,6 +19,9 @@ allow fsvmd_launcher self:unix_stream_socket { accept listen read write getopt s
 # needs it there to be executed at all). The service drops it from its other sets at start, which is a capset.
 allow fsvmd_launcher self:process setcap;
 allow fsvmd_launcher fsvmd:process { signal sigkill };
+# After fsvmd ended, the service kills what is left of its slot's user (kill -1: a VM manager or crosvm that outlived
+# fsvmd would keep the card's range, the VM's memory and the slot). Only processes of the slot's own user are reached.
+allow fsvmd_launcher { fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm }:process sigkill;
 allow fsvmd fsvmd_launcher:process sigchld;
 allow fsvmd fsvmd_launcher:fd use;
 unix_socket_connect(vold, fsvmd, fsvmd_launcher)
@@ -60,6 +63,9 @@ virtualizationservice_use(fsvmd)
 # The client sets its send and receive timeouts on the vsock socket its VM manager made (SO_SNDTIMEO, SO_RCVTIMEO).
 # virtualizationservice_use grants getattr, getopt, read and write only.
 allow fsvmd fsvmd_virtualizationmanager:vsock_socket setopt;
+# Before its seccomp filter, fsvmd finds its VM manager's pid in /proc/<pid>/stat (its process group may be killed).
+allow fsvmd fsvmd_virtualizationmanager:dir search;
+allow fsvmd fsvmd_virtualizationmanager:file { open read };
 allow { fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } fsvmd_tmpfs:file { read write getattr };
 # Only fsvmd's VM manager and crosvm get the volume, through the descriptor vold opened. crosvm reads and writes it
 # as the VM's raw disk. The VM manager checks its label and passes it on, which needs the open mode's permissions.

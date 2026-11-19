@@ -29,6 +29,7 @@ use std::io;
 use std::mem::{size_of, MaybeUninit};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Condvar;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -98,6 +99,8 @@ struct State {
     session: Box<dyn Session>,
     restarts: Vec<Instant>,
     read_only: Arc<AtomicBool>,
+    /// Read-only as asked (vold's --read-only, an OBB): a new VM's answer never makes such a volume writable.
+    asked_read_only: bool,
     nodes: HashMap<u64, Node>,
     by_guest: HashMap<u64, u64>,
     by_name: HashMap<(u64, Vec<u8>), u64>,
@@ -113,12 +116,14 @@ struct State {
     closed: bool,
     /// The volume is served read-only until the VM's check after the mount passes (Checker).
     check_pending: bool,
+    /// Wakes the Checker: a check is pending again (a new VM after a broken session), or the volume goes.
+    wake: Arc<Condvar>,
 }
 
 pub struct FsvmFs {
     state: Arc<Mutex<State>>,
     closing: Arc<AtomicBool>,
-    /// The switch after the check runs (the volume is briefly unmounted in the VM): an orderly stop waits for it.
+    /// The switch after the check runs (a remount in the VM, an unmount after a repair): a stop waits for it.
     switching: Arc<AtomicBool>,
     read_only: Arc<AtomicBool>,
     gid: u32,
@@ -127,11 +132,15 @@ pub struct FsvmFs {
 }
 
 impl FsvmFs {
-    /// `obb`: an app's OBB image, read-only for its owner's group (vold mounted these with fmask and dmask 0227).
+    /// `asked_read_only`: vold asked for read-only. `vm_read_only`: the VM serves it read-only (a write-protected card,
+    /// a check pending). `obb`: an app's OBB image, read-only for its owner's group (vold mounted these with fmask and
+    /// dmask 0227).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Client<StreamTransport<UnixStream>>,
         root_guest: u64,
-        read_only: bool,
+        asked_read_only: bool,
+        vm_read_only: bool,
         gid: u32,
         obb: bool,
         check_pending: bool,
@@ -141,7 +150,8 @@ impl FsvmFs {
         nodes.insert(ROOT, Node { guest: Some(root_guest), parent: ROOT, name: Vec::new(), kind: Kind::Dir, lookups: 1 });
         let mut by_guest = HashMap::new();
         by_guest.insert(root_guest, ROOT);
-        let read_only = Arc::new(AtomicBool::new(read_only || obb));
+        let asked_read_only = asked_read_only || obb;
+        let read_only = Arc::new(AtomicBool::new(asked_read_only || vm_read_only || check_pending));
         FsvmFs {
             state: Arc::new(Mutex::new(State {
                 client,
@@ -149,6 +159,7 @@ impl FsvmFs {
                 session,
                 restarts: Vec::new(),
                 read_only: read_only.clone(),
+                asked_read_only,
                 nodes,
                 by_guest,
                 by_name: HashMap::new(),
@@ -160,6 +171,7 @@ impl FsvmFs {
                 generation: 0,
                 closed: false,
                 check_pending,
+                wake: Arc::new(Condvar::new()),
             })),
             closing: Arc::new(AtomicBool::new(false)),
             switching: Arc::new(AtomicBool::new(false)),
@@ -176,13 +188,15 @@ impl FsvmFs {
     }
 
     /// Runs the VM's check after the mount for a volume served read-only until it passes, outside vold's lock and
-    /// without a time limit, then the switch to writable. `done(true)` once writable, `done(false)` when it stays
-    /// read-only (vold then reports it so and SystemUI says why). Ends with the volume.
-    pub fn spawn_checker(&self, done: Box<dyn Fn(bool) + Send>) {
+    /// without a time limit, then the switch to writable. Tells vold (`done`): b'W' once writable, b'F' when it stays
+    /// read-only (vold reports it so and SystemUI says why), b'c' when a new VM after a broken session checks it
+    /// again (read-only meanwhile). The thread sleeps while no check is pending. Ends with the volume.
+    pub fn spawn_checker(&self, done: Box<dyn Fn(u8) + Send>) {
         let checker = Checker {
             state: self.state.clone(),
             read_only: self.read_only.clone(),
             switching: self.switching.clone(),
+            closing: self.closing.clone(),
             done,
         };
         std::thread::spawn(move || checker.run());
@@ -300,12 +314,13 @@ impl State {
                 self.generation += 1;
                 self.client = client;
                 self.root_guest = root;
-                if hello.read_only {
-                    self.read_only.store(true, Ordering::Relaxed);
-                }
+                // What the new VM says, unless the volume is read-only as asked: a new VM that mounted the volume clean
+                // and writable (the old one had marked it clean in the switch) makes it writable again.
+                self.read_only.store(self.asked_read_only || hello.read_only, Ordering::SeqCst);
                 // The new VM found the volume marked dirty (the old one ended with it mounted writable): read-only
                 // again until its own check passes.
                 self.check_pending = hello.check_pending;
+                self.wake.notify_all();
                 self.by_guest.clear();
                 for (&ino, n) in self.nodes.iter_mut() {
                     n.guest = if ino == ROOT { Some(root) } else { None };
@@ -526,23 +541,34 @@ impl Closer {
             return Closed::InProgress;
         }
         let start = Instant::now();
-        let deadline = start + max;
-        // The switch after the check holds the lock while the VM unmounts, repairs and mounts again. Stopping the VM
-        // in the middle could leave a repair half done, so it gets the whole time.
-        let until = start + if self.switching.load(Ordering::SeqCst) { max } else { lock_wait };
+        let mut deadline = start + max;
+        // The switch after the check holds the lock while the VM repairs. Stopping the VM in the middle could leave a
+        // repair half done, so it gets up to SWITCH_MAX (within `max`). It is read on every round: the Checker may
+        // have started it just before `closing` was set (it starts none after).
+        let switch_until = start + max.min(SWITCH_MAX);
+        let mut waited_for_switch = false;
         let mut guard = loop {
             match self.state.try_lock() {
                 Ok(g) => break g,
                 Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < until => {
-                    std::thread::sleep(Duration::from_millis(20))
-                }
                 Err(std::sync::TryLockError::WouldBlock) => {
+                    let switching = self.switching.load(Ordering::SeqCst);
+                    waited_for_switch |= switching;
+                    if Instant::now() < if switching { switch_until } else { start + lock_wait } {
+                        std::thread::sleep(Duration::from_millis(20));
+                        continue;
+                    }
                     error!("a call to the filesystem VM is still running, stopping without writing back");
                     return Closed::NotWrittenBack;
                 }
             }
         };
+        // After a switch the volume was read-only until a moment ago, so there is next to nothing to write back, but
+        // the unmount still gets its minimum.
+        if waited_for_switch {
+            deadline = deadline.max(Instant::now() + UNMOUNT_MIN.min(max));
+        }
+        guard.wake.notify_all();
         if guard.closed {
             return Closed::Clean;
         }
@@ -601,31 +627,61 @@ impl Closer {
 
 /// The read-only check runs as long as it takes. Errors it found are repaired only when it took at most this long,
 /// so the repair (as long as the check, plus writes) stays short: apps wait for it and an eject waits for it.
-const REPAIR_AFTER_CHECK_MAX: Duration = Duration::from_secs(20);
-/// What the repair may take in the VM, and the whole switch (unmount, repair, mount, free-space count).
-const REPAIR_MAX: Duration = Duration::from_secs(15);
-const SWITCH_MAX: Duration = Duration::from_secs(45);
+const REPAIR_AFTER_CHECK_MAX: Duration = Duration::from_secs(10);
+/// What the repair may take in the VM, and the whole switch. A check that passed is a remount in the VM (no unmount,
+/// files stay open, well under a second). After a repair the volume is unmounted, repaired, checked once more without
+/// writes (up to 5 s more) and mounted again, with its free space counted. An eject during a switch waits for it
+/// (Closer::close): SWITCH_MAX plus UNMOUNT_MIN and the VM's end stays below vold's 26 s for the orderly stop, and the
+/// volume was read-only until then, so nothing is left to write back.
+const REPAIR_MAX: Duration = Duration::from_secs(8);
+pub const SWITCH_MAX: Duration = Duration::from_secs(16);
 const CHECK_POLL: Duration = Duration::from_secs(1);
 
 struct Checker {
     state: Arc<Mutex<State>>,
     read_only: Arc<AtomicBool>,
     switching: Arc<AtomicBool>,
-    done: Box<dyn Fn(bool) + Send>,
+    closing: Arc<AtomicBool>,
+    done: Box<dyn Fn(u8) + Send>,
 }
 
 impl Checker {
     fn run(self) {
+        let Ok(mut s) = self.state.lock() else { return };
+        // vold was told c (read-only while the VM checks it) when the check is pending from the start.
+        let mut owed = s.check_pending;
         loop {
-            std::thread::sleep(CHECK_POLL);
-            let mut s = match self.state.lock() {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            if s.closed {
+            if s.closed || self.closing.load(Ordering::SeqCst) {
                 return;
             }
             if !s.check_pending {
+                // A new VM after a broken session mounted the volume clean and writable (the old one marked it clean in
+                // the switch and its answer was lost): vold still waits for the check's end.
+                if owed && !self.read_only.load(Ordering::SeqCst) {
+                    info!("a new VM serves the volume writable, the check is over");
+                    owed = false;
+                    (self.done)(b'W');
+                }
+                // Nothing to do until a new VM checks again or the volume goes (State::recover, Closer::close).
+                s = match s.wake.clone().wait(s) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                continue;
+            }
+            if !owed {
+                warn!("a new VM checks the volume again, read-only meanwhile");
+                owed = true;
+                (self.done)(b'c');
+            }
+            // The check runs in the VM. One poll a second, the lock free in between.
+            drop(s);
+            std::thread::sleep(CHECK_POLL);
+            s = match self.state.lock() {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            if s.closed || self.closing.load(Ordering::SeqCst) || !s.check_pending {
                 continue;
             }
             match s.client.check_poll() {
@@ -634,32 +690,43 @@ impl Checker {
                     if state == CheckState::Errors && ran > REPAIR_AFTER_CHECK_MAX {
                         warn!("the check found errors after {ran:?}: the volume stays read-only, it needs a computer");
                         s.check_pending = false;
-                        (self.done)(false);
+                        owed = false;
+                        (self.done)(b'F');
                         continue;
                     }
-                    info!("the check {} after {ran:?}, switching to writable", if state == CheckState::Errors { "found errors to repair" } else { "passed" });
+                    // The closer sets closing first and then reads switching: either it sees this switch and waits
+                    // for it, or the switch does not start.
                     self.switching.store(true, Ordering::SeqCst);
+                    if self.closing.load(Ordering::SeqCst) {
+                        self.switching.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                    info!("the check {} after {ran:?}, switching to writable", if state == CheckState::Errors { "found errors to repair" } else { "passed" });
                     let r = s.client.check_switch(REPAIR_MAX, SWITCH_MAX);
                     self.switching.store(false, Ordering::SeqCst);
                     match r {
                         Ok(()) => {
                             info!("checked, the volume is writable now");
                             s.check_pending = false;
+                            owed = false;
+                            // A check is pending only for a volume asked writable (fsvmd main.rs mount_check_later).
                             self.read_only.store(false, Ordering::SeqCst);
-                            (self.done)(true);
+                            (self.done)(b'W');
                         }
                         Err(CallError::Broken(why)) => s.recover(&why),
                         Err(e) => {
                             warn!("the switch after the check failed ({}): the volume stays read-only", e.errno());
                             s.check_pending = false;
-                            (self.done)(false);
+                            owed = false;
+                            (self.done)(b'F');
                         }
                     }
                 }
                 Ok((CheckState::Failed | CheckState::None, _)) | Err(CallError::Errno(_)) => {
                     warn!("the check did not run or did not finish: the volume stays read-only");
                     s.check_pending = false;
-                    (self.done)(false);
+                    owed = false;
+                    (self.done)(b'F');
                 }
                 Err(CallError::Broken(why)) => s.recover(&why),
             }
