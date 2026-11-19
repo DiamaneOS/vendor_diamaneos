@@ -1298,6 +1298,44 @@ static int mark_clean(const char *dev, uint32_t kind)
 	return r;
 }
 
+/* The read-only check once more, after a repair, within `deadline_ms`: whether the volume reads as sound now.
+ * fsck_msdos reports a repair it made with exit codes vold's old check took as failures (a lost chain cleared, a
+ * missing LOST.DIR), so what counts is that a check without writes finds nothing afterwards. */
+static int verify_after_repair(const char *dev, uint32_t kind, int64_t deadline_ms)
+{
+	char *fat[] = { "/bin/fsck_msdos", "-n", "-f", (char *)dev, NULL };
+	char *exf[] = { "/bin/fsck.exfat", "-n", (char *)dev, NULL };
+	char **argv = kind == FSVM_FS_EXFAT ? exf : fat;
+	pid_t pid = fork();
+	if (pid < 0)
+		return 0;
+	if (pid == 0) {
+		int out = open(CHECK_OUT, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+		if (out >= 0) {
+			dup2(out, 1);
+			dup2(out, 2);
+		}
+		execv(argv[0], argv);
+		_exit(127);
+	}
+	for (;;) {
+		int st = 0;
+		pid_t r = waitpid(pid, &st, WNOHANG);
+		if (r == pid) {
+			int code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+			return code == 0 || (kind == FSVM_FS_VFAT && code == 8 && fat_only_dirty());
+		}
+		if (r < 0)
+			return 0;
+		if (now_ms() >= deadline_ms) {
+			kill(pid, SIGKILL);
+			waitpid(pid, NULL, 0);
+			return 0;
+		}
+		usleep(20 * 1000);
+	}
+}
+
 static int check_switch(uint32_t repair_ms)
 {
 	if (!fs_kind || !check_pending || (check_state != FSVM_CHECK_PASSED && check_state != FSVM_CHECK_ERRORS))
@@ -1314,10 +1352,16 @@ static int check_switch(uint32_t repair_ms)
 	}
 	fs_kind = 0;
 	int r = 0;
-	if (check_state == FSVM_CHECK_ERRORS)
+	if (check_state == FSVM_CHECK_ERRORS) {
+		int64_t deadline = now_ms() + (repair_ms ? repair_ms : 1);
 		r = check_volume(dev, kind, repair_ms ? repair_ms : 1);
-	else
+		if (r < 0 && verify_after_repair(dev, kind, deadline + 5000)) {
+			logline("repaired, a check without writes finds nothing now", dev, 0);
+			r = mark_clean(dev, kind);
+		}
+	} else {
 		r = mark_clean(dev, kind);
+	}
 	/* 0: repaired or clean, mounted writable. Otherwise read-only again, with its marks. */
 	int ro = r != 0;
 	if (try_mount(dev, ro) && (ro || try_mount(dev, 1))) {
