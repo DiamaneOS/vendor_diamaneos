@@ -7,8 +7,11 @@ type decode_service_app, domain;
 typeattribute decode_service_app coredomain;
 app_domain(decode_service_app)
 
-# The framework services every app process uses (activity, package, ...), the set untrusted apps may find.
+# The framework services every app process uses (activity, package, ...), the set untrusted apps may find. To be
+# narrowed to the exact services: on debuggable builds every lookup is logged ("avc: granted { find }"), and the
+# measured list replaces the attribute.
 allow decode_service_app app_api_service:service_manager find;
+userdebug_or_eng(`auditallow decode_service_app app_api_service:service_manager find;')
 
 # The decoder VM: the app starts it through its own VM manager and crosvm (decode_service_app_virtualizationmanager,
 # decode_service_app_virtmgr_crosvm) and reaches it only over the vsock connections that VM manager hands it. The
@@ -18,6 +21,9 @@ virtualizationservice_use(decode_service_app)
 
 # The callers hand their files over binder: pipes and memory files of apps and the system server, media files
 # MediaProvider opened. Every app may read those descriptors (app.te). The service opens no caller's file itself.
+# Callers of other users (a work profile's or private space's MediaProvider, at that user's categories) need no
+# MLS trust: reading or stat-ing a handed-over pipe, memory file or app tmpfs file is not level-checked (mls), and
+# platform_app, the old domain, was not an mlstrustedsubject either.
 
 # No network at all: the service talks to its callers over binder and to its VM over vsock.
 neverallow decode_service_app self:{ tcp_socket udp_socket rawip_socket } create;
