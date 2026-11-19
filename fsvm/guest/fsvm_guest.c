@@ -1157,8 +1157,9 @@ static int check_state = FSVM_CHECK_NONE;
 
 #define CHECK_OUT "/fsck.out"
 
-/* Whether fsck_msdos -n -f found nothing but the dirty mark: the one question it answered "no" is marking the
- * file system clean. Any other question (a repair it was not allowed to make) means errors. */
+/* Whether fsck_msdos -n -f found nothing but the dirty mark. It asks "MARK FILE SYSTEM CLEAN" only when the whole
+ * check ended without an error (check.c: no FSERROR, no FSFATAL), and answers "no" with -n, then exits 8. Hints it
+ * may not fix (the free count or next free cluster in FSInfo) are no errors and leave that question in place. */
 static int fat_only_dirty(void)
 {
 	char buf[16384];
@@ -1170,21 +1171,16 @@ static int fat_only_dirty(void)
 	if (n <= 0 || n == (ssize_t)sizeof(buf) - 1)
 		return 0;
 	buf[n] = 0;
-	int mark = 0, other = 0;
+	int mark = 0;
 	for (char *line = buf; line && *line;) {
 		char *end = strchr(line, '\n');
 		if (end)
 			*end = 0;
-		size_t len = strlen(line);
-		if (len >= 4 && !strcmp(line + len - 4, "? no")) {
-			if (!strcmp(line, "MARK FILE SYSTEM CLEAN? no"))
-				mark = 1;
-			else
-				other = 1;
-		}
+		if (!strcmp(line, "MARK FILE SYSTEM CLEAN? no"))
+			mark = 1;
 		line = end ? end + 1 : NULL;
 	}
-	return mark && !other;
+	return mark;
 }
 
 static void check_start(void)
