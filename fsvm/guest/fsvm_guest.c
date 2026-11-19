@@ -1225,11 +1225,12 @@ static int check_poll(struct fsvm_check *c)
 		check_start();
 	if (check_pid > 0) {
 		int st = 0;
-		pid_t r = waitpid(check_pid, &st, WNOHANG);
-		if (r == check_pid || r < 0) {
+		pid_t pid = check_pid;
+		pid_t r = waitpid(pid, &st, WNOHANG);
+		if (r == pid || r < 0) {
 			check_pid = 0;
 			check_end_ms = now_ms();
-			int code = r == check_pid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+			int code = r == pid && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 			if (code == 127 || code < 0)
 				check_state = FSVM_CHECK_FAILED;
 			else if (code == 0 || (fs_kind == FSVM_FS_VFAT && code == 8 && fat_only_dirty()))
