@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DiamaneOS: each fsvmd service runs as a user of its own from the vendor's OEM range (fsvm/config.fs, fsvmd.rc),
+  not as the system user. Its VM manager runs as that user too and asks the permission service for these two
+  permissions before it creates the filesystem VM (packages/modules/Virtualization virtmgr check_manage_access and
+  check_use_custom_virtual_machine), which a native user only holds when assigned here.
+-->
+<permissions>
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_probe" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_probe" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_0" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_0" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_1" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_1" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_2" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_2" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_3" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_3" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_4" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_4" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_5" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_5" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_0" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_0" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_1" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_1" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_2" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_2" />
+    <assign-permission name="android.permission.MANAGE_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_3" />
+    <assign-permission name="android.permission.USE_CUSTOM_VIRTUAL_MACHINE" uid="vendor_fsvmd_obb_3" />
+</permissions>

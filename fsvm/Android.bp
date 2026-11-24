@@ -1,0 +1,370 @@
+// Copyright (C) 2026 DiamaneOS
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// SD cards and USB drives mounted in a protected VM: fsvmd on Android, the VM's /init, and the protocol between them.
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_library {
+    name: "libfsvm_proto",
+    crate_name: "fsvm_proto",
+    srcs: ["proto/src/lib.rs"],
+    edition: "2021",
+    host_supported: true,
+    system_ext_specific: true,
+}
+
+rust_test_host {
+    name: "fsvm_proto_test",
+    crate_name: "fsvm_proto",
+    srcs: ["proto/src/lib.rs"],
+    edition: "2021",
+    test_suites: ["general-tests"],
+}
+
+rust_test_host {
+    name: "fsvm_proto_hostile_test",
+    crate_name: "hostile",
+    srcs: ["proto/tests/hostile.rs"],
+    edition: "2021",
+    rustlibs: ["libfsvm_proto"],
+    test_suites: ["general-tests"],
+}
+
+rust_defaults {
+    name: "fsvmd_defaults",
+    crate_name: "fsvmd",
+    srcs: ["fsvmd/src/main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    system_ext_specific: true,
+    rustlibs: [
+        "android.system.virtualizationservice-rust",
+        "libandroid_logger",
+        "libanyhow",
+        "libbinder_rs",
+        "libfsvm_proto",
+        "libfuse_rust",
+        "liblibc",
+        "liblog_rust",
+        "libvmclient",
+    ],
+}
+
+rust_binary {
+    name: "fsvmd",
+    defaults: ["fsvmd_defaults"],
+    required: [
+        "de.diamaneos.fsvmd.xml",
+        "fsvmd_launcher",
+        "fsvmd_obb",
+    ],
+}
+
+// The two VM permissions for the fsvmd users (config.fs), which are not the system user.
+prebuilt_etc {
+    name: "de.diamaneos.fsvmd.xml",
+    src: "fsvmd/etc/de.diamaneos.fsvmd.xml",
+    sub_dir: "permissions",
+    system_ext_specific: true,
+}
+
+// The same program for OBB images only, under its own name and label (fsvmd_obb.te): no card access, and its VMs
+// stay out of the VM memory pool, which is kept for cards.
+rust_binary {
+    name: "fsvmd_obb",
+    defaults: ["fsvmd_defaults"],
+}
+
+// The fsvmd service init runs (fsvmd.rc): it starts each fsvmd for vold (fsvmd/src/launcher.rs).
+rust_binary {
+    name: "fsvmd_launcher",
+    crate_name: "fsvmd_launcher",
+    srcs: ["fsvmd/src/launcher_main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    system_ext_specific: true,
+    init_rc: ["fsvmd/fsvmd.rc"],
+    rustlibs: [
+        "libandroid_logger",
+        "libanyhow",
+        "liblibc",
+        "liblog_rust",
+    ],
+}
+
+// The fsvmd service's request handling on the host: descriptors, exit codes, stop, kill, vold going away and refused
+// requests (fsvmd/src/launcher.rs).
+rust_test_host {
+    name: "fsvmd_launcher_test",
+    crate_name: "fsvmd_launcher_test",
+    srcs: ["fsvmd/src/launcher.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libanyhow",
+        "liblibc",
+        "liblog_rust",
+    ],
+    test_suites: ["general-tests"],
+}
+
+// Test client for the phone checks (scripts/fsprod-phone.sh), through the same checking client. In no product's
+// packages, so it never reaches an image.
+rust_binary {
+    name: "fsvmctl",
+    crate_name: "fsvmctl",
+    srcs: ["fsvmctl/src/main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    rustlibs: [
+        "libfsvm_proto",
+        "liblibc",
+    ],
+}
+
+cc_defaults {
+    name: "fsvm_guest_init_defaults",
+    srcs: [
+        "guest/fsvm_guest.c",
+        "guest/table.c",
+    ],
+    static_executable: true,
+    stl: "none",
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    installable: false,
+    compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fsvm_guest_init",
+    defaults: ["fsvm_guest_init_defaults"],
+}
+
+// The same /init with the self test the host harness drives (scripts/p2-harness.py, `fsvm.selftest=` on the
+// kernel command line). Only in fsvm_guest_initrd_selftest, which no image ships.
+cc_binary {
+    name: "fsvm_guest_init_selftest",
+    defaults: ["fsvm_guest_init_defaults"],
+    cflags: ["-DFSVM_SELFTEST"],
+}
+
+// The guest's partition table reader on hostile tables, on the host (guest/table_test.c).
+cc_test_host {
+    name: "fsvm_guest_table_test",
+    srcs: [
+        "guest/table.c",
+        "guest/table_test.c",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    test_suites: ["general-tests"],
+}
+
+python_binary_host {
+    name: "fsvm_mkinitrd",
+    main: "guest/mkinitrd.py",
+    srcs: ["guest/mkinitrd.py"],
+}
+
+// The initramfs. The virtualization APEX ships it as etc/fsvm_initrd.img, next to the guest kernel signed for it
+// (packages/modules/Virtualization guest/diamaneos, see README.md).
+genrule {
+    name: "fsvm_guest_initrd",
+    tools: ["fsvm_mkinitrd"],
+    device_first_srcs: [
+        ":fsvm_guest_init",
+        ":fsvm_fsck_msdos",
+        ":fsvm_fsck_exfat",
+        ":fsvm_newfs_msdos",
+        ":fsvm_mkfs_exfat",
+    ],
+    out: ["fsvm_initrd.img"],
+    cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init) " +
+        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat) " +
+        "newfs_msdos=$(location :fsvm_newfs_msdos) mkfs.exfat=$(location :fsvm_mkfs_exfat)",
+}
+
+// For the host harness only.
+genrule {
+    name: "fsvm_guest_initrd_selftest",
+    tools: ["fsvm_mkinitrd"],
+    device_first_srcs: [
+        ":fsvm_guest_init_selftest",
+        ":fsvm_fsck_msdos",
+        ":fsvm_fsck_exfat",
+        ":fsvm_newfs_msdos",
+        ":fsvm_mkfs_exfat",
+    ],
+    out: ["fsvm_initrd_selftest.img"],
+    cmd: "$(location fsvm_mkinitrd) $(out) $(location :fsvm_guest_init_selftest) " +
+        "fsck_msdos=$(location :fsvm_fsck_msdos) fsck.exfat=$(location :fsvm_fsck_exfat) " +
+        "newfs_msdos=$(location :fsvm_newfs_msdos) mkfs.exfat=$(location :fsvm_mkfs_exfat)",
+}
+
+// The filesystem checks vold ran on Android (fsck_untrusted) now run in the VM, before a writable mount. Static
+// builds of the pinned tree's own sources, unchanged: each file in guest/fsck includes one source file of
+// external/fsck_msdos or external/exfatprogs, with that project's flags, so nothing is copied or forked.
+license {
+    name: "fsvm_fsck_msdos_license",
+    license_kinds: ["SPDX-license-identifier-BSD"],
+    license_text: ["guest/fsck/NOTICE.fsck_msdos"],
+}
+
+license {
+    name: "fsvm_fsck_exfat_license",
+    license_kinds: [
+        "SPDX-license-identifier-GPL-2.0",
+        "SPDX-license-identifier-LGPL",
+    ],
+    license_text: ["guest/fsck/NOTICE.exfatprogs"],
+}
+
+cc_binary {
+    name: "fsvm_fsck_msdos",
+    licenses: ["fsvm_fsck_msdos_license"],
+    srcs: [
+        "guest/fsck/fsck_msdos_boot.c",
+        "guest/fsck/fsck_msdos_check.c",
+        "guest/fsck/fsck_msdos_dir.c",
+        "guest/fsck/fsck_msdos_fat.c",
+        "guest/fsck/fsck_msdos_fsutil.c",
+        "guest/fsck/fsck_msdos_main.c",
+    ],
+    // As external/fsck_msdos builds fsck_msdos, which finds its own headers (fstab.h) through this.
+    include_dirs: ["external/fsck_msdos"],
+    cflags: [
+        "-O2",
+        "-Wall",
+        "-Werror",
+        "-D_BSD_SOURCE",
+        "-D_LARGEFILE_SOURCE",
+        "-D_FILE_OFFSET_BITS=64",
+        "-Wno-unused-variable",
+        "-Wno-unused-const-variable",
+        "-Wno-format",
+        "-Wno-sign-compare",
+        "-include external/fsck_msdos/freebsd-compat.h",
+    ],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fsvm_fsck_exfat",
+    licenses: ["fsvm_fsck_exfat_license"],
+    srcs: [
+        "guest/fsck/fsck_exfat_fsck.c",
+        "guest/fsck/fsck_exfat_repair.c",
+    ],
+    // As external/exfatprogs builds fsck.exfat.
+    defaults: ["exfatprogs-defaults"],
+    static_libs: ["libexfat"],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
+}
+
+// fsvmd's FUSE side on the host's real FUSE driver, mounted with vold's options in a user namespace, against an
+// in-memory filesystem VM (fsvmd/tests/fuse_host.rs). Prints SKIPPED where the host has no user namespaces.
+rust_test_host {
+    name: "fsvmd_fuse_test",
+    crate_name: "fsvmd_fuse_test",
+    srcs: ["fsvmd/tests/fuse_host.rs"],
+    edition: "2021",
+    test_harness: false,
+    rustlibs: [
+        "libanyhow",
+        "libfsvm_proto",
+        "libfuse_rust",
+        "liblibc",
+        "liblog_rust",
+    ],
+    test_suites: ["general-tests"],
+}
+
+// fsvmd's seccomp filter: what it decides, evaluated as the kernel would (fsvmd/src/seccomp.rs). The host FUSE test
+// above runs the FUSE thread under it.
+rust_test_host {
+    name: "fsvmd_seccomp_test",
+    crate_name: "fsvmd_seccomp_test",
+    srcs: ["fsvmd/src/seccomp.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libanyhow",
+        "liblibc",
+    ],
+    test_suites: ["general-tests"],
+}
+
+// Formatting runs in the VM too (protocol FORMAT): no mkfs runs on Android for a card or USB drive. Static builds of
+// the pinned tree's own newfs_msdos and mkfs.exfat, with their projects' flags, as for the checkers above.
+license {
+    name: "fsvm_newfs_msdos_license",
+    license_kinds: ["SPDX-license-identifier-BSD"],
+    license_text: ["guest/fsck/NOTICE.newfs_msdos"],
+}
+
+cc_binary {
+    name: "fsvm_newfs_msdos",
+    licenses: ["fsvm_newfs_msdos_license"],
+    srcs: [
+        "guest/fsck/newfs_msdos_mkfs_msdos.c",
+        "guest/fsck/newfs_msdos_newfs_msdos.c",
+    ],
+    // As external/newfs_msdos builds newfs_msdos (its freebsd-compat.h is found through this).
+    include_dirs: ["external/newfs_msdos"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-function",
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+        "-D_FILE_OFFSET_BITS=64",
+        "-include external/newfs_msdos/freebsd-compat.h",
+    ],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fsvm_mkfs_exfat",
+    licenses: ["fsvm_fsck_exfat_license"],
+    srcs: [
+        "guest/fsck/mkfs_exfat_mkfs.c",
+        "guest/fsck/mkfs_exfat_upcase.c",
+    ],
+    // As external/exfatprogs builds mkfs.exfat.
+    defaults: ["exfatprogs-defaults"],
+    static_libs: ["libexfat"],
+    static_executable: true,
+    stl: "none",
+    installable: false,
+    compile_multilib: "64",
+}

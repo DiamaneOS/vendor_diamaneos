@@ -1,0 +1,6 @@
+# Copyright (C) 2026 DiamaneOS
+# SPDX-License-Identifier: Apache-2.0
+
+# BLKGETDISKSEQ checks the generation on the descriptor used for destructive I/O.
+# Only vold's already-authorized card descriptor gets this exact read-only ioctl.
+allowxperm vold vold_device:blk_file ioctl 0x1280;

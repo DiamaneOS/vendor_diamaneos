@@ -1,0 +1,3 @@
+fsvm_fsck_exfat is fsck.exfat built from external/exfatprogs of the Android tree, unchanged. exfatprogs is free
+software under the GNU General Public License version 2, in external/exfatprogs/COPYING, which applies to this
+binary. Its source is the Android tree's external/exfatprogs.
