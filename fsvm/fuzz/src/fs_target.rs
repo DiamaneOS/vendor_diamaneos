@@ -16,7 +16,9 @@
 //! sequence of the calls Android's kernel makes, each answered by a VM thread on the other end of a socket pair from
 //! a fuzzed reply script, with new VMs when a session breaks. What reaches the kernel is checked: attributes, modes and
 //! owners as vold set them, sizes and times within the protocol's limits, reads and writes within what was asked,
-//! listings of sound names, and Android's own inode numbers, each with one place in the tree and never reused.
+//! listings of sound names, and Android's own inode numbers, each with one place in the tree and never reused. The
+//! object behind a descriptor is modelled across new VMs: a file opened in a VM that was replaced since serves no I/O
+//! (its name may hold another file in the new VM), and an open file keeps the kind it was opened as.
 //!
 //! The script never brings a fourth broken session (fsvmd ends then, by design): the third new VM answers every
 //! request with an errno.
@@ -33,6 +35,7 @@ use std::ffi::CString;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -121,11 +124,14 @@ struct FuzzSession {
     script: Arc<Mutex<Script>>,
     threads: Threads,
     restarts: usize,
+    /// The VMs that served so far, less one: the harness's view of fsvmd's generation.
+    generation: Arc<AtomicUsize>,
 }
 
 impl Session for FuzzSession {
-    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, Hello)> {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, Hello)> {
         self.restarts += 1;
+        self.generation.fetch_add(1, Ordering::SeqCst);
         let a = spawn_vm(&self.script, &self.threads, self.restarts >= 3);
         // What the new VM said at its mount, already checked by fsvm_proto in fsvmd (decode_hello): only sound values.
         let (flags, root) = self.script.lock().unwrap().take(|i| (i.u8(), i.u8() as u64 + 1));
@@ -134,6 +140,8 @@ impl Session for FuzzSession {
     }
 
     fn stop_vm(&mut self, _within: Duration) {}
+    // State stays failed so the in-process oracle can check refusals after session termination.
+    fn give_up(&mut self) {}
 }
 
 struct Sink(Rc<RefCell<Vec<u8>>>);
@@ -295,7 +303,8 @@ pub fn fs_session(data: &[u8]) -> usize {
     let script = Arc::new(Mutex::new(Script { data: i.rest().to_vec(), at: 0 }));
     let threads: Threads = Arc::new(Mutex::new(Vec::new()));
     let a = spawn_vm(&script, &threads, false);
-    let session = FuzzSession { script: script.clone(), threads: threads.clone(), restarts: 0 };
+    let generation = Arc::new(AtomicUsize::new(0));
+    let session = FuzzSession { script: script.clone(), threads: threads.clone(), restarts: 0, generation: generation.clone() };
     let client = Client::new(StreamTransport(a), quick_deadlines());
     let fs = FsvmFs::new(client, root_guest, asked_ro, vm_ro, GID, obb, check_pending, Box::new(session)).with_owner(UID);
     let mut m = Model {
@@ -306,6 +315,14 @@ pub fn fs_session(data: &[u8]) -> usize {
         file_mode: if obb { 0o440 } else { 0o660 },
     };
     let mut handles: Vec<u64> = Vec::new();
+    // Each open file: the VM it was opened in, and whether it was opened as a directory (None: unknown to the model).
+    let mut opened: HashMap<u64, (usize, Option<bool>)> = HashMap::new();
+    let now = || generation.load(Ordering::SeqCst);
+    // I/O through `h` reached the volume: only a file opened in the VM that serves now may.
+    let io_ok = |opened: &HashMap<u64, (usize, Option<bool>)>, h: u64, what: &str| match opened.get(&h) {
+        Some((g, _)) => assert_eq!(*g, now(), "{what} through a file opened in a replaced VM"),
+        None => panic!("{what} through handle {h}, which no open gave"),
+    };
     let mut dir_handles: HashMap<u64, u64> = HashMap::new();
     let mut oks = 0;
     let mut o = Input::new(&ops);
@@ -316,6 +333,7 @@ pub fn fs_session(data: &[u8]) -> usize {
         if tracing() {
             eprintln!("call {op} ino {ino} handle {h}, model {:?}", m.nodes);
         }
+        let start_generation = now();
         match op {
             0 => {
                 let name = cname(&mut o);
@@ -334,6 +352,13 @@ pub fn fs_session(data: &[u8]) -> usize {
                 if let Ok((st, _)) = fs.getattr(ctx(), ino, hh) {
                     oks += 1;
                     m.assert_stat(ino, &st);
+                    // Through the handle of a file opened in this VM, also after its name went: the kind it was opened as.
+                    if let Some((g, Some(dir))) = hh.and_then(|h| opened.get(&h)) {
+                        if *g == now() {
+                            let is_dir = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+                            assert_eq!(is_dir, *dir, "an open file changed its kind");
+                        }
+                    }
                 }
             }
             2 => {
@@ -343,25 +368,40 @@ pub fn fs_session(data: &[u8]) -> usize {
                 st.st_mtime = o.u64() as i64;
                 st.st_mtime_nsec = o.u32() as i64;
                 let valid = SetattrValid::from_bits_truncate(o.u32());
-                if let Ok((st, _)) = fs.setattr(ctx(), ino, st, Some(h), valid) {
+                let hh = if h == 0 { None } else { Some(h) };
+                if let Ok((st, _)) = fs.setattr(ctx(), ino, st, hh, valid) {
+                    if let Some(h) = hh { io_ok(&opened, h, "setattr"); }
+                    if valid.intersects(SetattrValid::SIZE | SetattrValid::MTIME | SetattrValid::MTIME_NOW) {
+                        assert_eq!(start_generation, now(), "modifying setattr crossed a VM generation");
+                    }
                     m.assert_stat(ino, &st);
+                    if let Some((_, Some(dir))) = hh.and_then(|h| opened.get(&h)) {
+                        assert_eq!(st.st_mode & libc::S_IFMT == libc::S_IFDIR, *dir, "setattr changed an open file's kind");
+                    }
                 }
             }
             3 => {
                 if let Ok((Some(nh), _)) = fs.open(ctx(), ino, o.u32()) {
                     oks += 1;
+                    if ino != ROOT && m.nodes.get(&ino).is_some_and(|n| !n.2) {
+                        assert_eq!(start_generation, now(), "an open crossed a file's VM generation");
+                    }
                     handles.push(nh);
+                    let dir = if ino == ROOT { Some(true) } else { m.nodes.get(&ino).map(|n| n.2) };
+                    opened.insert(nh, (now(), dir));
                 }
             }
             4 => {
                 let _ = fs.release(ctx(), ino, 0, h, false, false, None);
                 handles.retain(|x| *x != h);
+                opened.remove(&h);
             }
             5 => {
                 let size = if o.u8() & 1 == 0 { MAX_IO } else { o.u32() };
                 let got = Rc::new(RefCell::new(Vec::new()));
                 if let Ok(n) = fs.read(ctx(), ino, h, Sink(got.clone()), size, o.u64(), None, 0) {
                     oks += 1;
+                    io_ok(&opened, h, "a read");
                     assert_eq!(n, got.borrow().len(), "read count is not the bytes given");
                     assert!(n <= size.min(MAX_IO) as usize, "{n} bytes read of {size}");
                 }
@@ -371,6 +411,7 @@ pub fn fs_session(data: &[u8]) -> usize {
                 let src = Source(io::Cursor::new(vec![0x5a; size as usize]));
                 if let Ok(n) = fs.write(ctx(), ino, h, src, size, o.u64(), None, false, 0) {
                     oks += 1;
+                    io_ok(&opened, h, "a write");
                     assert!(n <= size as usize && size <= MAX_IO, "{n} written of {size}");
                 }
             }
@@ -378,7 +419,9 @@ pub fn fs_session(data: &[u8]) -> usize {
                 let _ = fs.flush(ctx(), ino, h, 0);
             }
             8 => {
-                let _ = fs.fsync(ctx(), ino, o.u8() & 1 == 0, h);
+                if fs.fsync(ctx(), ino, o.u8() & 1 == 0, h).is_ok() {
+                    io_ok(&opened, h, "an fsync");
+                }
             }
             9 => {
                 let _ = fs.fsyncdir(ctx(), ino, o.u8() & 1 == 0, h);
@@ -390,6 +433,9 @@ pub fn fs_session(data: &[u8]) -> usize {
                     m.entry(ino, name.as_bytes(), &e);
                     assert_eq!(e.attr.st_mode & libc::S_IFMT, libc::S_IFREG, "create made a directory");
                     handles.extend(nh);
+                    if let Some(nh) = nh {
+                        opened.insert(nh, (now(), Some(false)));
+                    }
                 }
             }
             11 => {

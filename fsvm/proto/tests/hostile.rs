@@ -59,7 +59,7 @@ fn attr(node: u64, kind: Kind, size: u64) -> Attr {
 }
 
 fn quick() -> Deadlines {
-    Deadlines { hello: Duration::from_millis(600), meta: Duration::from_millis(600), io: Duration::from_millis(600), mutate: Duration::from_millis(600), mount: Duration::from_millis(600), listing: Duration::from_secs(30) }
+    Deadlines { hello: Duration::from_millis(600), meta: Duration::from_millis(600), io: Duration::from_millis(600), mutate: Duration::from_millis(600), mount: Duration::from_millis(600), listing: Duration::from_secs(30), operation: Duration::from_secs(30) }
 }
 
 /// Runs `server` against a fresh client and returns the client.
@@ -209,6 +209,52 @@ fn unknown_errno_becomes_eio() {
     assert!(!c.is_broken());
 }
 
+/// EMFILE reaches Android for OPEN only (the VM has no handle left, review 1b L2), any other call answers EIO.
+#[test]
+fn emfile_only_for_open() {
+    let mut c = with_server(|mut s| {
+        while let Some(r) = read_req(&mut s) {
+            reply(&mut s, r.id, -errno::EMFILE, &[]);
+        }
+    });
+    assert!(matches!(c.open_handle(2, false), Err(CallError::Errno(e)) if e == errno::EMFILE));
+    assert!(matches!(c.getattr(2), Err(CallError::Errno(e)) if e == errno::EIO));
+    assert!(matches!(c.read_handle(7, 0, 10), Err(CallError::Errno(e)) if e == errno::EIO));
+    assert!(!c.is_broken());
+}
+
+/// One FUSE request's calls end within its operation deadline (review 1b M6): a call whose own deadline would pass it
+/// is not sent, the session stays sound, and the calls that fit go through.
+#[test]
+fn operation_deadline_is_kept() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut c = with_server(move |mut s| {
+        while let Some(r) = read_req(&mut s) {
+            let _ = tx.send(r.op);
+            thread::sleep(Duration::from_millis(250));
+            reply(&mut s, r.id, 0, &encode_attr(&attr(2, Kind::File, 1)));
+        }
+    });
+    // meta is 600 ms and each lookup takes 250 ms: about six fit in 2 s, the next would end after it and is not sent.
+    let start = Instant::now();
+    c.op_deadline = Some(start + Duration::from_secs(2));
+    let mut sent = 0;
+    let end = loop {
+        match c.lookup(1, b"a") {
+            Ok(_) => sent += 1,
+            Err(e) => break e,
+        }
+    };
+    assert!(matches!(end, CallError::OutOfTime), "{end:?}");
+    assert!(start.elapsed() < Duration::from_secs(2), "the operation took {:?}", start.elapsed());
+    assert_eq!(rx.try_iter().count(), sent, "a call sent past the operation's end");
+    assert!((4..=7).contains(&sent), "{sent} calls fit");
+    assert!(!c.is_broken());
+    // The next operation has its own time.
+    c.op_deadline = None;
+    assert!(c.lookup(1, b"a").is_ok());
+}
+
 #[test]
 fn directory_listing_is_cleaned() {
     let mut c = with_server(|mut s| {
@@ -334,7 +380,7 @@ fn random_replies_never_panic_or_hang() {
                 }
             }
         });
-        c.deadlines = Deadlines { hello: Duration::from_millis(150), meta: Duration::from_millis(150), io: Duration::from_millis(150), mutate: Duration::from_millis(150), mount: Duration::from_millis(150), listing: Duration::from_secs(30) };
+        c.deadlines = Deadlines { hello: Duration::from_millis(150), meta: Duration::from_millis(150), io: Duration::from_millis(150), mutate: Duration::from_millis(150), mount: Duration::from_millis(150), listing: Duration::from_secs(30), operation: Duration::from_secs(30) };
         let t = Instant::now();
         let _ = c.getattr(2);
         let _ = c.list(1);
@@ -353,6 +399,12 @@ fn hello_payload(fs_kind: u32, read_only: bool) -> Vec<u8> {
     h[4..8].copy_from_slice(&fs_kind.to_le_bytes());
     h[8..12].copy_from_slice(&(read_only as u32).to_le_bytes());
     h[16..24].copy_from_slice(&1u64.to_le_bytes());
+    h
+}
+
+fn hello_flags(fs_kind: u32, flags: u32) -> Vec<u8> {
+    let mut h = hello_payload(fs_kind, false);
+    h[8..12].copy_from_slice(&flags.to_le_bytes());
     h
 }
 
@@ -432,6 +484,8 @@ fn hostile_mount_replies_break_the_session() {
         ("no filesystem", hello_payload(0, false), false),
         ("other filesystem", hello_payload(FS_EXFAT, false), false),
         ("writable when read-only was asked", hello_payload(FS_VFAT, false), true),
+        // Review 1b M1: the switch after a check would make the volume writable.
+        ("a check pending when read-only was asked", hello_flags(FS_VFAT, 5), true),
         ("short", hello_payload(FS_VFAT, false)[..10].to_vec(), false),
     ] {
         let mut c = layout_server(layout::encode_layout(sectors, 1, &[fat(1, 2048, 100)]), reply_payload);
@@ -568,4 +622,18 @@ fn disk_refusals() {
     long.push(0);
     let (mut c, _rx) = disk_server(0, 0, long);
     assert!(matches!(c.select_disk(0), Err(CallError::Broken(_))));
+}
+
+
+/// Every protocol operation normalizes a guest handle-limit error before it reaches FUSE.
+#[test]
+fn emfile_mapping_covers_every_operation() {
+    use fsvm_proto::Op;
+    for op in [Op::Hello, Op::Lookup, Op::Getattr, Op::Readdir, Op::Read, Op::Write,
+        Op::Create, Op::Mkdir, Op::Unlink, Op::Rmdir, Op::Rename, Op::Truncate, Op::SetMtime,
+        Op::Statfs, Op::Fsync, Op::Forget, Op::Layout, Op::Mount, Op::Unmount, Op::Dirty,
+        Op::Open, Op::Close, Op::Check, Op::Disk, Op::Format] {
+        let want = if op == Op::Open { errno::EMFILE } else { errno::EIO };
+        assert_eq!(errno::for_op(op, errno::EMFILE), want, "{op:?}");
+    }
 }

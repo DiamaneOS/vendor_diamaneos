@@ -66,6 +66,8 @@ struct Drive {
     block_size: u32,
     writable: bool,
     vm: Mutex<Option<Arc<vm::Vm>>>,
+    /// The listing memory of all partitions together (fs::Listings): one card's.
+    listings: Arc<fs::Listings>,
 }
 
 impl Drive {
@@ -80,12 +82,39 @@ impl Drive {
     /// VM ended) a new one starts, with every disk of the drive. A VM refused at its start for want of memory ends
     /// with NoRoom (vold waits for room).
     fn session(&self, k: usize, deadline: Instant, keep: Duration) -> Result<VmClient> {
-        let mut current = lock(&self.vm);
+        self.session_with_vm(k, deadline, keep).map(|(_, client)| client)
+    }
+
+    fn session_with_vm(&self, k: usize, deadline: Instant, keep: Duration) -> Result<(Arc<vm::Vm>, VmClient)> {
+        self.session_with_retry(k, deadline, keep, &mut crate::reconnect::DeadVmRetry::default())
+    }
+
+    fn session_with_retry(
+        &self,
+        k: usize,
+        deadline: Instant,
+        keep: Duration,
+        retry: &mut crate::reconnect::DeadVmRetry,
+    ) -> Result<(Arc<vm::Vm>, VmClient)> {
+        let mut current = loop {
+            crate::left(deadline)?;
+            match self.vm.try_lock() {
+                Ok(current) => break current,
+                Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+            }
+        };
         if let Some(vm) = current.as_ref() {
             if !vm.ended() {
                 let vm = vm.clone();
                 drop(current);
-                return crate::connect_disk(&vm, k as u32, deadline, keep);
+                let connected = crate::connect_disk(&vm, k as u32, deadline, keep);
+                if connected.is_err() && retry.after_connect_failure(vm.ended(), deadline) {
+                    warn!("the drive's VM ended while its session connected, starting a replacement");
+                    drop(vm);
+                    return self.session_with_retry(k, deadline, keep, retry);
+                }
+                return connected.map(|client| (vm, client));
             }
             warn!("the drive's VM ended, starting a new one with all its disks");
             *current = None;
@@ -105,8 +134,9 @@ impl Drive {
                 }
                 Err(e) => return Err(e),
             };
-        *current = Some(Arc::new(vm));
-        Ok(client)
+        let vm = Arc::new(vm);
+        *current = Some(vm.clone());
+        Ok((vm, client))
     }
 
     /// Stops the VM and waits for its end, so that its memory and the ranges are free before fsvmd ends.
@@ -116,16 +146,17 @@ impl Drive {
         }
     }
 
-    /// A broken format reply is inconclusive even after stopping the VM. Report stop only after
-    /// the VM manager observed its exit, and leave the VM serving siblings alone.
-    fn confirm_format_writer_stopped(&self, slots: &Mutex<Slots>) -> bool {
+    /// A failed format is inconclusive even after stopping the writer. Leave siblings alone.
+    fn confirm_format_writer_stopped(&self, slots: &Mutex<Slots>, writer: &Arc<vm::Vm>) -> bool {
         let s = lock(slots);
         if s.parts.iter().any(Option::is_some) || s.repairs.iter().any(Option::is_some) {
             return false;
         }
         drop(s);
         let mut current = lock(&self.vm);
-        if !current.as_ref().is_some_and(|vm| vm.stop_and_wait(crate::PROBE_VM_END)) {
+        if !current.as_ref().is_some_and(|vm| Arc::ptr_eq(vm, writer))
+            || !writer.stop_and_wait(crate::PROBE_VM_END)
+        {
             return false;
         }
         *current = None;
@@ -186,17 +217,17 @@ struct PartSession {
 }
 
 impl PartSession {
-    fn bring_up(&mut self, budget: Duration) -> Result<(VmClient, fsvm_proto::Hello)> {
-        let deadline = Instant::now() + budget;
+    fn bring_up(&mut self, deadline: Instant) -> Result<(VmClient, fsvm_proto::Hello)> {
+        crate::left(deadline)?;
         let client = self.drive.session(self.k, deadline, crate::SERVE_KEEP)?;
         crate::mount_on(client, &self.mount, deadline)
     }
 }
 
 impl fs::Session for PartSession {
-    fn restart(&mut self) -> Result<(VmClient, fsvm_proto::Hello)> {
+    fn restart(&mut self, deadline: Instant) -> Result<(VmClient, fsvm_proto::Hello)> {
         info!("volume {}: a new session in the drive's VM", self.volume);
-        self.bring_up(crate::SERVE_BUDGET)
+        self.bring_up(deadline)
     }
 
     /// The drive's VM serves the other partitions on: only this session ends (fs::Closer shuts it down).
@@ -212,6 +243,7 @@ struct Slots {
     parts: Vec<Option<Arc<Part>>>,
     /// A repair running on the disk, and whether vold cancelled it.
     repairs: Vec<Option<Arc<AtomicBool>>>,
+    modes: Vec<drive_msg::AttachmentMode>,
 }
 
 impl Slots {
@@ -245,8 +277,9 @@ fn serve_part(
         length: bytes / 512,
         fs: fs_kind,
     };
+    let listings = drive.listings.clone();
     let mut session = PartSession { drive, k, mount, volume: volume.clone(), pipe: part.pipe.clone() };
-    let (client, hello) = match session.bring_up(crate::SERVE_BUDGET) {
+    let (client, hello) = match session.bring_up(Instant::now() + crate::SERVE_BUDGET) {
         Ok(up) => up,
         Err(e) => {
             error!("volume {volume}: not served: {e:?}");
@@ -262,7 +295,18 @@ fn serve_part(
     };
     let pipe = part.pipe.clone();
     let filesystem =
-        match crate::start_serving(client, hello, read_only, gid, owner_uid, false, &volume, Box::new(session), &pipe) {
+        match crate::start_serving(
+            client,
+            hello,
+            read_only,
+            gid,
+            owner_uid,
+            false,
+            &volume,
+            Box::new(session),
+            &pipe,
+            listings,
+        ) {
             Ok(f) => f,
             Err(e) => {
                 error!("volume {volume}: not served: {e:?}");
@@ -295,7 +339,7 @@ fn serve_part(
 }
 
 /// Repairs partition `k` in the drive's VM with no time limit, and writes `OK` to `pipe` when it is clean now.
-fn repair_part(drive: Arc<Drive>, k: usize, fs_kind: u32, cancelled: Arc<AtomicBool>, mut pipe: File) {
+fn repair_part(drive: Arc<Drive>, slots: Arc<Mutex<Slots>>, k: usize, fs_kind: u32, cancelled: Arc<AtomicBool>, mut pipe: File) {
     let bytes = lock(&drive.specs)[k].bytes;
     let deadline = Instant::now() + crate::SERVE_BUDGET;
     let result = drive.session(k, deadline, crate::PROBE_KEEP).and_then(|client| {
@@ -304,6 +348,7 @@ fn repair_part(drive: Arc<Drive>, k: usize, fs_kind: u32, cancelled: Arc<AtomicB
     });
     match result {
         Ok(crate::Repair::Done) if !cancelled.load(Ordering::SeqCst) => {
+            lock(&slots).modes[k].repaired();
             info!("disk {k} repaired in the drive's VM");
             let _ = pipe.write_all(b"OK\n");
         }
@@ -318,22 +363,37 @@ enum Formatted {
     Done(String),
     /// The format tool succeeded, the new filesystem could not be read back (vold reads the disk again).
     Unverified,
-    /// The request to the VM broke off after it was sent: whether the disk was formatted is not known.
-    Uncertain,
+    /// The format could have written data. The reply carries any affirmative writer exit.
+    Uncertain(i32),
 }
 
-/// Formats partition `k` in the drive's VM and reads its new filesystem. An error means nothing reached the format
-/// tool, or the tool itself failed (an errno for vold).
-fn format_part(drive: &Drive, k: usize, fs_kind: u32) -> Result<Formatted> {
+fn format_failure_reply(drive: &Drive, slots: &Mutex<Slots>, writer: &Arc<vm::Vm>, error: i32) -> i32 {
+    if drive.confirm_format_writer_stopped(slots, writer) {
+        drive_msg::FORMAT_UNCERTAIN_STOPPED
+    } else if error == drive_msg::FORMAT_UNCERTAIN || error == libc::EAGAIN {
+        // EAGAIN on the drive protocol is reserved for admission failure before dispatch.
+        drive_msg::FORMAT_UNCERTAIN
+    } else if error > 0 && error < 4000 {
+        error
+    } else {
+        libc::EIO
+    }
+}
+
+/// Formats partition `k` in the drive's VM and reads its new filesystem.
+fn format_part(drive: &Drive, slots: &Mutex<Slots>, k: usize, fs_kind: u32) -> Result<Formatted> {
     let deadline = Instant::now() + crate::FORMAT_BUDGET;
-    let mut client = drive.session(k, deadline, crate::FORMAT_KEEP)?;
+    let (vm, mut client) = drive.session_with_vm(k, deadline, crate::FORMAT_KEEP)?;
     let budget = crate::left(deadline)?.saturating_sub(Duration::from_secs(3));
     match client.format(fs_kind, budget) {
         Ok(()) => {}
-        Err(fsvm_proto::client::CallError::Errno(e)) => return Err(anyhow!(FormatFailed(e))),
+        Err(fsvm_proto::client::CallError::Errno(e)) => {
+            warn!("disk {k}: the formatter returned errno {e}");
+            return Ok(Formatted::Uncertain(format_failure_reply(drive, slots, &vm, e)));
+        }
         Err(e) => {
             error!("disk {k}: the format request broke off: {e:?}");
-            return Ok(Formatted::Uncertain);
+            return Ok(Formatted::Uncertain(format_failure_reply(drive, slots, &vm, drive_msg::FORMAT_UNCERTAIN)));
         }
     }
     let bytes = lock(&drive.specs)[k].bytes;
@@ -354,18 +414,6 @@ fn format_part(drive: &Drive, k: usize, fs_kind: u32) -> Result<Formatted> {
     }
     Ok(Formatted::Done(layout::probe_text(&l)))
 }
-
-/// The format tool in the VM failed with this errno.
-#[derive(Debug)]
-struct FormatFailed(i32);
-
-impl std::fmt::Display for FormatFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the format tool failed ({})", self.0)
-    }
-}
-
-impl std::error::Error for FormatFailed {}
 
 /// Receives one request from vold: its bytes and descriptors, or None when vold closed the socket.
 fn receive(ctl: RawFd) -> Result<Option<(Vec<u8>, Vec<File>)>> {
@@ -493,8 +541,9 @@ pub fn run(name: &str, specs: &[DiskSpec], block_size: u32, writable: bool, ctl:
         block_size,
         writable,
         vm: Mutex::new(None),
+        listings: Default::default(),
     });
-    let slots = Arc::new(Mutex::new(Slots { parts: vec![None; specs.len()], repairs: vec![None; specs.len()] }));
+    let slots = Arc::new(Mutex::new(Slots { parts: vec![None; specs.len()], repairs: vec![None; specs.len()], modes: vec![drive_msg::AttachmentMode::default(); specs.len()] }));
 
     // vold's stop (T) ends everything in the time left, its write back request (W) writes every partition back now and
     // leaves the rest to its DETACHes.
@@ -566,10 +615,10 @@ fn handle(drive: &Arc<Drive>, slots: &Arc<Mutex<Slots>>, id: u32, req: &Request,
                             done: Condvar::new(),
                         });
                         s.parts[k] = Some(part.clone());
+                        let read_only = s.modes[k].attach(*read_only, writable);
                         drop(s);
                         let drive = drive.clone();
                         let (gid, owner_uid, fs, volume) = (*gid, *owner_uid, *fs, volume.clone());
-                        let read_only = *read_only || !writable;
                         info!("volume {volume}: serving disk {k} of the drive");
                         std::thread::spawn(move || {
                             serve_part(drive, part, k, gid, owner_uid, read_only, fs, volume, fuse_dev)
@@ -617,19 +666,17 @@ fn handle(drive: &Arc<Drive>, slots: &Arc<Mutex<Slots>>, id: u32, req: &Request,
             if lock(slots).busy(k) {
                 libc::EBUSY
             } else {
-                match format_part(drive, k, *fs) {
-                    Ok(Formatted::Done(text)) => return format!("{}\n{text}", drive_msg::answer(id, req, 0)),
-                    Ok(Formatted::Unverified) => drive_msg::FORMAT_UNVERIFIED,
-                    Ok(Formatted::Uncertain) if drive.confirm_format_writer_stopped(slots) => {
-                        drive_msg::FORMAT_UNCERTAIN_STOPPED
+                match format_part(drive, slots, k, *fs) {
+                    Ok(Formatted::Done(text)) => {
+                        lock(slots).modes[k].repaired();
+                        return format!("{}\n{text}", drive_msg::answer(id, req, 0));
                     }
-                    Ok(Formatted::Uncertain) => drive_msg::FORMAT_UNCERTAIN,
+                    Ok(Formatted::Unverified) => drive_msg::FORMAT_UNVERIFIED,
+                    Ok(Formatted::Uncertain(reply)) => reply,
                     Err(e) => {
                         error!("disk {k} not formatted: {e:?}");
                         if e.chain().any(|c| c.is::<crate::NoRoom>()) {
                             libc::EAGAIN
-                        } else if let Some(FormatFailed(errno)) = e.chain().find_map(|c| c.downcast_ref::<FormatFailed>()) {
-                            if *errno > 0 && *errno < 4000 { *errno } else { libc::EIO }
                         } else {
                             libc::EIO
                         }
@@ -648,7 +695,7 @@ fn handle(drive: &Arc<Drive>, slots: &Arc<Mutex<Slots>>, id: u32, req: &Request,
                     let fs_kind = lock(&drive.specs)[k].fs;
                     let (drive, slots) = (drive.clone(), slots.clone());
                     std::thread::spawn(move || {
-                        repair_part(drive, k, fs_kind, cancelled, pipe);
+                        repair_part(drive, slots.clone(), k, fs_kind, cancelled, pipe);
                         lock(&slots).repairs[k] = None;
                     });
                     0

@@ -1,6 +1,6 @@
-# DiamaneOS: one user per fsvmd service (fsvmd/fsvmd.rc), in the vendor's reserved OEM range, below the FP6's own
+# DiamaneOS: one user per fsvmd service (fsvmd/fsvmd.rc), in the vendor's reserved OEM range, below the device's own
 # and its IMS services' (2989 to 2999). init runs each service as its user, so no fsvmd shares a user with another,
-# none runs as the system user, and no service of ours holds setuid or setgid. The slots match vold's caps
+# none runs as the system user, and no fsvmd service holds setuid or setgid. The slots match vold's caps
 # (system/vold fs/Fsvm.cpp): one probe at a time, kMaxServing (6) served volumes, kMaxObbVms (4) OBB images.
 # scripts/p3-slots-check.py checks that they agree.
 

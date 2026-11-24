@@ -275,11 +275,101 @@ pub fn fs_create_open_fails() -> Vec<u8> {
     s.0
 }
 
+/// Finding (review 1b H3): a file stays open while its VM is replaced, and a read through it went to whatever the new
+/// VM holds under the file's name.
+pub fn fs_reconnect_handle() -> Vec<u8> {
+    let mut ops = W::default();
+    ops.u8(10).u8(0).u64(0).name(0).u32(2); // create "a", open for writing
+    ops.u8(5).u8(16).u8(32).u8(0).u8(0).u64(0); // read through its handle: the VM goes, a new one serves
+    ops.u8(5).u8(16).u8(32).u8(0).u8(0).u64(0); // read through the same handle in the new VM
+    let mut s = W::default();
+    s.u16(ops.0.len() as u16).bytes(&ops.0).u8(0).u8(0);
+    s.u8(0).attr(5, false, 0); // create
+    s.u8(0).u64_reply(9); // open of the new file
+    s.u8(15); // the read: the VM closes the session
+    s.u8(0).u8(0); // the new VM: mounted writable, root 1
+    s.u8(0).attr(7, false, 100); // a lookup of "a" in the new VM: another file
+    s.u8(0).u8(1).u16(4).bytes(b"NEW!"); // its data
+    s.u8(0); // unmount at the orderly stop
+    s.u8(0);
+    s.0
+}
+
+/// Finding (review 1b M7): a file opened, then unlinked, came back through its handle as a directory.
+pub fn fs_unlinked_handle_kind() -> Vec<u8> {
+    let mut ops = W::default();
+    ops.u8(10).u8(0).u64(0).name(0).u32(2); // create "a", open for writing
+    ops.u8(12).u8(0).u8(32).u8(0).name(0); // unlink "a"
+    ops.u8(1).u8(1).u64(2).u8(32).u8(0).u8(1); // getattr of its inode through the open handle
+    let mut s = W::default();
+    s.u16(ops.0.len() as u16).bytes(&ops.0).u8(0).u8(0);
+    s.u8(0).attr(5, false, 0); // create
+    s.u8(0).u64_reply(9); // open of the new file
+    s.u8(0); // unlink
+    s.u8(0).attr(5, true, 0); // getattr through the handle: a directory
+    s.u8(0); // unmount at the orderly stop
+    s.u8(0);
+    s.0
+}
+
+/// The VM breaks during OPEN of an inode that the kernel already looked up.
+pub fn fs_midcall_open() -> Vec<u8> {
+    let mut ops = W::default();
+    ops.u8(0).u8(0).u64(0).name(0);
+    ops.u8(3).u8(16).u64(0).u32(0);
+    let mut s = W::default();
+    s.u16(ops.0.len() as u16).bytes(&ops.0).u8(0).u8(0);
+    s.u8(0).attr(5, false, 8);
+    s.u8(15);
+    s.u8(0).u8(0);
+    s.u8(0).attr(7, false, 11);
+    s.u8(0).u64_reply(9);
+    s.u8(0);
+    s.0
+}
+
+/// TRUNCATE through an unlinked file's handle must keep the kind saved at OPEN.
+pub fn fs_unlinked_truncate_kind() -> Vec<u8> {
+    let mut ops = W::default();
+    ops.u8(10).u8(0).u64(0).name(0).u32(2);
+    ops.u8(12).u8(0).u8(32).u8(0).name(0);
+    ops.u8(2).u8(1).u64(2).u8(32).u8(0).u64(3).u64(1_700_000_100).u32(5).u32(8);
+    let mut s = W::default();
+    s.u16(ops.0.len() as u16).bytes(&ops.0).u8(0).u8(0);
+    s.u8(0).attr(5, false, 8);
+    s.u8(0).u64_reply(9);
+    s.u8(0);
+    s.u8(0).attr(1, false, 8);
+    s.u8(0).attr(1, true, 0);
+    s.u8(0);
+    s.0
+}
+
+/// A modifying directory setattr cannot continue after its initial lookup or mutation loses the session.
+pub fn fs_directory_timestamp(initial: bool) -> Vec<u8> {
+    let mut ops = W::default();
+    ops.u8(2).u8(0).u64(0).u64(0).u64(1_700_000_100).u32(0).u32(32);
+    let mut s = W::default();
+    s.u16(ops.0.len() as u16).bytes(&ops.0).u8(0).u8(0);
+    if !initial { s.u8(0).attr(1, true, 0); }
+    s.u8(15).u8(0).u8(0);
+    s.u8(0).attr(1, true, 0);
+    if initial { s.u8(0).attr(1, true, 0); }
+    s.u8(0).u8(0);
+    s.0
+}
+
 pub fn all() -> Vec<(String, String, Vec<u8>)> {
     let mut v: Vec<(String, String, Vec<u8>)> =
         decoder_seeds().into_iter().map(|(n, b)| ("proto".to_string(), format!("seed-{n}"), b)).collect();
     v.push(("client".into(), "seed-honest-session".into(), client_seed()));
     v.push(("fs".into(), "seed-honest-session".into(), fs_seed()));
     v.push(("fs".into(), "finding-create-open-fails".into(), fs_create_open_fails()));
+    v.push(("fs".into(), "finding-reconnect-handle".into(), fs_reconnect_handle()));
+    v.push(("fs".into(), "finding-unlinked-truncate-kind".into(), fs_unlinked_truncate_kind()));
+    v.push(("fs".into(), "finding-directory-getattr".into(), fs_directory_timestamp(true)));
+    v.push(("fs".into(), "finding-directory-mtime".into(), fs_directory_timestamp(false)));
+    v.push(("fs".into(), "finding-midcall-open".into(), fs_midcall_open()));
+    v.push(("fs".into(), "finding-unlinked-handle-kind".into(), fs_unlinked_handle_kind()));
     v
 }

@@ -111,7 +111,7 @@ pub enum Op {
     /// The bytes the VM still has to write to its disk (dirty plus under write back), 8 bytes. fsvmd watches it go
     /// down before an orderly stop.
     Dirty = 20,
-    /// Opens a node (flags bit 0: for writing) and answers a handle, 8 bytes. READ, WRITE and FSYNC with the handle
+    /// Opens a node (flags bit 0: for writing) and answers a handle, 8 bytes. READ, WRITE, GETATTR, TRUNCATE, SETMTIME and FSYNC with the handle
     /// in `node2` reach the file even after its name went (unlinked, renamed over), as with a kernel mount.
     Open = 21,
     /// Closes the handle in `node2`.
@@ -162,6 +162,8 @@ pub mod errno {
     pub const EEXIST: i32 = 17;
     pub const EXDEV: i32 = 18;
     pub const ENOTDIR: i32 = 20;
+    /// OPEN only: the VM has no handle left. The app learns that it has too many files open.
+    pub const EMFILE: i32 = 24;
     pub const EISDIR: i32 = 21;
     pub const EINVAL: i32 = 22;
     pub const EFBIG: i32 = 27;
@@ -179,6 +181,15 @@ pub mod errno {
             EPERM | ENOENT | EIO | EACCES | EBUSY | EEXIST | EXDEV | ENOTDIR | EISDIR | EINVAL | EFBIG
             | ENOSPC | EROFS | ENAMETOOLONG | ENOTEMPTY | ESTALE => e,
             _ => EIO,
+        }
+    }
+
+    /// The errno Android gets for an answer to `op`: the pass-through set, and EMFILE for OPEN.
+    pub fn for_op(op: super::Op, e: i32) -> i32 {
+        if e == EMFILE && op == super::Op::Open {
+            e
+        } else {
+            pass_through(e)
         }
     }
 }

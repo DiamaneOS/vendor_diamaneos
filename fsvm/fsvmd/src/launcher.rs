@@ -669,7 +669,7 @@ mod tests {
         let path = dir.join("sock");
         let _ = std::fs::remove_file(&path);
         let cpath = CString::new(path.to_str().unwrap()).unwrap();
-        // SAFETY: a new socket, bound to a path of our own.
+        // SAFETY: a new socket, bound to a path this test owns.
         let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
         assert!(fd >= 0);
         let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };

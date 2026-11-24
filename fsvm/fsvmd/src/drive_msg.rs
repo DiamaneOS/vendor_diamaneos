@@ -107,6 +107,24 @@ pub fn name(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
+/// The explicit read-only request for one partition over all of its attachment objects.
+#[derive(Clone, Default)]
+pub struct AttachmentMode {
+    read_only: bool,
+}
+
+impl AttachmentMode {
+    pub fn attach(&mut self, asked_read_only: bool, writable: bool) -> bool {
+        self.read_only |= asked_read_only;
+        self.read_only || !writable
+    }
+
+    /// Only a confirmed explicit repair or a verified format removes the restriction.
+    pub fn repaired(&mut self) {
+        self.read_only = false;
+    }
+}
+
 /// Parses and checks one request of `bytes` that came with `fds` descriptors, for a drive of `disks` disks (`disks`
 /// 0 before DISKS, which must come first and only once: the caller tracks that). Returns its ID and the request.
 pub fn parse(bytes: &[u8], fds: usize, disks: usize) -> Result<(u32, Request), String> {
@@ -279,6 +297,17 @@ mod tests {
         assert!(parse(&[b'D'; MAX_REQUEST + 1], 0, 1).is_err());
         assert!(parse(b"KILL 0", 0, 1).is_err());
         assert!(parse(&[0xff, 0xfe], 0, 1).is_err());
+    }
+
+    #[test]
+    fn read_only_survives_replacement_attachments() {
+        let mut parts = vec![AttachmentMode::default(), AttachmentMode::default()];
+        assert!(parts[0].attach(true, true));
+        assert!(parts[0].attach(false, true));
+        assert!(!parts[1].attach(false, true));
+        parts[0].repaired();
+        assert!(!parts[0].attach(false, true));
+        assert!(parts[0].attach(false, false));
     }
 
     #[test]

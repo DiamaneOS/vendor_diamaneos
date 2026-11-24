@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Starts the filesystem VM: a raw protected VM with our guest kernel and the fsvm initramfs from the
+//! Starts the filesystem VM: a raw protected VM with the guest kernel and the fsvm initramfs from the
 //! virtualization APEX, its disks first (the whole disk of a probe, an OBB image, or each public partition of one
 //! drive), all given at its start, and a fresh instance disk in memory last.
 
@@ -186,14 +186,21 @@ impl Vm {
         }
     }
 
-    /// Stops the VM and waits up to `within` for its end, so that its disk is free afterwards.
+    /// Stops the VM and waits up to `within` for an affirmative child exit.
     pub fn stop_and_wait(&self, within: Duration) -> bool {
         self.stop();
-        let ended = self.instance.wait_for_death_with_timeout(within).is_some();
-        if !ended {
-            warn!("the VM did not end within {within:?}");
+        let reason = self.instance.wait_for_death_with_timeout(within);
+        // These reasons come from virtmgr's successful crosvm child wait. Manager death and
+        // InfrastructureError (including a failed child wait) carry no such evidence.
+        let stopped = matches!(
+            reason,
+            Some(DeathReason::Killed | DeathReason::Shutdown | DeathReason::Reboot |
+                DeathReason::Crash | DeathReason::Hangup)
+        );
+        if !stopped {
+            warn!("the VM's exit was not confirmed within {within:?}: {reason:?}");
         }
-        ended
+        stopped
     }
 }
 

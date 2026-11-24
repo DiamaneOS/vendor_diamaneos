@@ -747,13 +747,22 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		return reply(s, q->id, -EINVAL, NULL, 0);
 	/* An open file's handle: no name needed, so it serves a file whose name went. */
 	if (q->node2 && (q->op == FSVM_READ || q->op == FSVM_WRITE || q->op == FSVM_FSYNC || q->op == FSVM_CLOSE ||
-			 q->op == FSVM_GETATTR)) {
+			 q->op == FSVM_GETATTR || q->op == FSVM_TRUNCATE || q->op == FSVM_SETMTIME)) {
 		if (q->op == FSVM_CLOSE)
 			return reply(s, q->id, handle_close(q->node2), NULL, 0);
 		int fd = handle_lookup(q->node2);
 		if (fd < 0)
 			return reply(s, q->id, -EBADF, NULL, 0);
-		if (q->op == FSVM_GETATTR) {
+		if (read_only && fsvm_changes_volume(q))
+			return reply(s, q->id, -EROFS, NULL, 0);
+		if (q->op == FSVM_TRUNCATE && ftruncate(fd, (off_t)q->arg))
+			return reply(s, q->id, -errno, NULL, 0);
+		if (q->op == FSVM_SETMTIME) {
+			struct timespec ts[2] = { { 0, UTIME_OMIT }, { (time_t)q->arg, (long)q->len } };
+			if (futimens(fd, ts))
+				return reply(s, q->id, -errno, NULL, 0);
+		}
+		if (q->op == FSVM_GETATTR || q->op == FSVM_TRUNCATE || q->op == FSVM_SETMTIME) {
 			struct stat st;
 			struct fsvm_attr at;
 			if (fstat(fd, &st))
@@ -805,8 +814,8 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		break;
 	}
 
-	/* Everything below changes the volume. */
-	if (read_only)
+	/* Below: calls that change the volume, an open and a write back. A read-only volume refuses only the first. */
+	if (read_only && fsvm_changes_volume(q))
 		return reply(s, q->id, -EROFS, NULL, 0);
 	switch (q->op) {
 	case FSVM_CREATE:
@@ -1549,8 +1558,6 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
  * served afterwards. 0, or a negative errno when the filesystem could not be written back or unmounted (fsvmd then
  * still stops the VM: it has nothing better).
  */
-static void check_stop(void);
-
 static int do_unmount(void)
 {
 	if (!fs_kind)

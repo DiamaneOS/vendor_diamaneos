@@ -322,7 +322,15 @@ cc_binary {
 rust_test_host {
     name: "fsvmd_fuse_test",
     crate_name: "fsvmd_fuse_test",
-    srcs: ["fsvmd/tests/fuse_host.rs"],
+    crate_root: "fsvmd/tests/fuse_host.rs",
+    srcs: [
+        "fsvmd/tests/fuse_host.rs",
+        "fsvmd/tests/fake_vm.rs",
+        "fsvmd/tests/cleanup_dispatch.rs",
+        "fsvmd/src/fs.rs",
+        "fsvmd/src/reconnect.rs",
+        "fsvmd/src/seccomp.rs",
+    ],
     edition: "2021",
     test_harness: false,
     rustlibs: [
@@ -332,6 +340,24 @@ rust_test_host {
         "liblibc",
         "liblog_rust",
     ],
+    test_suites: ["general-tests"],
+}
+
+// Production cleanup dispatch on the phone with counted protocol resources and a record socket endpoint.
+rust_test {
+    name: "fsvmd_cleanup_device_test",
+    crate_name: "fsvmd_cleanup_device_test",
+    crate_root: "fsvmd/tests/cleanup_device.rs",
+    srcs: [
+        "fsvmd/tests/cleanup_device.rs",
+        "fsvmd/tests/fake_vm.rs",
+        "fsvmd/tests/cleanup_dispatch.rs",
+        "fsvmd/src/fs.rs",
+    ],
+    edition: "2021",
+    test_harness: false,
+    compile_multilib: "64",
+    rustlibs: ["libanyhow", "libfsvm_proto", "libfuse_rust", "liblibc", "liblog_rust"],
     test_suites: ["general-tests"],
 }
 
@@ -400,6 +426,19 @@ cc_binary {
 // fsvmd's FUSE translation for the host fuzzer and its corpus test (fuzz/), which compile it as it is.
 filegroup {
     name: "fsvmd_fs_src",
-    srcs: ["fsvmd/src/fs.rs"],
+    srcs: ["fsvmd/src/fs.rs", "fsvmd/src/cleanup_tests.rs"],
     visibility: ["//vendor/diamaneos/fsvm/fuzz"],
+}
+
+
+// Real guest dispatch through an unlinked file's descriptor, including read-only refusals.
+cc_test_host {
+    name: "fsvm_guest_file_handles_test",
+    srcs: [
+        "guest/file_handles_test.c",
+        "guest/disks.c",
+        "guest/table.c",
+    ],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter"],
+    test_suites: ["general-tests"],
 }

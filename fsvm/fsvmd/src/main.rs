@@ -35,8 +35,8 @@
 //!   VM's start. A partition's broken session gets a new session in the same VM: the other partitions keep theirs.
 //!   A partition is formatted in the drive's VM too, so that no mkfs runs on Android.
 //! - Probe: the VM reads the partition table. fsvmd checks the layout (fsvm_proto::layout) and writes it to the pipe
-//!   in the line format below, then stops the VM. vold creates volumes from it, and adds the one adoptable storage
-//!   partition to Android's kernel from it.
+//!   in the line format below, then stops the VM. vold creates volumes from it, and sets up a device-mapper range for
+//!   each partition it serves.
 //! - Serve: the VM mounts one partition, which must still be where the probe found it, and fsvmd serves it through
 //!   FUSE. It writes one byte `R` to the pipe once the VM serves the volume.
 //! - OBB: the same for an app's OBB image, read-only, which must be a filesystem without a partition table.
@@ -53,6 +53,7 @@
 //! ```
 
 mod drive;
+mod reconnect;
 mod drive_msg;
 mod fs;
 mod seccomp;
@@ -322,6 +323,7 @@ fn start_vm(
             }
             std::thread::sleep(Duration::from_secs(wait));
         }
+        ensure!(left(deadline)? > keep, "no time left to start the VM");
         let volumes = disks.iter().map(|d| d.try_clone()).collect::<std::io::Result<Vec<File>>>()?;
         let vm = match vm::Vm::start(manager()?, volumes, writable, memory_mib) {
             Ok(vm) => vm,
@@ -336,8 +338,8 @@ fn start_vm(
             Err(e) => {
                 warn!("filesystem VM start {} did not answer: {e:?}", attempt + 1);
                 let refused = vm.refused_at_start();
-                // Gone before the next try, so that its memory and its place in the hypervisor are free.
-                vm.stop_and_wait(PROBE_VM_END);
+                // Stop the old VM within the request's remaining time before another try.
+                vm.stop_and_wait(PROBE_VM_END.min(deadline.saturating_duration_since(Instant::now())));
                 if refused {
                     // No pool room, and its ordinary memory would pass the budget of pieces of all running VMs (the
                     // kernel's vm_pieces_max) or the hypervisor's: the same again until a VM ends. vold waits for room.
@@ -356,6 +358,7 @@ fn start_vm(
 /// A new session with the server of disk `index` of the running VM `vm`: a drive's partition whose session broke, a
 /// format or a repair. The VM ends the disk's earlier server first.
 fn connect_disk(vm: &vm::Vm, index: u32, deadline: Instant, keep: Duration) -> Result<VmClient> {
+    ensure!(left(deadline)? > keep, "no time left to connect to the VM");
     let stream = vm.connect(PORT, left(deadline)?.saturating_sub(keep))?;
     select_disk(stream, index, deadline)
 }
@@ -485,7 +488,8 @@ fn repair_on(
     })
 }
 
-/// fsvmd's exit status when a repair did not leave the volume clean (vold fs/Fsvm.h kExitNotRepaired).
+/// fsvmd's exit status when a repair did not leave the volume clean (vold treats any non-zero status of a repair as
+/// not repaired).
 const EXIT_NOT_REPAIRED: i32 = 4;
 
 fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
@@ -525,10 +529,10 @@ struct Served {
 
 impl Served {
     /// Starts a VM, checks the partition is still where the probe found it, checks and mounts it.
-    fn bring_up(&mut self, budget: Duration) -> Result<(VmClient, fsvm_proto::Hello)> {
+    fn bring_up(&mut self, deadline: Instant) -> Result<(VmClient, fsvm_proto::Hello)> {
         // The old VM goes first, so that its memory is free for the new one.
         self.vm = None;
-        let deadline = Instant::now() + budget;
+        left(deadline)?;
         info!("volume {}: starting the filesystem VM with {} MiB", self.volume, self.memory);
         // An OBB VM never waits for a place: refused at its start, the mount fails at once (vold reports Android's
         // OBB error).
@@ -625,7 +629,7 @@ pub fn tell(pipe: &Pipe, what: &[u8]) -> std::io::Result<()> {
 }
 
 /// A volume served from now on: tells vold how (`R`, `r` or `c`), and returns the FUSE side with its checker running
-/// and its pipe kept for the check's end.
+/// and its pipe kept for the check's end. `listings`: the card's listing memory (a drive's, shared by its partitions).
 #[allow(clippy::too_many_arguments)]
 fn start_serving(
     client: VmClient,
@@ -637,30 +641,26 @@ fn start_serving(
     volume: &str,
     session: Box<dyn fs::Session>,
     pipe: &Pipe,
+    listings: std::sync::Arc<fs::Listings>,
 ) -> Result<fs::FsvmFs> {
     let read_only = asked_read_only || hello.read_only;
     info!("volume {volume}: VM serves filesystem kind {}, read-only {read_only}", hello.fs_kind);
     if hello.was_dirty {
         warn!("volume {volume}: the filesystem was not cleanly unmounted before (the VM checks it)");
     }
-    // R: served as asked. c: asked writable, served read-only while the VM checks it, then W (writable now) or F (it
-    // stays read-only) follow on the same pipe. r: asked writable and served read-only by the VM (a write-protected
-    // card, or its driver found an error). Later, c again when a new VM after a broken session checks the volume
-    // again. vold reports r, c and F as mounted read-only.
-    let ready: &[u8] = if hello.check_pending {
-        b"c"
-    } else if read_only && !asked_read_only {
-        b"r"
-    } else {
-        b"R"
-    };
-    tell(pipe, ready).context("telling vold")?;
-    if hello.check_pending {
+    // R: served writable. r: served read-only for good (asked read-only, a write-protected card, or the VM's driver
+    // found an error). c: asked writable, served read-only while the VM checks it, then W (writable now) or F (it
+    // stays read-only) follow on the same pipe, and c again when a new VM after a broken session checks the volume
+    // again. vold reports r, c and F as mounted read-only. A volume asked read-only is never checked.
+    let ready = fs::ready_letter(asked_read_only, &hello);
+    tell(pipe, &[ready]).context("telling vold")?;
+    if ready == b'c' {
         warn!("volume {volume}: marked dirty, served read-only while the VM checks it");
     }
     let filesystem =
         fs::FsvmFs::new(client, hello.root, asked_read_only, read_only, gid, obb, hello.check_pending, session)
-            .with_owner(owner_uid);
+            .with_owner(owner_uid)
+            .with_listings(listings);
     if !obb {
         // The pipe stays open for the check's end (also for a check a new session starts after a broken one).
         let pipe = pipe.clone();
@@ -674,8 +674,8 @@ fn start_serving(
 }
 
 impl fs::Session for Served {
-    fn restart(&mut self) -> Result<(VmClient, fsvm_proto::Hello)> {
-        self.bring_up(SERVE_BUDGET)
+    fn restart(&mut self, deadline: Instant) -> Result<(VmClient, fsvm_proto::Hello)> {
+        self.bring_up(deadline)
     }
 
     fn stop_vm(&mut self, within: Duration) {
@@ -718,7 +718,7 @@ fn serve(args: &Args, disk: File, pipe: File) -> Result<()> {
         volume: args.volume.clone(),
         vm: None,
     };
-    let (client, hello) = served.bring_up(SERVE_BUDGET)?;
+    let (client, hello) = served.bring_up(Instant::now() + SERVE_BUDGET)?;
     let asked_read_only = served.read_only;
     let pipe: Pipe = std::sync::Arc::new(std::sync::Mutex::new(Some(pipe)));
     let filesystem = start_serving(
@@ -731,6 +731,7 @@ fn serve(args: &Args, disk: File, pipe: File) -> Result<()> {
         &args.volume,
         Box::new(served),
         &pipe,
+        Default::default(),
     )?;
     let closer = filesystem.closer();
     watch_sigterm(filesystem.closer())?;

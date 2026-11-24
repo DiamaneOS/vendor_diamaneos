@@ -101,6 +101,9 @@ pub struct Deadlines {
     pub mount: Duration,
     /// One whole directory listing, all its pages together.
     pub listing: Duration,
+    /// Everything one FUSE request may ask of the VM, all calls together: looking a path up again, the call and its
+    /// repeat. As long as the longest single call (a listing), so that every call fits.
+    pub operation: Duration,
 }
 
 impl Default for Deadlines {
@@ -114,6 +117,21 @@ impl Default for Deadlines {
             io: Duration::from_secs(15),
             mount: Duration::from_secs(30),
             listing: Duration::from_secs(30),
+            operation: Duration::from_secs(30),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every call a FUSE request makes fits in its operation's time.
+    #[test]
+    fn every_call_fits_in_an_operation() {
+        let d = Deadlines::default();
+        for call in [d.meta, d.mutate, d.io, d.listing] {
+            assert!(call <= d.operation, "{call:?} does not fit in {:?}", d.operation);
         }
     }
 }
@@ -126,13 +144,16 @@ pub enum CallError {
     /// The session is broken: a timeout, a closed stream or a malformed reply. Android answers EIO and the caller
     /// may start a new VM.
     Broken(String),
+    /// Not sent: the call's deadline would end after the operation's (Client::op_deadline). The session stays as it
+    /// was, and Android answers EIO.
+    OutOfTime,
 }
 
 impl CallError {
     pub fn errno(&self) -> i32 {
         match self {
             CallError::Errno(e) => *e,
-            CallError::Broken(_) => errno::EIO,
+            CallError::Broken(_) | CallError::OutOfTime => errno::EIO,
         }
     }
 }
@@ -145,11 +166,14 @@ pub struct Client<T: Transport> {
     next_id: u32,
     broken: Option<String>,
     pub deadlines: Deadlines,
+    /// The end of the operation the calls serve (a FUSE request, Deadlines::operation). A call whose own deadline
+    /// would end later is not sent (CallError::OutOfTime): a call cut short would break a slow but sound session.
+    pub op_deadline: Option<Instant>,
 }
 
 impl<T: Transport> Client<T> {
     pub fn new(t: T, deadlines: Deadlines) -> Self {
-        Client { t, next_id: 1, broken: None, deadlines }
+        Client { t, next_id: 1, broken: None, deadlines, op_deadline: None }
     }
 
     pub fn is_broken(&self) -> bool {
@@ -174,6 +198,9 @@ impl<T: Transport> Client<T> {
             return Err(CallError::Broken(why.clone()));
         }
         let deadline = Instant::now() + budget;
+        if self.op_deadline.is_some_and(|end| deadline > end) {
+            return Err(CallError::OutOfTime);
+        }
         req.op = op as u16;
         req.id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
@@ -189,7 +216,7 @@ impl<T: Transport> Client<T> {
             Err(e) => return self.fail(format!("{op:?} reply: {e:?}")),
         };
         if rh.status < 0 {
-            return Err(CallError::Errno(errno::pass_through(-rh.status)));
+            return Err(CallError::Errno(errno::for_op(op, -rh.status)));
         }
         let mut payload = vec![0u8; rh.len as usize];
         if let Err(e) = self.t.recv_by(&mut payload, deadline) {
@@ -291,6 +318,8 @@ impl<T: Transport> Client<T> {
                 self.fail(format!("mount: filesystem {} where the layout said {expect_fs}", h.fs_kind))
             }
             Ok(h) if read_only && !h.read_only => self.fail("mount: writable where read-only was asked".into()),
+            // A read-only mount has no check after it: that check's switch would make it writable.
+            Ok(h) if read_only && h.check_pending => self.fail("mount: a check pending where read-only was asked".into()),
             Ok(h) => Ok(h),
             Err(e) => self.fail(format!("mount: {e:?}")),
         }
@@ -368,7 +397,10 @@ impl<T: Transport> Client<T> {
         let mut listing = Listing::default();
         let mut seen = std::collections::HashSet::new();
         let mut cookie = 0u64;
-        let deadline = Instant::now() + self.deadlines.listing;
+        let mut deadline = Instant::now() + self.deadlines.listing;
+        if let Some(end) = self.op_deadline {
+            deadline = deadline.min(end);
+        }
         for _ in 0..MAX_DIR_PAGES {
             // A page gets its full deadline or is not asked for: a slow page cut short would break the session.
             let left = deadline.saturating_duration_since(Instant::now());
@@ -426,7 +458,7 @@ impl<T: Transport> Client<T> {
         Ok(n)
     }
 
-    /// Opens a file and answers the VM's handle for it (0 is never one).
+    /// Opens a file and answers the VM's handle for it (0 is never one). EMFILE when the VM has no handle left.
     pub fn open_handle(&mut self, node: u64, write: bool) -> CallResult<u64> {
         let budget = self.deadlines.meta;
         let p = self.call(Request { node, flags: write as u16, ..Default::default() }, Op::Open, 8, budget)?;
@@ -521,6 +553,20 @@ impl<T: Transport> Client<T> {
     pub fn set_mtime(&mut self, node: u64, secs: i64, nanos: u32) -> CallResult<Attr> {
         let secs = secs.clamp(MTIME_MIN, MTIME_MAX) as u64;
         self.attr_call(Request { node, arg: secs, len: nanos.min(999_999_999), ..Default::default() }, Op::SetMtime)
+    }
+
+    /// Truncates the open file even after its name went. A replaced VM's handle is never sent here.
+    pub fn truncate_handle(&mut self, handle: u64, size: u64) -> CallResult<Attr> {
+        if size > MAX_FILE_SIZE {
+            return Err(CallError::Errno(errno::EFBIG));
+        }
+        self.attr_call(Request { node2: handle, arg: size, ..Default::default() }, Op::Truncate)
+    }
+
+    /// Sets the open file's time through its handle.
+    pub fn set_mtime_handle(&mut self, handle: u64, secs: i64, nanos: u32) -> CallResult<Attr> {
+        let secs = secs.clamp(MTIME_MIN, MTIME_MAX) as u64;
+        self.attr_call(Request { node2: handle, arg: secs, len: nanos.min(999_999_999), ..Default::default() }, Op::SetMtime)
     }
 
     pub fn statfs(&mut self) -> CallResult<Statfs> {

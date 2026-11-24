@@ -700,14 +700,14 @@ impl Transport for ScriptedVm<'_> {
 
 pub fn quick_deadlines() -> Deadlines {
     let s = Duration::from_secs(5);
-    Deadlines { hello: s, meta: s, mutate: s, io: s, mount: s, listing: Duration::from_secs(60) }
+    Deadlines { hello: s, meta: s, mutate: s, io: s, mount: s, listing: Duration::from_secs(60), operation: Duration::from_secs(60) }
 }
 
-/// Errnos fsvmd hands to Android: the pass-through set, and the client's own for names and sizes.
-pub fn assert_errno(e: &CallError) {
+/// Errnos fsvmd hands to Android: the pass-through set, the client's own for names and sizes, and EMFILE for an open.
+pub fn assert_errno(e: &CallError, open: bool) {
     if let CallError::Errno(n) = e {
         let ok = [1, 2, 5, 9, 13, 16, 17, 18, 20, 21, 22, 27, 28, 30, 36, 39, 116];
-        assert!(ok.contains(n), "errno {n} reached Android");
+        assert!(ok.contains(n) || (open && *n == 24), "errno {n} reached Android");
     }
 }
 
@@ -747,6 +747,7 @@ pub fn client_session(data: &[u8]) -> (usize, bool) {
                     assert_hello(&h);
                     assert!(h.fs_kind != 0 && (fs == 0 || h.fs_kind == fs), "mount of filesystem {}", h.fs_kind);
                     assert!(!ro || h.read_only, "writable where read-only was asked");
+                    assert!(!ro || !h.check_pending, "a check pending where read-only was asked");
                 })
             }
             3 => {
@@ -822,7 +823,7 @@ pub fn client_session(data: &[u8]) -> (usize, bool) {
                 if let Some(n) = broken_after {
                     assert_eq!(count(), n, "requests sent on a broken session");
                 }
-                assert_errno(e);
+                assert_errno(e, op == 14);
             }
             Ok(()) => {
                 assert!(broken_after.is_none(), "an answer on a broken session");

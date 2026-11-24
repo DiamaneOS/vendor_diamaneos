@@ -13,8 +13,8 @@
 // limitations under the License.
 
 //! The partition layout the VM reads from a disk (phase 2). Android's kernel reads no partition table of an SD card
-//! or a USB disk. The VM reads it and reports the partitions Android may use. vold adds the adoptable storage
-//! partition to Android's kernel from these numbers, so every one of them is checked here against the disk size
+//! or a USB disk. The VM reads it and reports the partitions Android may use. vold sets up device-mapper ranges
+//! from these numbers, so every one of them is checked here against the disk size
 //! Android knows, before vold sees it: ranges inside the disk and clear of the tables, no overlaps, a small count,
 //! only the partition types Android uses, and the raw type codes classified here, never by the VM.
 //!
@@ -66,9 +66,6 @@ pub fn gpt_tail_sectors(block_size: u32) -> u64 {
     (1 + GPT_ENTRY_BYTES.div_ceil(bs)) * bs / 512
 }
 
-pub const GPT_HEAD_SECTORS: u64 = 34;
-pub const GPT_TAIL_SECTORS: u64 = 33;
-
 /// The partition types Android uses, as their GUID bytes appear on disk (the first three fields little endian).
 pub const GPT_BASIC_DATA: [u8; 16] = guid(0xEBD0A0A2, 0xB9E5, 0x4433, [0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7]);
 pub const GPT_ANDROID_META: [u8; 16] = guid(0x19A710A2, 0xB3CA, 0x11E4, [0xB0, 0x26, 0x10, 0x60, 0x4B, 0x88, 0x9D, 0xCF]);
@@ -109,7 +106,7 @@ pub enum Class {
     Public,
     /// Adoptable storage metadata (unused by vold, reported so that overlaps are checked).
     AndroidMeta,
-    /// Adoptable storage: encrypted with a key on the phone, added to Android's kernel by vold.
+    /// Adoptable storage: encrypted with a key on the phone, opened by vold through a device-mapper range.
     AndroidExpand,
 }
 
@@ -122,7 +119,7 @@ pub struct Part {
     /// The filesystem the VM found: 0 none or unknown, FS_VFAT, FS_EXFAT.
     pub fs_kind: u32,
     /// No filesystem found, but a FAT or exFAT boot sector that fails the VM's checks. vold never offers to format
-    /// such a partition (the user, 2026-11-17).
+    /// such a partition.
     pub damaged: bool,
     /// The volume UUID as blkid printed it ("6FFF-FAB8"), from the serial.
     pub fs_uuid: Option<String>,

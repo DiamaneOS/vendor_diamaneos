@@ -57,9 +57,10 @@ neverallow vold self:global_capability_class_set { setuid setgid };
 # mounted at /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the
 # volume. A drive's fsvmd gets vold's socket pair end as 3 (fsvmd/src/drive.rs), and over it the same descriptors for
 # each partition (its range, its /dev/fuse and its pipe) and the pipe of a repair: it reads vold's requests, answers
-# them, and checks it is a socket.
+# them, and checks it is a socket. It checks each pipe it gets over the socket is a pipe before it serves the
+# partition or repairs it (getattr).
 allow fsvmd vold:fd use;
-allow fsvmd vold:fifo_file write;
+allow fsvmd vold:fifo_file { write getattr };
 allow fsvmd vold:unix_stream_socket { read write getattr };
 # The kernel checks a descriptor against its open mode when fsvmd inherits it and when fsvmd passes it on over binder,
 # so fsvmd holds read and write on the disk it was handed, though it never reads it itself. It cannot open one.
