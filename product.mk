@@ -36,6 +36,10 @@ $(call soong_config_set_bool,diamaneos,fs_in_vm,true)
 PRODUCT_PACKAGES += fsvmd
 endif
 
+# A new SD card waits while the phone is locked (sdhold/): init writes the system server's lock
+# state to the kernel's hold of new cards (CONFIG_MMC_HOLD_NEW_CARDS).
+PRODUCT_PACKAGES += hold_new_sd.rc
+
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += \
     DiamaneOSDocumentsUIOverlay \

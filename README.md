@@ -15,6 +15,8 @@ What every DiamaneOS product shares:
 - `overlay/`: DiamaneOS-wide runtime resource overlays.
 - `sepolicy/system_ext/private/`: SELinux rules for DiamaneOS features of the
   platform forks, such as the encrypted microSD card of the vold fork.
+- `sdhold/`: a new SD card waits while the phone is locked. init writes the
+  system server's lock state to the kernel's hold of new cards.
 - `fonts/`: Sofia Sans Tally, the metric-adjusted Sofia Sans, as the system font
   and the shell's named families, with the script that builds it.
 - `media/`: the boot animation.

@@ -1,0 +1,2 @@
+# DiamaneOS: the kernel's hold of new SD cards (hold_new_sd.te).
+genfscon proc /sys/kernel/hold_new_sd u:object_r:proc_hold_new_sd:s0

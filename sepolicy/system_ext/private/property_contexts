@@ -1,2 +1,4 @@
 # DiamaneOS: vold starts the filesystem VM's slot services when it needs them (system/vold fs/Fsvm.cpp StartOn).
 ctl.start$fsvmd_    u:object_r:ctl_fsvmd_prop:s0 prefix
+# DiamaneOS: the lock state for the kernel's hold of new SD cards (hold_new_sd.te).
+security.hold_new_sd    u:object_r:hold_new_sd_prop:s0 exact enum 0 1

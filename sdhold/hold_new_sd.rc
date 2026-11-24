@@ -1,0 +1,11 @@
+# A new SD card waits while the phone is locked.
+# The system server sets security.hold_new_sd to 1 while the lock screen shows and to 0 once it
+# is dismissed (frameworks/base SdCardHold). While kernel.hold_new_sd is 1, the kernel leaves a
+# new card on a removable MMC host unpowered and sends it no command, and clearing it starts
+# the card (kernel_common drivers/mmc/core/sd_hold.c). The kernel starts with the hold set.
+# Only these two values are written, and only init may write the node (sepolicy hold_new_sd.te).
+on property:security.hold_new_sd=0
+    write /proc/sys/kernel/hold_new_sd 0
+
+on property:security.hold_new_sd=1
+    write /proc/sys/kernel/hold_new_sd 1
