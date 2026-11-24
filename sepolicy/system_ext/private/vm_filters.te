@@ -1,0 +1,6 @@
+# DiamaneOS: the VM manager runs under a seccomp filter (packages/modules/Virtualization
+# android/virtmgr/src/seccomp.rs), which needs no_new_privs. With no_new_privs a process changes domain on exec only
+# where process2 nnp_transition is allowed, so without this rule no VM manager could start its crosvm. It grants no
+# domain change: each client's VM manager may still only change to its own crosvm domain (virtualizationmanager_domain
+# in te_macros). It only keeps no_new_privs from blocking those changes.
+allow virtualizationmanager_domain crosvm_domain:process2 nnp_transition;
