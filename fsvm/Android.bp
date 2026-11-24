@@ -396,3 +396,10 @@ cc_binary {
     installable: false,
     compile_multilib: "64",
 }
+
+// fsvmd's FUSE translation for the host fuzzer and its corpus test (fuzz/), which compile it as it is.
+filegroup {
+    name: "fsvmd_fs_src",
+    srcs: ["fsvmd/src/fs.rs"],
+    visibility: ["//vendor/diamaneos/fsvm/fuzz"],
+}
