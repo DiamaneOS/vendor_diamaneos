@@ -28,7 +28,7 @@ use std::fs::File;
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
-use vmclient::{VirtualizationService, VmInstance};
+use vmclient::{DeathReason, VirtualizationService, VmInstance};
 
 /// The guest kernel and initramfs. Both ship in the virtualization APEX, where release signing signs the kernel
 /// again with the key pvmfw trusts. The kernel's footer covers the initramfs, so pvmfw refuses either if changed.
@@ -161,6 +161,12 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// Whether the VM ended because its start was refused (crosvm failed to make the VM: for a VM of at most 64 MiB
+    /// never the piece limit, so the hypervisor's limit of protected VMs at once).
+    pub fn refused_at_start(&self) -> bool {
+        self.instance.wait_for_death_with_timeout(Duration::ZERO) == Some(DeathReason::StartFailed)
     }
 
     pub fn stop(&self) {
