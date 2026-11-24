@@ -1,0 +1,42 @@
+# DiamaneOS: the decode service (packages/apps/DiamaneOSSanitizer, de.diamaneos.sanitizer). It decodes untrusted
+# images for MediaProvider, SystemUI and the system server inside a protected VM, so the app itself never parses a
+# file. Its own domain instead of platform_app: no network, no Bluetooth, none of the platform apps' settings,
+# properties and files. What it keeps is what every app has (app_domain), the framework services an app process
+# uses, and one VM manager of its own.
+type decode_service_app, domain;
+typeattribute decode_service_app coredomain;
+app_domain(decode_service_app)
+
+# The framework services the app looks up through the service manager: when its process starts (graphics, network
+# statistics and content capture set up for every app process) and the activity manager. Every other framework service
+# it uses comes with the process's preloaded service cache.
+allow decode_service_app {
+    activity_service
+    content_capture_service
+    gpu_service
+    netstats_service
+}:service_manager find;
+
+# The decoder VM: the app starts it through its own VM manager and crosvm (decode_service_app_virtualizationmanager,
+# decode_service_app_virtmgr_crosvm) and reaches it only over the vsock connections that VM manager hands it. The
+# kernel and initramfs are system_file in the virtualization APEX, which every app may read. The VM's instance disk
+# is in the app's own data (app_data_file), which the VM managers and crosvm handle for every app.
+virtualizationservice_use(decode_service_app)
+
+# The callers hand their files over binder: pipes and memory files of apps and the system server, media files
+# MediaProvider opened. Every app may read those descriptors (app.te). The service opens no caller's file itself.
+# Callers of other users (a work profile's or private space's MediaProvider, at that user's categories) need no
+# MLS trust: reading or stat-ing a handed-over pipe, memory file or app tmpfs file is not level-checked (mls), and
+# platform_app, the old domain, was not an mlstrustedsubject either.
+
+# No network at all: the service talks to its callers over binder and to its VM over vsock.
+neverallow decode_service_app self:{ tcp_socket udp_socket rawip_socket } create;
+neverallow decode_service_app port_type:tcp_socket name_connect;
+# Only the decode service enters its VM manager's domain, by running the VM manager.
+neverallow { domain -decode_service_app } decode_service_app_virtualizationmanager:process transition;
+neverallow domain decode_service_app_virtualizationmanager:process dyntransition;
+
+# The decode service's VM takes its RAM from the boot pool (device gunyah_vm_pool.te declares the attributes and
+# gives the node to their members). Without this its VM gets scattered memory and crosvm refuses to start it.
+typeattribute decode_service_app_virtualizationmanager gunyah_vm_pool_client;
+typeattribute decode_service_app_virtmgr_crosvm gunyah_vm_pool_crosvm;
