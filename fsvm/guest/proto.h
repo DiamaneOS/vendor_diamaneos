@@ -15,7 +15,7 @@
  */
 
 /*
- * The filesystem VM protocol, version 3, the guest's side. The definitions and limits mirror fsvm_proto
+ * The filesystem VM protocol, version 7, the guest's side. The definitions and limits mirror fsvm_proto
  * (proto/src/lib.rs), which is the reference. Little endian, one request and one reply.
  */
 #ifndef FSVM_PROTO_H
@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 #define FSVM_PORT 5690u
-#define FSVM_VERSION 6u
+#define FSVM_VERSION 7u
 #define FSVM_REQ_MAGIC 0x32564d46u /* "FMV2" */
 #define FSVM_RSP_MAGIC 0x32524d46u /* "FMR2" */
 
@@ -61,6 +61,10 @@ enum {
 	FSVM_FORMAT = 24,  /* arg: FSVM_FS_VFAT or FSVM_FS_EXFAT, len: milliseconds it may take. Formats the whole disk
 			    * (a partition's range, or a whole-disk volume) with the pinned tree's newfs_msdos or mkfs.exfat,
 			    * as vold did on Android. Only with nothing mounted. 0, or an errno */
+	FSVM_DISK = 25,    /* the first request of every connection, and only there: node: the host's FSVM_VERSION,
+			    * arg: the disk index (0: vda). A server of its own then serves that disk on this connection,
+			    * and answers struct fsvm_hello. Another version is refused (-EPROTO), and so is a disk that
+			    * has no device. A disk's earlier server is ended first: one server per disk */
 };
 /* FSVM_CHECK arg 0 states */
 enum {

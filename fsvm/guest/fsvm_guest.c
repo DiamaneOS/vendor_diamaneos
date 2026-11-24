@@ -15,17 +15,23 @@
  */
 
 /*
- * /init of the filesystem VM. Its first virtio disk is a whole SD card or USB disk, or an OBB image (Android's kernel
- * reads none of their partition tables or filesystems). It serves protocol version 3 (proto.h) over vsock: LAYOUT
- * reports the partitions read from the disk (table.c), MOUNT mounts one FAT or exFAT filesystem, once, and the file
- * operations then serve it. Android checks every reply, so this program's job is to be correct, not to defend
- * Android: if a crafted filesystem takes over this VM's kernel, the VM is lost but Android is not.
+ * /init of the filesystem VM. Its virtio disks are a whole SD card or USB disk (a probe), the public partitions of
+ * one drive (each a range of its own on Android), or an OBB image, and the instance disk last. Android's kernel reads
+ * none of their partition tables or filesystems. It serves protocol version 7 (proto.h) over vsock. Each connection
+ * names its disk first (FSVM_DISK, disks.c) and gets a server process of its own, at most one per disk: LAYOUT
+ * reports the partitions read from that disk (table.c), MOUNT mounts one FAT or exFAT filesystem, once, in the
+ * server's own mount namespace, and the file operations then serve it. A disk's filesystem, its check and its
+ * read-only state are that one process's, so one partition's dirty mark, check or broken session never touches
+ * another's. Android checks every reply, so this program's job is to be correct, not to defend Android: if a crafted
+ * filesystem takes over this VM's kernel, the VM is lost but Android is not.
  *
- * Static, single threaded, PID 1. It never returns.
+ * Static. PID 1 only accepts connections, starts and ends the servers, and never returns. Each server is single
+ * threaded.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* syncfs and accept4 with glibc, for the host compile check (bionic has them anyway) */
 #endif
+#include "disks.h"
 #include "proto.h"
 #include "table.h"
 
@@ -33,6 +39,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
+#include <sched.h>
 #include <linux/blkpg.h>
 #include <linux/fs.h>
 #include <linux/hdreg.h>
@@ -49,6 +57,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -58,7 +67,8 @@
 #define MAX_NODES 65536u
 #define HASH_SIZE 131072u /* power of two, at least twice MAX_NODES */
 
-#define DISK "/dev/vda"
+/* The device node of this server's disk (FSVM_DISK), "/dev/vda" for the first. */
+static char disk_dev[16];
 
 static uint32_t fs_kind; /* 0 until MOUNT succeeded */
 static int read_only;
@@ -691,6 +701,9 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		struct fsvm_hello h = { FSVM_VERSION, fs_kind, hello_flags(), 0, 1 };
 		return reply(s, q->id, 0, &h, sizeof(h));
 	}
+	case FSVM_DISK:
+		/* Only as a connection's first request, which /init handles: a server keeps its disk. */
+		return reply(s, q->id, -EINVAL, NULL, 0);
 	case FSVM_UNMOUNT:
 		return reply(s, q->id, do_unmount(), NULL, 0);
 	case FSVM_DIRTY: {
@@ -1163,10 +1176,16 @@ static int do_format(uint32_t kind, uint32_t budget_ms)
 {
 	if (fs_kind || (kind != FSVM_FS_VFAT && kind != FSVM_FS_EXFAT) || !budget_ms)
 		return -EINVAL;
-	char *fat[] = { "/bin/newfs_msdos", "-O", "android", "-A", DISK, NULL };
-	char *exf[] = { "/bin/mkfs.exfat", "-n", "External", DISK, NULL };
+	char *fat[] = { "/bin/newfs_msdos", "-O", "android", "-A", disk_dev, NULL };
+	char *exf[] = { "/bin/mkfs.exfat", "-n", "External", disk_dev, NULL };
+	/* Android may have discarded the disk since this VM read its layout: nothing this VM cached of it stays. */
+	int c = open(disk_dev, O_RDONLY | O_CLOEXEC);
+	if (c < 0 || ioctl(c, BLKFLSBUF, 0))
+		logline("dropping the cached blocks before the format", disk_dev, errno);
+	if (c >= 0)
+		close(c);
 	int r = run_checker(kind == FSVM_FS_EXFAT ? exf : fat, now_ms() + budget_ms);
-	int b = open(DISK, O_RDONLY | O_CLOEXEC);
+	int b = open(disk_dev, O_RDONLY | O_CLOEXEC);
 	if (b < 0 || fsync(b))
 		r = r ? r : -EIO;
 	if (b >= 0)
@@ -1457,7 +1476,7 @@ static void add_own_partition(const char *dev, uint32_t index, uint64_t start, u
 	a.datalen = sizeof(p);
 	a.data = &p;
 	if (disk_fd < 0 || ioctl(disk_fd, BLKPG, &a))
-		logline("adding the partition in the VM", DISK, errno);
+		logline("adding the partition in the VM", disk_dev, errno);
 	for (int wait = 0; wait < 20 && access(dev, F_OK); wait++)
 		usleep(50 * 1000); /* devtmpfs makes the node */
 }
@@ -1477,10 +1496,10 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 		return -ENOENT;
 	char dev[32];
 	if (index == 0) {
-		snprintf(dev, sizeof(dev), "%s", DISK);
+		snprintf(dev, sizeof(dev), "%s", disk_dev);
 	} else {
 		/* This kernel's partition device, compared with the table read in userspace. */
-		snprintf(dev, sizeof(dev), "%s%u", DISK, index);
+		snprintf(dev, sizeof(dev), "%s%u", disk_dev, index);
 		if (access(dev, F_OK) && layout.h.table == FSVM_TABLE_GPT)
 			add_own_partition(dev, index, start, length);
 		int fd = open(dev, O_RDONLY | O_CLOEXEC);
@@ -1727,6 +1746,139 @@ static void write_proc(const char *path, const char *value)
 	close(fd);
 }
 
+/* Opens disk `index` as this process's disk: its node, sector size and size. 0, or a negative errno. */
+static int select_disk(uint32_t index)
+{
+	if (fsvm_disk_path(index, disk_dev, sizeof(disk_dev)))
+		return -EINVAL;
+	for (int wait = 0; wait < 50 && access(disk_dev, F_OK); wait++)
+		usleep(100 * 1000);
+	disk_fd = open(disk_dev, O_RDONLY | O_CLOEXEC);
+	uint64_t bytes = 0;
+	int ss = 512;
+	if (disk_fd >= 0 && ioctl(disk_fd, BLKSSZGET, &ss))
+		ss = 512;
+	sector_size = (unsigned)ss;
+	if (disk_fd < 0 || dev_bytes(disk_fd, &bytes) || bytes < 512) {
+		/* Nothing to serve: Android does not mount the volume. */
+		logline("no disk", disk_dev, errno);
+		if (disk_fd >= 0)
+			close(disk_fd);
+		disk_fd = -1;
+		return -ENODEV;
+	}
+	disk_sectors = bytes / 512;
+	return 0;
+}
+
+/*
+ * The server of one connection, in a process of its own (forked by /init), in a process group and a mount namespace
+ * of its own: its filesystem is mounted only there, and goes with the process whatever ends it. Answers the
+ * connection's FSVM_DISK `q`, serves until the connection closes or sends something malformed, then writes back and
+ * unmounts (marked clean), as before an orderly stop.
+ */
+static void run_server(int s, int listener, const struct fsvm_req *q, uint32_t index) __attribute__((noreturn));
+static void run_server(int s, int listener, const struct fsvm_req *q, uint32_t index)
+{
+	close(listener);
+	struct timeval none = { 0, 0 };
+	(void)setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof(none));
+	int r = 0;
+	if (setpgid(0, 0) || unshare(CLONE_NEWNS))
+		r = -errno;
+	/* The initramfs root propagates nothing, so this only makes sure: a mount here never reaches /init. */
+	else if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL))
+		logline("making the server's mounts private", NULL, errno);
+	if (!r)
+		r = select_disk(index);
+	struct fsvm_hello h = { FSVM_VERSION, 0, 0, 0, 1 };
+	if (reply(s, q->id, r, r ? NULL : &h, sizeof(h)) || r)
+		_exit(1);
+	serve(s);
+	close(s);
+	do_unmount();
+	sync();
+	_exit(0);
+}
+
+static struct fsvm_servers servers;
+
+/* Reaps every child that ended: servers, and checkers whose server ended before them. */
+static void reap_children(void)
+{
+	for (;;) {
+		pid_t p = waitpid(-1, NULL, WNOHANG);
+		if (p <= 0)
+			return;
+		int i = fsvm_servers_ended(&servers, p);
+		if (i >= 0) {
+			char name[16];
+			(void)fsvm_disk_path((uint32_t)i, name, sizeof(name));
+			logline("server ended for", name, 0);
+		}
+	}
+}
+
+/*
+ * Before a new server for disk `index`: the one before it saw its connection close and writes back and unmounts, or
+ * is stuck. It gets 3 s to end on its own, then it and its checker are killed (its filesystem then goes with its
+ * mount namespace). 0, or -EBUSY when it still runs after 5 s more (a card that does not answer).
+ */
+static int end_server(uint32_t index)
+{
+	pid_t p = servers.pid[index];
+	for (int i = 0; p && i < 80; i++) {
+		if (i == 30) {
+			logline("ending the earlier server of a disk", NULL, 0);
+			kill(-p, SIGKILL);
+		}
+		usleep(100 * 1000);
+		reap_children();
+		if (!servers.pid[index])
+			return 0;
+	}
+	return servers.pid[index] ? -EBUSY : 0;
+}
+
+/* Takes connections for ever: each names its disk, and a server of its own serves it (run_server). */
+static void accept_loop(int ls)
+{
+	for (;;) {
+		struct pollfd pfd = { ls, POLLIN, 0 };
+		int n = poll(&pfd, 1, 1000);
+		reap_children();
+		if (n <= 0)
+			continue;
+		int s = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
+		if (s < 0)
+			continue;
+		/* The host sends FSVM_DISK at once: a connection that does not hold /init up. */
+		struct timeval tv = { 2, 0 };
+		(void)setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		struct fsvm_req q;
+		uint32_t index = 0;
+		if (read_full(s, &q, sizeof(q))) {
+			close(s);
+			continue;
+		}
+		int r = fsvm_disk_request(&q, &index);
+		if (r == -EPROTO)
+			logline("refusing a host of another protocol version", NULL, 0);
+		if (!r)
+			r = end_server(index);
+		pid_t p = r ? -1 : fork();
+		if (p == 0)
+			run_server(s, ls, &q, index);
+		if (p < 0) {
+			(void)reply(s, q.id, r ? r : -ENOMEM, NULL, 0);
+		} else if (fsvm_servers_set(&servers, index, p)) {
+			kill(-p, SIGKILL);
+			kill(p, SIGKILL);
+		}
+		close(s);
+	}
+}
+
 int main(void)
 {
 	mkdir("/dev", 0755);
@@ -1750,21 +1902,6 @@ int main(void)
 		path_bytes = 1;
 		slot_insert(1);
 	}
-	for (int wait = 0; wait < 50 && access(DISK, F_OK); wait++)
-		usleep(100 * 1000);
-	disk_fd = open(DISK, O_RDONLY | O_CLOEXEC);
-	uint64_t bytes = 0;
-	int ss = 512;
-	if (disk_fd >= 0 && ioctl(disk_fd, BLKSSZGET, &ss))
-		ss = 512;
-	sector_size = (unsigned)ss;
-	if (disk_fd < 0 || dev_bytes(disk_fd, &bytes) || bytes < 512) {
-		/* Nothing to serve. Android times out and does not mount the volume. */
-		logline("no disk", NULL, errno);
-		for (;;)
-			pause();
-	}
-	disk_sectors = bytes / 512;
 
 	/*
 	 * Written data reaches the card within about two seconds (the kernel's default is 30), so a VM that is killed
@@ -1779,7 +1916,8 @@ int main(void)
 #ifdef FSVM_SELFTEST
 	int want = selftest_arg();
 	if (want >= 0) {
-		selftest(want);
+		if (!select_disk(0))
+			selftest(want);
 		sync();
 		reboot(RB_POWER_OFF);
 	}
@@ -1790,18 +1928,12 @@ int main(void)
 	a.svm_family = AF_VSOCK;
 	a.svm_port = FSVM_PORT;
 	a.svm_cid = VMADDR_CID_ANY;
-	if (ls < 0 || bind(ls, (struct sockaddr *)&a, sizeof(a)) || listen(ls, 1)) {
+	if (ls < 0 || bind(ls, (struct sockaddr *)&a, sizeof(a)) || listen(ls, 8)) {
 		logline("vsock", NULL, errno);
 		for (;;)
 			pause();
 	}
 	logline("serving on vsock", NULL, 0);
-	for (;;) {
-		int s = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
-		if (s < 0)
-			continue;
-		serve(s);
-		close(s);
-		sync();
-	}
+	accept_loop(ls);
+	return 0;
 }

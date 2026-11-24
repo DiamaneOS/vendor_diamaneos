@@ -16,7 +16,8 @@ card -> vold (opens the whole disk, runs fsck in fsck_untrusted on a partition a
 
 - `proto/`: the protocol and the checking client (`libfsvm_proto`), with unit tests and tests against a hostile
   server (`cargo test` on any machine, `fsvm_proto_test` and `fsvm_proto_hostile_test` in the tree).
-- `fsvmd/`: the daemon that serves each public volume. vold asks init's fsvmd service (`fsvmd_launcher`,
+- `fsvmd/`: the daemon that serves the public partitions of a card or USB drive, all from one VM per drive (each
+  partition a disk of that VM and a range of its own), and OBB images. vold asks init's fsvmd service (`fsvmd_launcher`,
   `fsvmd.rc`, `launcher.rs`, a domain of its own) to start one, as the system user without capabilities. Before
   every orderly stop fsvmd has the VM write the volume back and unmount it, so an eject loses nothing.
 - `guest/`: the VM's `/init` (`fsvm_guest_init`, static), its partition table reader (`table.c`, host-tested by

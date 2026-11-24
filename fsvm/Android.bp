@@ -121,6 +121,16 @@ rust_test_host {
     test_suites: ["general-tests"],
 }
 
+// vold's requests to a drive's fsvmd, checked without I/O (fsvmd/src/drive_msg.rs).
+rust_test_host {
+    name: "fsvmd_drive_msg_test",
+    crate_name: "fsvmd_drive_msg_test",
+    srcs: ["fsvmd/src/drive_msg.rs"],
+    edition: "2021",
+    rustlibs: ["libfsvm_proto"],
+    test_suites: ["general-tests"],
+}
+
 // Test client for the phone checks (scripts/fsprod-phone.sh), through the same checking client. In no product's
 // packages, so it never reaches an image.
 rust_binary {
@@ -138,6 +148,7 @@ rust_binary {
 cc_defaults {
     name: "fsvm_guest_init_defaults",
     srcs: [
+        "guest/disks.c",
         "guest/fsvm_guest.c",
         "guest/table.c",
     ],
@@ -164,6 +175,23 @@ cc_binary {
     name: "fsvm_guest_init_selftest",
     defaults: ["fsvm_guest_init_defaults"],
     cflags: ["-DFSVM_SELFTEST"],
+}
+
+// The guest's disk selection on the host: the first request of a connection, the version check, one server per disk
+// (guest/disks_test.c).
+cc_test_host {
+    name: "fsvm_guest_disks_test",
+    srcs: [
+        "guest/disks.c",
+        "guest/disks_test.c",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+        "-Wno-unused-parameter",
+    ],
+    test_suites: ["general-tests"],
 }
 
 // The guest's partition table reader on hostile tables, on the host (guest/table_test.c).
