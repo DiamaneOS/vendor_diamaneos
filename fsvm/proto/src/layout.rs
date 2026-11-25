@@ -439,10 +439,12 @@ pub fn encode_layout(disk_sectors: u64, table: u32, parts: &[RawPart]) -> Vec<u8
 ///   dirty FAT volume (fsck_msdos, in the VM) holds the table and two cluster bitmaps. So the FAT counts with a
 ///   quarter more, up to 160 MiB.
 ///
-/// Bounded to 96..=256 MiB whatever the card claims. A filesystem that needs more fails to mount in the VM, and the
-/// card is reported as not opened.
+/// Bounded to 96..=204 MiB whatever the card claims. A filesystem that needs more fails to mount in the VM, and the
+/// card is reported as not opened. 204 MiB is the largest VM that starts beside the decode service's VM: the boot pool
+/// of 512 MiB less that VM's 298 MiB (its RAM, firmware region and bounce buffers) and this VM's own 10 MiB of them.
+/// A larger VM on ordinary memory would pass the kernel's limit of pieces (vm_pieces_max).
 pub const MIN_SERVE_MIB: u32 = 96;
-pub const MAX_SERVE_MIB: u32 = 256;
+pub const MAX_SERVE_MIB: u32 = 204;
 pub const PROBE_MIB: u32 = 64;
 
 pub fn serve_memory_mib(fs_kind: u32, meta_bytes: u64) -> u32 {
@@ -751,12 +753,15 @@ mod tests {
         // 64 GB FAT32 with 4 KiB clusters: 64 MiB per FAT. 2 TB with 32 KiB clusters: 256 MiB.
         assert_eq!(serve_memory_mib(crate::FS_VFAT, 64 << 20), 144);
         assert_eq!(serve_memory_mib(crate::FS_VFAT, 1 << 20), 96);
-        assert_eq!(serve_memory_mib(crate::FS_VFAT, 256 << 20), 224);
-        assert_eq!(serve_memory_mib(crate::FS_VFAT, 1 << 30), 224);
+        assert_eq!(serve_memory_mib(crate::FS_VFAT, 112 << 20), 204);
+        assert_eq!(serve_memory_mib(crate::FS_VFAT, 256 << 20), 204);
+        assert_eq!(serve_memory_mib(crate::FS_VFAT, 1 << 30), 204);
         // 256 GB exFAT with 4 KiB clusters: 8 MiB bitmap. 2 TB with 4 KiB clusters: 64 MiB.
         assert_eq!(serve_memory_mib(crate::FS_EXFAT, 8 << 20), 96);
         assert_eq!(serve_memory_mib(crate::FS_EXFAT, 64 << 20), 144);
-        assert_eq!(serve_memory_mib(crate::FS_EXFAT, u64::MAX), 256);
+        assert_eq!(serve_memory_mib(crate::FS_EXFAT, u64::MAX), 204);
+        // Every serving VM fits beside the decode service's VM in the 512 MiB pool.
+        assert_eq!(512 - 298 - 10, MAX_SERVE_MIB);
         assert_eq!(serve_memory_mib(0, 0), 96);
     }
 
