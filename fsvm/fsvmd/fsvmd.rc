@@ -5,7 +5,8 @@
 # serves that one request, kills what is left of its user once fsvmd ended, and ends with it. Only vold may connect to the sockets (fsvmd.te). The services are kept clear
 # of the low memory killer: a service's death ends its card. SYS_NICE only stays in the bounding set: the VM manager
 # and crosvm carry it as a file capability, and the kernel refuses to execute them without it there (EPERM). Each
-# service drops it from every other set at its start (launcher_main.rs). The OBB slots run fsvmd_obb.
+# service drops it from every other set at its start (launcher_main.rs). The OBB slots run fsvmd_obb from a launcher
+# binary of their own (fsvmd_obb_launcher), in a domain without any right on cards (fsvmd_obb.te).
 
 service fsvmd_probe /system_ext/bin/fsvmd_launcher --slot probe
     disabled
@@ -70,7 +71,7 @@ service fsvmd_5 /system_ext/bin/fsvmd_launcher --slot 5
     socket fsvmd_5 seqpacket 0600 root root
     oom_score_adjust -600
 
-service fsvmd_obb_0 /system_ext/bin/fsvmd_launcher --slot obb_0
+service fsvmd_obb_0 /system_ext/bin/fsvmd_obb_launcher --slot obb_0
     disabled
     oneshot
     user vendor_fsvmd_obb_0
@@ -79,7 +80,7 @@ service fsvmd_obb_0 /system_ext/bin/fsvmd_launcher --slot obb_0
     socket fsvmd_obb_0 seqpacket 0600 root root
     oom_score_adjust -600
 
-service fsvmd_obb_1 /system_ext/bin/fsvmd_launcher --slot obb_1
+service fsvmd_obb_1 /system_ext/bin/fsvmd_obb_launcher --slot obb_1
     disabled
     oneshot
     user vendor_fsvmd_obb_1
@@ -88,7 +89,7 @@ service fsvmd_obb_1 /system_ext/bin/fsvmd_launcher --slot obb_1
     socket fsvmd_obb_1 seqpacket 0600 root root
     oom_score_adjust -600
 
-service fsvmd_obb_2 /system_ext/bin/fsvmd_launcher --slot obb_2
+service fsvmd_obb_2 /system_ext/bin/fsvmd_obb_launcher --slot obb_2
     disabled
     oneshot
     user vendor_fsvmd_obb_2
@@ -97,7 +98,7 @@ service fsvmd_obb_2 /system_ext/bin/fsvmd_launcher --slot obb_2
     socket fsvmd_obb_2 seqpacket 0600 root root
     oom_score_adjust -600
 
-service fsvmd_obb_3 /system_ext/bin/fsvmd_launcher --slot obb_3
+service fsvmd_obb_3 /system_ext/bin/fsvmd_obb_launcher --slot obb_3
     disabled
     oneshot
     user vendor_fsvmd_obb_3

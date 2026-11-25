@@ -71,6 +71,7 @@ rust_binary {
         "de.diamaneos.fsvmd.xml",
         "fsvmd_launcher",
         "fsvmd_obb",
+        "fsvmd_obb_launcher",
     ],
 }
 
@@ -98,6 +99,22 @@ rust_binary {
     prefer_rlib: true,
     system_ext_specific: true,
     init_rc: ["fsvmd/fsvmd.rc"],
+    rustlibs: [
+        "libandroid_logger",
+        "libanyhow",
+        "liblibc",
+        "liblog_rust",
+    ],
+}
+
+// The OBB slots' service: the same program under its own name and label (fsvmd_obb.te), which holds no right on cards.
+rust_binary {
+    name: "fsvmd_obb_launcher",
+    crate_name: "fsvmd_launcher",
+    srcs: ["fsvmd/src/launcher_main.rs"],
+    edition: "2021",
+    prefer_rlib: true,
+    system_ext_specific: true,
     rustlibs: [
         "libandroid_logger",
         "libanyhow",

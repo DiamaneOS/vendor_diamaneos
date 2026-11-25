@@ -18,7 +18,8 @@ card -> vold (sets up a device-mapper range per partition, mounts FUSE)
   server (`cargo test` on any machine, `fsvm_proto_test` and `fsvm_proto_hostile_test` in the tree).
 - `fsvmd/`: the daemon that serves the public partitions of a card or USB drive, all from one VM per drive (each
   partition a disk of that VM and a range of its own), and OBB images. vold asks init's fsvmd service (`fsvmd_launcher`,
-  `fsvmd.rc`, `launcher.rs`, a domain of its own) to start one, as the slot's own user without capabilities. Before
+  or `fsvmd_obb_launcher` for an OBB slot, `fsvmd.rc`, `launcher.rs`, each a domain of its own) to start one, as the
+  slot's own user without capabilities. Before
   every orderly stop fsvmd has the VM write the volume back and unmount it, so an eject loses nothing.
 - `guest/`: the VM's `/init` (`fsvm_guest_init`, static), its partition table reader (`table.c`, host-tested by
   `fsvm_guest_table_test` on hostile tables) and its initramfs (`fsvm_guest_initrd`). `fsvm_guest_initrd_selftest`

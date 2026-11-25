@@ -41,8 +41,10 @@ allow vold packages_list_file:file r_file_perms;
 allow fsvmd_launcher vold:fifo_file write;
 allow fsvmd_launcher vold_device:blk_file { read write getattr };
 allow fsvmd_launcher fuse_device:chr_file { read write getattr };
-allow fsvmd_launcher { media_rw_data_file fuse }:file { read getattr };
-# OBB images are served by fsvmd_obb (fsvmd_obb.te), never by fsvmd.
+# OBB images are served by fsvmd_obb from the OBB slots' own launcher (fsvmd_obb.te), never by fsvmd: this launcher
+# holds no right on OBB files and never starts fsvmd_obb.
+neverallow fsvmd_launcher { media_rw_data_file fuse }:file *;
+neverallow fsvmd_launcher fsvmd_obb_exec:file { execute execute_no_trans };
 # The service may connect to its own sockets as every domain may (domain.te), vold to its socket.
 neverallow { domain -vold -fsvmd_launcher } fsvmd_launcher:unix_stream_socket connectto;
 neverallow { domain -vold -init } fsvmd_socket:sock_file write;
