@@ -6,3 +6,6 @@ set_prop(system_server, hold_new_sd_prop)
 
 type proc_hold_new_sd, fs_type, proc_type;
 allow init proc_hold_new_sd:file { open write };
+
+neverallow { domain -init } proc_hold_new_sd:file { write append };
+neverallow { domain -init -system_server } hold_new_sd_prop:property_service set;
