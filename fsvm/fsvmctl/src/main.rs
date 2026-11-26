@@ -15,7 +15,7 @@
 //! fsvmctl: a test client for the filesystem VM, through the same checking client fsvmd uses. Test builds only.
 //!
 //! ```text
-//! fsvmctl CID [--disk K] [--disk-bytes N] [--block-size 512|4096] [--part I] [--ro] layout | hello | check | ls PATH | cat PATH |
+//! fsvmctl CID [--disk K] [--disk-bytes N] [--block-size 512|4096] [--part I] [--ro] layout | hello | check | repair | ls PATH | cat PATH |
 //!         put LOCAL PATH | mkdir PATH | rm PATH | stat
 //! ```
 //! PATH is relative to the volume's root, "" or "/" for the root. `cat` writes the file to stdout. Each run names the
@@ -76,7 +76,7 @@ fn split(path: &str) -> (&str, &str) {
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: fsvmctl CID [--disk K] [--disk-bytes N] [--block-size N] [--part I] [--ro] layout|hello|check|ls|cat|put|mkdir|rm|stat ...");
+        eprintln!("usage: fsvmctl CID [--disk K] [--disk-bytes N] [--block-size N] [--part I] [--ro] layout|hello|check|repair|ls|cat|put|mkdir|rm|stat ...");
         exit(2);
     }
     let cid: u32 = args[1].parse().unwrap_or_else(|_| exit(2));
@@ -121,7 +121,9 @@ fn main() {
         hello = if arg(2) == "check" && !ro {
             c.mount_check_later(p.index, p.start, p.length, p.fs_kind)
         } else {
-            c.mount(p.index, p.start, p.length, ro, p.fs_kind, std::time::Duration::from_secs(20))
+            let check = if arg(2) == "repair" { std::time::Duration::from_millis(u32::MAX as u64) }
+                        else { std::time::Duration::from_secs(20) };
+            c.mount(p.index, p.start, p.length, ro, p.fs_kind, check)
         }.unwrap_or_else(|e| die("mount", e));
         eprintln!("mounted partition {} in {} ms", p.index, t.elapsed().as_millis());
     }
@@ -150,7 +152,10 @@ fn main() {
             println!("blocks {} free {} bsize {}", sf.blocks, sf.bfree, sf.bsize);
             c.unmount(std::time::Duration::from_secs(4)).unwrap_or_else(|e| die("unmount", e));
         }
-        "hello" => println!("fs kind {} read-only {} root {}", hello.fs_kind, hello.read_only, hello.root),
+        "hello" | "repair" => {
+            println!("fs kind {} read-only {} root {}", hello.fs_kind, hello.read_only, hello.root);
+            if arg(2) == "repair" { c.unmount(std::time::Duration::from_secs(20)).unwrap_or_else(|e| die("unmount", e)); }
+        }
         "stat" => {
             let s = c.statfs().unwrap_or_else(|e| die("statfs", e));
             println!("blocks {} free {} avail {} bsize {}", s.blocks, s.bfree, s.bavail, s.bsize);
