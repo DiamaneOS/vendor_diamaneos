@@ -1847,14 +1847,37 @@ static int end_server(uint32_t index)
 	return servers.pid[index] ? -EBUSY : 0;
 }
 
+/* A byte here for each SIGCHLD, so the accept loop waits without a timeout (an idle VM keeps no timer). */
+static int child_pipe[2] = { -1, -1 };
+
+static void on_child(int sig)
+{
+	(void)sig;
+	int saved = errno;
+	(void)!write(child_pipe[1], "c", 1);
+	errno = saved;
+}
+
 /* Takes connections for ever: each names its disk, and a server of its own serves it (run_server). */
 static void accept_loop(int ls)
 {
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_child;
+	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	if (pipe2(child_pipe, O_CLOEXEC | O_NONBLOCK) == 0)
+		(void)sigaction(SIGCHLD, &sa, NULL);
 	for (;;) {
-		struct pollfd pfd = { ls, POLLIN, 0 };
-		int n = poll(&pfd, 1, 1000);
+		struct pollfd pfd[2] = { { ls, POLLIN, 0 }, { child_pipe[0], POLLIN, 0 } };
+		/* Without the pipe, the old one-second look for ended servers. */
+		int n = poll(pfd, 2, child_pipe[0] >= 0 ? -1 : 1000);
+		if (n > 0 && (pfd[1].revents & POLLIN)) {
+			char drain[64];
+			while (read(child_pipe[0], drain, sizeof(drain)) > 0)
+				;
+		}
 		reap_children();
-		if (n <= 0)
+		if (n <= 0 || !(pfd[0].revents & POLLIN))
 			continue;
 		int s = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
 		if (s < 0)
@@ -1874,8 +1897,15 @@ static void accept_loop(int ls)
 		if (!r)
 			r = end_server(index);
 		pid_t p = r ? -1 : fork();
-		if (p == 0)
+		if (p == 0) {
+			/* A server reaps its own children: the accept loop's handler and pipe are not its. */
+			signal(SIGCHLD, SIG_DFL);
+			if (child_pipe[0] >= 0) {
+				close(child_pipe[0]);
+				close(child_pipe[1]);
+			}
 			run_server(s, ls, &q, index);
+		}
 		if (p < 0) {
 			(void)reply(s, q.id, r ? r : -ENOMEM, NULL, 0);
 		} else if (fsvm_servers_set(&servers, index, p)) {
