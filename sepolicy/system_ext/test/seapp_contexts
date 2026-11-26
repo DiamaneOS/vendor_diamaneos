@@ -1,0 +1,2 @@
+# The directory is included only in userdebug and eng builds.
+user=_app seinfo=platform isPrivApp=false name=de.diamaneos.sanitizer.test domain=decode_test_app type=app_data_file levelFrom=user
