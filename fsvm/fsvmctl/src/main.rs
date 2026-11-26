@@ -15,7 +15,7 @@
 //! fsvmctl: a test client for the filesystem VM, through the same checking client fsvmd uses. Test builds only.
 //!
 //! ```text
-//! fsvmctl CID [--disk K] [--disk-bytes N] [--block-size 512|4096] [--part I] [--ro] layout | hello | ls PATH | cat PATH |
+//! fsvmctl CID [--disk K] [--disk-bytes N] [--block-size 512|4096] [--part I] [--ro] layout | hello | check | ls PATH | cat PATH |
 //!         put LOCAL PATH | mkdir PATH | rm PATH | stat
 //! ```
 //! PATH is relative to the volume's root, "" or "/" for the root. `cat` writes the file to stdout. Each run names the
@@ -25,7 +25,7 @@
 
 use fsvm_proto::client::CallError;
 use fsvm_proto::layout::guid_text;
-use fsvm_proto::{Client, Deadlines, Kind, StreamTransport, MAX_IO, PORT};
+use fsvm_proto::{CheckState, Client, Deadlines, Kind, StreamTransport, MAX_IO, PORT};
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
@@ -76,7 +76,7 @@ fn split(path: &str) -> (&str, &str) {
 fn main() {
     let mut args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: fsvmctl CID [--disk K] [--disk-bytes N] [--block-size N] [--part I] [--ro] layout|hello|ls|cat|put|mkdir|rm|stat ...");
+        eprintln!("usage: fsvmctl CID [--disk K] [--disk-bytes N] [--block-size N] [--part I] [--ro] layout|hello|check|ls|cat|put|mkdir|rm|stat ...");
         exit(2);
     }
     let cid: u32 = args[1].parse().unwrap_or_else(|_| exit(2));
@@ -118,10 +118,38 @@ fn main() {
             exit(1)
         });
         let t = std::time::Instant::now();
-        hello = c.mount(p.index, p.start, p.length, ro, p.fs_kind, std::time::Duration::from_secs(20)).unwrap_or_else(|e| die("mount", e));
+        hello = if arg(2) == "check" && !ro {
+            c.mount_check_later(p.index, p.start, p.length, p.fs_kind)
+        } else {
+            c.mount(p.index, p.start, p.length, ro, p.fs_kind, std::time::Duration::from_secs(20))
+        }.unwrap_or_else(|e| die("mount", e));
         eprintln!("mounted partition {} in {} ms", p.index, t.elapsed().as_millis());
     }
     match arg(2) {
+        "check" => {
+            println!("initial read-only {} check-pending {}", hello.read_only, hello.check_pending);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(45);
+            while hello.check_pending {
+                let (state, ran) = c.check_poll().unwrap_or_else(|e| die("check poll", e));
+                if state == CheckState::Running {
+                    if std::time::Instant::now() >= until { eprintln!("check observation deadline"); exit(1); }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    continue;
+                }
+                println!("checker {:?} elapsed {} ms", state, ran.as_millis());
+                // Match fsvmd's repair eligibility and repair/switch deadlines.
+                if state == CheckState::Passed || (state == CheckState::Errors && ran <= std::time::Duration::from_secs(10)) {
+                    let result = c.check_switch(std::time::Duration::from_secs(8), std::time::Duration::from_secs(16));
+                    println!("repair/switch {:?}", result);
+                }
+                break;
+            }
+            let h = c.hello().unwrap_or_else(|e| die("final hello", e));
+            println!("final read-only {} check-pending {}", h.read_only, h.check_pending);
+            let sf = c.statfs().unwrap_or_else(|e| die("final statfs", e));
+            println!("blocks {} free {} bsize {}", sf.blocks, sf.bfree, sf.bsize);
+            c.unmount(std::time::Duration::from_secs(4)).unwrap_or_else(|e| die("unmount", e));
+        }
         "hello" => println!("fs kind {} read-only {} root {}", hello.fs_kind, hello.read_only, hello.root),
         "stat" => {
             let s = c.statfs().unwrap_or_else(|e| die("statfs", e));
