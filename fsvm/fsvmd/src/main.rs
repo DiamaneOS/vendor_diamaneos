@@ -277,17 +277,19 @@ fn left(deadline: Instant) -> Result<Duration> {
 
 /// Starts the VM, connects and checks the protocol version, before `deadline` less `keep`, the time the caller needs
 /// after the start. Each try waits for the VM as long as that allows: a VM on ordinary memory may spend most of it in
-/// its memory lend (vm::Vm::connect). A VM that ended before it answered (refused for scattered memory, or because
-/// the hypervisor already runs as many protected VMs as it takes) is tried again while there is time.
+/// its memory lend (vm::Vm::connect). A VM refused at its start (no pool room, and its ordinary memory too scattered
+/// or past the budget of pieces of all running VMs) ends the tries with NoRoom. A VM that ended before it answered
+/// for another reason is tried again while there is time, up to `tries`.
 fn start_vm(
     disk: &File,
     writable: bool,
     memory_mib: u32,
     deadline: Instant,
     keep: Duration,
+    tries: usize,
 ) -> Result<(vm::Vm, VmClient)> {
     let mut last = anyhow!("not started");
-    for (attempt, wait) in [0u64, 1, 2].into_iter().enumerate() {
+    for (attempt, wait) in [0u64, 1, 2].into_iter().take(tries).enumerate() {
         if wait > 0 {
             if left(deadline)? <= keep + Duration::from_secs(wait + 5) {
                 break;
@@ -306,8 +308,15 @@ fn start_vm(
             Ok(stream) => stream,
             Err(e) => {
                 warn!("filesystem VM start {} did not answer: {e:?}", attempt + 1);
+                let refused = vm.refused_at_start();
                 // Gone before the next try, so that its memory and its place in the hypervisor are free.
                 vm.stop_and_wait(PROBE_VM_END);
+                if refused {
+                    // No pool room, and its ordinary memory would pass the budget of pieces of all running VMs (the
+                    // kernel's vm_pieces_max) or the hypervisor's: the same again until a VM ends. vold waits for room.
+                    error!("the VM of {memory_mib} MiB was refused at its start: no room for it now");
+                    return Err(anyhow!(NoRoom));
+                }
                 last = e;
                 continue;
             }
@@ -321,6 +330,21 @@ fn start_vm(
     }
     Err(last)
 }
+
+/// A VM refused at its start for want of memory. fsvmd then ends with EXIT_NO_ROOM and vold waits for room.
+#[derive(Debug)]
+struct NoRoom;
+
+impl std::fmt::Display for NoRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no room for the filesystem VM")
+    }
+}
+
+impl std::error::Error for NoRoom {}
+
+/// fsvmd's exit status when its VM was refused at its start for want of memory (vold fs/Fsvm.h kExitNoRoom).
+const EXIT_NO_ROOM: i32 = 5;
 
 /// vold waits 45 s for a format (fs/Fsvm.cpp Format) and holds its lock meanwhile, as it did for mkfs on Android.
 const FORMAT_BUDGET: Duration = Duration::from_secs(40);
@@ -379,7 +403,7 @@ enum Repair {
 /// One repair in a VM of `memory_mib`. The VM is gone again when it returns.
 fn repair_in_vm(args: &Args, disk: &File, memory_mib: u32) -> Result<Repair> {
     let deadline = Instant::now() + SERVE_BUDGET;
-    let (vm, mut client) = start_vm(disk, true, memory_mib, deadline, PROBE_KEEP)?;
+    let (vm, mut client) = start_vm(disk, true, memory_mib, deadline, PROBE_KEEP, 3)?;
     client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
     let l = client.layout(args.disk_bytes, args.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
     let part = l
@@ -416,7 +440,7 @@ const EXIT_NOT_REPAIRED: i32 = 4;
 fn format(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     ensure!(access_mode(&disk)? == libc::O_RDWR, "a format needs the disk writable");
     let deadline = Instant::now() + FORMAT_BUDGET;
-    let (vm, mut client) = start_vm(&disk, true, layout::MIN_SERVE_MIB, deadline, FORMAT_KEEP)?;
+    let (vm, mut client) = start_vm(&disk, true, layout::MIN_SERVE_MIB, deadline, FORMAT_KEEP, 3)?;
     let budget = left(deadline)?.saturating_sub(Duration::from_secs(3));
     client.format(args.fs, budget).map_err(|e| anyhow!("format: {e:?}"))?;
     info!("formatted in the VM as {}", if args.fs == FS_EXFAT { "exfat" } else { "vfat" });
@@ -429,7 +453,7 @@ fn format(args: &Args, disk: File, mut pipe: File) -> Result<()> {
 fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     ensure!(access_mode(&disk)? == libc::O_RDONLY, "the probe disk must be read-only");
     let deadline = Instant::now() + PROBE_BUDGET;
-    let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB, deadline, PROBE_KEEP)?;
+    let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB, deadline, PROBE_KEEP, 3)?;
     client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
     let l = client.layout(args.disk_bytes, args.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
     if l.dropped_labels > 0 {
@@ -467,7 +491,27 @@ impl Served {
         self.vm = None;
         let deadline = Instant::now() + budget;
         info!("volume {}: starting the filesystem VM with {} MiB", self.volume, self.memory);
-        let (vm, mut client) = start_vm(&self.disk, !self.read_only, self.memory, deadline, SERVE_KEEP)?;
+        // An OBB VM never waits for a place: refused at its start, the mount fails at once (vold reports Android's
+        // OBB error).
+        // A large VM refused for its pieces is refused again: one try, then the smallest serving VM below.
+        let tries = if self.obb || self.memory > layout::MIN_SERVE_MIB { 1 } else { 3 };
+        let (vm, mut client) = match start_vm(&self.disk, !self.read_only, self.memory, deadline, SERVE_KEEP, tries) {
+            Ok(started) => started,
+            // A VM sized for the check of a large card that cannot start (no pool room, and ordinary memory refused
+            // for its pieces): served from the smallest serving VM instead. A clean volume needs no more. A dirty one's
+            // check cannot finish there, so it stays read-only with its notice and is never writable unchecked.
+            Err(e) if !self.obb && self.memory > layout::MIN_SERVE_MIB => {
+                warn!(
+                    "volume {}: a VM of {} MiB did not start ({e:?}), serving it from {} MiB, where a check that needs \
+                     more memory cannot finish",
+                    self.volume,
+                    self.memory,
+                    layout::MIN_SERVE_MIB
+                );
+                start_vm(&self.disk, !self.read_only, layout::MIN_SERVE_MIB, deadline, SERVE_KEEP, 1)?
+            }
+            Err(e) => return Err(e),
+        };
         client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
         let l = client.layout(self.disk_bytes, self.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
         let part = if self.obb {
@@ -641,8 +685,8 @@ fn obb_memory_mib(disk_bytes: u64) -> u32 {
     if disk_bytes <= 2 << 30 { layout::PROBE_MIB } else { layout::MIN_SERVE_MIB }
 }
 
-/// fsvmd for OBB images runs from its own binary (`fsvmd_obb`, its own SELinux domain without card access and
-/// outside the VM memory pool), and only for OBB images. fsvmd serves cards and probes them, never OBB images.
+/// fsvmd for OBB images runs from its own binary (`fsvmd_obb`, its own SELinux domain without card access), and only
+/// for OBB images. fsvmd serves cards and probes them, never OBB images.
 fn check_binary(args: &Args) -> Result<()> {
     let name = std::env::args().next().unwrap_or_default();
     let is_obb_binary = name.ends_with("/fsvmd_obb") || name == "fsvmd_obb";
@@ -654,6 +698,6 @@ fn main() {
     android_logger::init_once(android_logger::Config::default().with_tag("fsvmd").with_max_level(log::LevelFilter::Info));
     if let Err(e) = run() {
         error!("{e:?}");
-        std::process::exit(1);
+        std::process::exit(if e.chain().any(|c| c.is::<NoRoom>()) { EXIT_NO_ROOM } else { 1 });
     }
 }

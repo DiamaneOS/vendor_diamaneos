@@ -1,6 +1,6 @@
 # DiamaneOS: fsvmd_obb serves an app's OBB image read-only from the filesystem VM (fsvm/, system/vold
 # model/ObbVolume.cpp). The same program as fsvmd, from its own binary so that it has a domain of its own: no access to
-# SD cards or USB drives at all, and its VM manager is not a client of the VM memory pool, which is kept for cards.
+# SD cards or USB drives at all.
 type fsvmd_obb, domain, coredomain;
 type fsvmd_obb_exec, system_file_type, exec_type, file_type;
 type fsvmd_obb_tmpfs, file_type;
@@ -37,3 +37,8 @@ allow { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } { media_rw_da
 # Read-only, and never a card.
 neverallow { fsvmd_obb fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } { media_rw_data_file fuse }:file { open write append };
 neverallow { fsvmd_obb fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm } vold_device:blk_file *;
+
+# The OBB VM's RAM comes from the boot pool for protected VMs when it has room (the device's gunyah_vm_pool.te declares
+# the attributes), else ordinary memory. vold stops an OBB image's VM when a drive needs its room.
+typeattribute fsvmd_obb_virtualizationmanager gunyah_vm_pool_client;
+typeattribute fsvmd_obb_virtmgr_crosvm gunyah_vm_pool_crosvm;
