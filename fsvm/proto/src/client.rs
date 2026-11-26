@@ -169,11 +169,13 @@ pub struct Client<T: Transport> {
     /// The end of the operation the calls serve (a FUSE request, Deadlines::operation). A call whose own deadline
     /// would end later is not sent (CallError::OutOfTime): a call cut short would break a slow but sound session.
     pub op_deadline: Option<Instant>,
+    /// Elapsed successful deferred FAT mount, cleared before each new mount attempt.
+    pub deferred_fat_mount_elapsed: Duration,
 }
 
 impl<T: Transport> Client<T> {
     pub fn new(t: T, deadlines: Deadlines) -> Self {
-        Client { t, next_id: 1, broken: None, deadlines, op_deadline: None }
+        Client { t, next_id: 1, broken: None, deadlines, op_deadline: None, deferred_fat_mount_elapsed: Duration::ZERO }
     }
 
     pub fn is_broken(&self) -> bool {
@@ -194,6 +196,7 @@ impl<T: Transport> Client<T> {
 
     /// Sends a request and reads the checked reply payload. `max_len` bounds the payload before it is read.
     fn call(&mut self, mut req: Request, op: Op, max_len: u32, budget: Duration) -> CallResult<Vec<u8>> {
+        if matches!(op, Op::Mount) { self.deferred_fat_mount_elapsed = Duration::ZERO; }
         if let Some(why) = &self.broken {
             return Err(CallError::Broken(why.clone()));
         }
@@ -331,13 +334,14 @@ impl<T: Transport> Client<T> {
     pub fn mount_check_later(&mut self, index: u32, start: u64, length: u64, expect_fs: u32) -> CallResult<Hello> {
         let budget = self.deadlines.mount;
         let req = Request { arg: index as u64, node: start, node2: length, flags: 2, ..Default::default() };
+        let started = Instant::now();
         let p = self.call(req, Op::Mount, HELLO_SIZE as u32, budget)?;
         match decode_hello(&p) {
             Ok(h) if h.fs_kind == 0 => self.fail("mount: no filesystem".into()),
             Ok(h) if expect_fs != 0 && h.fs_kind != expect_fs => {
                 self.fail(format!("mount: filesystem {} where the layout said {expect_fs}", h.fs_kind))
             }
-            Ok(h) => Ok(h),
+            Ok(h) => { self.deferred_fat_mount_elapsed = if h.fs_kind == FS_VFAT { started.elapsed() } else { Duration::ZERO }; Ok(h) },
             Err(e) => self.fail(format!("mount: {e:?}")),
         }
     }

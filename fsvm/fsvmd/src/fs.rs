@@ -1321,10 +1321,11 @@ impl Checker {
             match s.client.check_poll() {
                 Ok((CheckState::Running, _)) => {}
                 Ok((state @ (CheckState::Passed | CheckState::Errors), ran)) => {
-                    if state == CheckState::Errors && ran > REPAIR_AFTER_CHECK_MAX {
+                    if state == CheckState::Errors && (ran > REPAIR_AFTER_CHECK_MAX ||
+                        s.client.deferred_fat_mount_elapsed >= SWITCH_MAX) {
                         // Too long to repair while apps wait: vold takes the volume from apps and has it repaired
                         // with no time limit (fsvmd --repair), as stock's check before the mount.
-                        warn!("the check found errors after {ran:?}: vold has the volume repaired without apps");
+                        warn!("check errors after {ran:?}, FAT mount {:?}: vold repairs without apps", s.client.deferred_fat_mount_elapsed);
                         s.check_pending = false;
                         owed = false;
                         (self.done)(b'E');
