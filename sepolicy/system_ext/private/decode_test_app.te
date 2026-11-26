@@ -1,0 +1,23 @@
+# DiamaneOS: the platform-signed decoder helper on test builds only.
+# Its activity requires DUMP and its VM uses the same checked allocation API.
+userdebug_or_eng(`
+  type decode_test_app, domain;
+  typeattribute decode_test_app coredomain;
+  app_domain(decode_test_app)
+
+  allow decode_test_app {
+      activity_service
+      content_capture_service
+      gpu_service
+      netstats_service
+  }:service_manager find;
+
+  virtualizationservice_use(decode_test_app)
+  typeattribute decode_test_app_virtualizationmanager gunyah_vm_pool_client;
+  typeattribute decode_test_app_virtmgr_crosvm gunyah_vm_pool_crosvm;
+
+  neverallow decode_test_app self:{ tcp_socket udp_socket rawip_socket } create;
+  neverallow decode_test_app port_type:tcp_socket name_connect;
+  neverallow { domain -decode_test_app } decode_test_app_virtualizationmanager:process transition;
+  neverallow domain decode_test_app_virtualizationmanager:process dyntransition;
+')

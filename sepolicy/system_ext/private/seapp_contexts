@@ -1,3 +1,8 @@
 # DiamaneOS: the decode service runs in its own domain (decode_service_app.te). Its data keeps the label and level
 # of a platform app's, so the VM files in it stay where the VM manager and crosvm expect them.
 user=_app seinfo=platform isPrivApp=true name=de.diamaneos.sanitizer domain=decode_service_app type=app_data_file levelFrom=user
+
+# DiamaneOS: the exact platform helper keeps its normal app UID and user levels.
+userdebug_or_eng(`
+user=_app seinfo=platform isPrivApp=false name=de.diamaneos.sanitizer.test domain=decode_test_app type=app_data_file levelFrom=user
+')
