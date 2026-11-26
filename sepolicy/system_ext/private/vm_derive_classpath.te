@@ -1,0 +1,9 @@
+# DiamaneOS: a root client's VM manager (su, debuggable builds only) runs derive_classpath in its own domain, which
+# writes its output to /proc/self/fd/1 with O_CREAT (packages/modules/Virtualization android/virtmgr/src/payload.rs).
+# The create check on the 0500 /proc/self/fd directory then asks root for CAP_DAC_OVERRIDE, which SELinux refuses.
+# The open goes on without it, as the file exists. The platform policy already ignores the SELinux half of the same
+# open (dontaudit virtualizationmanager_domain self:dir write). Other clients are not root, so for them the check
+# ends at the file mode and never reaches SELinux.
+userdebug_or_eng(`
+  dontaudit su_virtualizationmanager self:capability dac_override;
+')
