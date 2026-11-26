@@ -1,0 +1,107 @@
+# DiamaneOS: one fsvmd service per slot, each with its own user (fsvm/config.fs): one probe, six served volumes and
+# four OBB images at a time, as vold's caps (system/vold fs/Fsvm.cpp). None runs from boot: vold starts a free slot's
+# service when it needs one (ctl.start, fsvmd.te), asks it over its socket for one fsvmd (fsvmd/src/launcher.rs), and
+# the service starts it as its own user, so no fsvmd shares a user with another and vold changes no ids. The service
+# serves that one request, kills what is left of its user once fsvmd ended, and ends with it. Only vold may connect to the sockets (fsvmd.te). The services are kept clear
+# of the low memory killer: a service's death ends its card. SYS_NICE only stays in the bounding set: the VM manager
+# and crosvm carry it as a file capability, and the kernel refuses to execute them without it there (EPERM). Each
+# service drops it from every other set at its start (launcher_main.rs). The OBB slots run fsvmd_obb.
+
+service fsvmd_probe /system_ext/bin/fsvmd_launcher --slot probe
+    disabled
+    oneshot
+    user vendor_fsvmd_probe
+    group vendor_fsvmd_probe
+    capabilities SYS_NICE
+    socket fsvmd_probe seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_0 /system_ext/bin/fsvmd_launcher --slot 0
+    disabled
+    oneshot
+    user vendor_fsvmd_0
+    group vendor_fsvmd_0
+    capabilities SYS_NICE
+    socket fsvmd_0 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_1 /system_ext/bin/fsvmd_launcher --slot 1
+    disabled
+    oneshot
+    user vendor_fsvmd_1
+    group vendor_fsvmd_1
+    capabilities SYS_NICE
+    socket fsvmd_1 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_2 /system_ext/bin/fsvmd_launcher --slot 2
+    disabled
+    oneshot
+    user vendor_fsvmd_2
+    group vendor_fsvmd_2
+    capabilities SYS_NICE
+    socket fsvmd_2 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_3 /system_ext/bin/fsvmd_launcher --slot 3
+    disabled
+    oneshot
+    user vendor_fsvmd_3
+    group vendor_fsvmd_3
+    capabilities SYS_NICE
+    socket fsvmd_3 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_4 /system_ext/bin/fsvmd_launcher --slot 4
+    disabled
+    oneshot
+    user vendor_fsvmd_4
+    group vendor_fsvmd_4
+    capabilities SYS_NICE
+    socket fsvmd_4 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_5 /system_ext/bin/fsvmd_launcher --slot 5
+    disabled
+    oneshot
+    user vendor_fsvmd_5
+    group vendor_fsvmd_5
+    capabilities SYS_NICE
+    socket fsvmd_5 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_0 /system_ext/bin/fsvmd_launcher --slot obb_0
+    disabled
+    oneshot
+    user vendor_fsvmd_obb_0
+    group vendor_fsvmd_obb_0
+    capabilities SYS_NICE
+    socket fsvmd_obb_0 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_1 /system_ext/bin/fsvmd_launcher --slot obb_1
+    disabled
+    oneshot
+    user vendor_fsvmd_obb_1
+    group vendor_fsvmd_obb_1
+    capabilities SYS_NICE
+    socket fsvmd_obb_1 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_2 /system_ext/bin/fsvmd_launcher --slot obb_2
+    disabled
+    oneshot
+    user vendor_fsvmd_obb_2
+    group vendor_fsvmd_obb_2
+    capabilities SYS_NICE
+    socket fsvmd_obb_2 seqpacket 0600 root root
+    oom_score_adjust -600
+
+service fsvmd_obb_3 /system_ext/bin/fsvmd_launcher --slot obb_3
+    disabled
+    oneshot
+    user vendor_fsvmd_obb_3
+    group vendor_fsvmd_obb_3
+    capabilities SYS_NICE
+    socket fsvmd_obb_3 seqpacket 0600 root root
+    oom_score_adjust -600

@@ -1,0 +1,2 @@
+fsvm_fsck_msdos is fsck_msdos built from external/fsck_msdos of the Android tree, unchanged. Its sources are under
+the BSD licence in external/fsck_msdos/NOTICE, which applies to this binary.

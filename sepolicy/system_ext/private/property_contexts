@@ -1,0 +1,2 @@
+# DiamaneOS: vold starts the filesystem VM's slot services when it needs them (system/vold fs/Fsvm.cpp StartOn).
+ctl.start$fsvmd_    u:object_r:ctl_fsvmd_prop:s0 prefix
