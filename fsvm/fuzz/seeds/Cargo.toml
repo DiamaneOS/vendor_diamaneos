@@ -1,0 +1,14 @@
+# The seed writer and a quick check of the fsvm_proto fuzz targets off the build tree (cargo run -- DIR). The fuzz
+# targets themselves build with Soong (../Android.bp).
+[package]
+name = "fsvm_fuzz_seeds"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "fsvm_fuzz_seeds"
+path = "src/main.rs"
+
+[dependencies]
+fsvm_proto = { path = "../../proto" }
