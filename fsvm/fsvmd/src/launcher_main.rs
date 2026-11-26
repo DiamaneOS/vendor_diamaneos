@@ -66,10 +66,14 @@ fn check_capabilities(status: &str) -> Result<()> {
     Ok(())
 }
 
-/// `--slot <slot>`, the one argument fsvmd.rc passes.
+/// `--slot <slot>`, the one argument fsvmd.rc passes. The OBB slots run from fsvmd_obb_launcher, the others from
+/// fsvmd_launcher: each binary has its own SELinux domain and refuses the other's slots.
 fn slot() -> Result<String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args = std::env::args();
+    let obb_launcher = args.next().is_some_and(|name| name.ends_with("/fsvmd_obb_launcher"));
+    let args: Vec<String> = args.collect();
     ensure!(args.len() == 2 && args[0] == "--slot", "usage: fsvmd_launcher --slot <slot>");
+    ensure!(args[1].starts_with("obb_") == obb_launcher, "slot {} is not this launcher's", args[1]);
     Ok(args[1].clone())
 }
 

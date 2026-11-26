@@ -54,4 +54,9 @@ int fsvm_servers_set(struct fsvm_servers *s, uint32_t index, pid_t pid);
 /* A process ended: the disk it served has no server any more. Its index, or -1 when it served none. */
 int fsvm_servers_ended(struct fsvm_servers *s, pid_t pid);
 
+/* Whether request `q` changes the volume, so that a read-only volume refuses it with EROFS: create, mkdir, unlink,
+ * rmdir, rename, truncate, a new time, a write, an open for writing. An open for reading and a write back (FSYNC)
+ * change nothing: an OBB image, a write-protected card and a card read-only while it is checked open their files. */
+int fsvm_changes_volume(const struct fsvm_req *q);
+
 #endif

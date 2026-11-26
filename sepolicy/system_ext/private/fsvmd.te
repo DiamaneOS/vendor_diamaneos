@@ -41,8 +41,10 @@ allow vold packages_list_file:file r_file_perms;
 allow fsvmd_launcher vold:fifo_file write;
 allow fsvmd_launcher vold_device:blk_file { read write getattr };
 allow fsvmd_launcher fuse_device:chr_file { read write getattr };
-allow fsvmd_launcher { media_rw_data_file fuse }:file { read getattr };
-# OBB images are served by fsvmd_obb (fsvmd_obb.te), never by fsvmd.
+# OBB images are served by fsvmd_obb from the OBB slots' own launcher (fsvmd_obb.te), never by fsvmd: this launcher
+# holds no right on OBB files and never starts fsvmd_obb.
+neverallow fsvmd_launcher { media_rw_data_file fuse }:file *;
+neverallow fsvmd_launcher fsvmd_obb_exec:file { execute execute_no_trans };
 # The service may connect to its own sockets as every domain may (domain.te), vold to its socket.
 neverallow { domain -vold -fsvmd_launcher } fsvmd_launcher:unix_stream_socket connectto;
 neverallow { domain -vold -init } fsvmd_socket:sock_file write;
@@ -57,9 +59,10 @@ neverallow vold self:global_capability_class_set { setuid setgid };
 # mounted at /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the
 # volume. A drive's fsvmd gets vold's socket pair end as 3 (fsvmd/src/drive.rs), and over it the same descriptors for
 # each partition (its range, its /dev/fuse and its pipe) and the pipe of a repair: it reads vold's requests, answers
-# them, and checks it is a socket.
+# them, and checks it is a socket. It checks each pipe it gets over the socket is a pipe before it serves the
+# partition or repairs it (getattr).
 allow fsvmd vold:fd use;
-allow fsvmd vold:fifo_file write;
+allow fsvmd vold:fifo_file { write getattr };
 allow fsvmd vold:unix_stream_socket { read write getattr };
 # The kernel checks a descriptor against its open mode when fsvmd inherits it and when fsvmd passes it on over binder,
 # so fsvmd holds read and write on the disk it was handed, though it never reads it itself. It cannot open one.
@@ -98,13 +101,15 @@ neverallow blkid_untrusted self:global_capability_class_set sys_admin;
 
 # An app's OBB image is served by fsvmd_obb (fsvmd_obb.te), from shared storage or a card. fsvmd, which serves the
 # cards themselves, holds no right on OBB files, and none of its domains may open a card or an app's file itself.
-neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } { media_rw_data_file fuse }:file { open write append };
+neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } { media_rw_data_file fuse }:file *;
 neverallow { fsvmd fsvmd_virtualizationmanager fsvmd_virtmgr_crosvm } vold_device:blk_file open;
 
 # A USB disk with 4096-byte logical blocks keeps them in the VM: fsvmd's VM manager reads the block size of the disk
 # it was handed, and only that.
 allow fsvmd_virtualizationmanager vold_device:blk_file ioctl;
 allowxperm fsvmd_virtualizationmanager vold_device:blk_file ioctl BLKSSZGET;
+# Every domain may get any block device's size (BLKGETSIZE64) and set close-on-exec (FIOCLEX, FIONCLEX) (domain.te).
+neverallowxperm fsvmd_virtualizationmanager vold_device:blk_file ioctl ~{ BLKSSZGET 0x1272 0x5450 0x5451 };
 
 # The filesystem VM's RAM comes from the boot pool for protected VMs when it has room (the device's
 # gunyah_vm_pool.te declares the attributes). Without room it falls back to ordinary memory.

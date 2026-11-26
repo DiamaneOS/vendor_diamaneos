@@ -17,9 +17,8 @@
 //! filesystem VM on the other end of a socket pair. Files are written, read back, listed, renamed and removed
 //! through the kernel, in requests of the most one protocol READ or WRITE carries.
 //!
-//! Every earlier test spoke the protocol only. The first real mount (user set 20261118-user-766dae2a84) ended its
-//! FUSE loop right after INIT: the kernel was told max_write 1 MiB and refused the loop's 128 KiB reads with EINVAL.
-//! This test fails that way on the old code.
+//! A FUSE loop that announced a max_write larger than its reads was refused by the kernel with EINVAL right after
+//! INIT: this test fails on that.
 //!
 //! The thread serving FUSE runs under fsvmd's seccomp filter (fsvmd/src/seccomp.rs), with calls outside its list
 //! reported to a supervisor thread (SECCOMP_RET_USER_NOTIF) and let through: the test fails and names them, so the
@@ -31,12 +30,16 @@
 #[allow(dead_code)]
 #[path = "../src/fs.rs"]
 mod fs;
+#[path = "../src/reconnect.rs"]
+mod reconnect;
 #[allow(dead_code)]
 #[path = "../src/seccomp.rs"]
 mod seccomp;
 
-use fsvm_proto::{encode_attr, encode_dir_page, Attr, Client, Deadlines, Kind, StreamTransport, MAX_IO, RSP_MAGIC};
-use std::collections::HashMap;
+use fsvm_proto::{Client, Deadlines, Kind, StreamTransport, MAX_IO};
+mod fake_vm;
+use fake_vm::{FakeVm, FakeNode, CheckPlan};
+mod cleanup_dispatch;
 use std::ffi::CString;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::net::UnixStream;
@@ -48,7 +51,28 @@ use std::time::Duration;
 const CHILD: &str = "FSVMD_FUSE_TEST_CHILD";
 const ROOT_GUEST: u64 = 1;
 
+struct TestLog;
+impl log::Log for TestLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool { metadata.level() <= log::Level::Warn }
+    fn log(&self, record: &log::Record) { if self.enabled(record.metadata()) { eprintln!("{}", record.args()); } }
+    fn flush(&self) {}
+}
+static TEST_LOG: TestLog = TestLog;
+
 fn main() {
+    if std::env::args().any(|a| a == "--review-1b-rrr-cleanup") {
+        std::process::exit(match cleanup_dispatch::run_rereview() { Ok(()) => 0, Err(e) => { eprintln!("{e}"); 1 } });
+    }
+    if std::env::var_os("FSVMD_TEST_LOG").is_some() {
+        let _ = log::set_logger(&TEST_LOG);
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+    if std::env::args().any(|a| a == "--review-1b-rr-cleanup") {
+        std::process::exit(match cleanup_dispatch::run() { Ok(()) => 0, Err(e) => { eprintln!("{e}"); 1 } });
+    }
+    if std::env::args().any(|a| a == "--review-1b-rr-dir") {
+        std::process::exit(match directory_timestamp_cases() { Ok(()) => 0, Err(e) => { eprintln!("{e}"); 1 } });
+    }
     if std::env::var_os(CHILD).is_some() {
         std::process::exit(match child() {
             Ok(()) => 0,
@@ -126,7 +150,7 @@ fn check(ok: bool, what: &str) -> Result<(), String> {
 struct NoRestart;
 
 impl fs::Session for NoRestart {
-    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
         anyhow::bail!("the test VM does not restart")
     }
     fn stop_vm(&mut self, _within: Duration) {}
@@ -218,13 +242,322 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
     }
     check(seen.is_empty(), &format!("calls outside fsvmd's seccomp list: {}", names.join(", ")))?;
     println!("fsvmd_fuse_test: the FUSE thread kept to fsvmd's seccomp list");
+    if std::env::args().any(|a| a == "--review-1b-r") {
+        return review_1b_r();
+    }
+    review_1b_r()?;
+    directory_timestamp_cases()?;
+    cleanup_dispatch::run()?;
     checked(mnt, &target, false)?;
     println!("fsvmd_fuse_test: a dirty volume: read-only while checked, writable after the switch, vold told W");
     checked(mnt, &target, true)?;
     println!("fsvmd_fuse_test: the switch's answer lost: the new VM's clean mount makes the volume writable, vold told W");
     two_partitions(mnt)?;
     println!("fsvmd_fuse_test: two partitions of a drive: one gives up alone, the other serves on and stops clean");
+    reconnect(mnt, &target, true)?;
+    println!("fsvmd_fuse_test: a file open across a new VM: its I/O fails, the replacement under its name untouched, \
+              the kernel's cache dropped, the eject says not written back");
+    reconnect(mnt, &target, false)?;
+    println!("fsvmd_fuse_test: a new VM after reads only: the eject stays clean");
+    read_only_asked(mnt, &target)?;
+    println!("fsvmd_fuse_test: a volume asked read-only: no check, no switch, never writable, vold told r");
+    slow_lookups(mnt, &target)?;
+    println!("fsvmd_fuse_test: a path looked up again on a slow VM: the request ends within its time");
+    no_handle_left(mnt, &target)?;
+    println!("fsvmd_fuse_test: the VM out of handles: the app's open gets EMFILE");
+    unlinked_open_file()?;
+    println!("fsvmd_fuse_test: an open, unlinked file keeps its kind");
+    listings_of_a_drive()?;
+    println!("fsvmd_fuse_test: the listings of a drive's partitions share one card's memory");
+    obb_read(mnt, &target)?;
+    println!("fsvmd_fuse_test: an OBB image, mounted read-only: its files open and read");
     Ok(())
+}
+
+/// A new VM after a broken session: one whose volume holds `files`, mounted clean and writable, with `deadlines`.
+struct RestartWith {
+    files: Vec<(String, Vec<u8>)>,
+    lookup_delay: Duration,
+    deadlines: Deadlines,
+}
+
+impl fs::Session for RestartWith {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+        let (vm_end, our_end) = UnixStream::pair()?;
+        let files: Vec<(&str, &[u8])> = self.files.iter().map(|(n, d)| (n.as_str(), &d[..])).collect();
+        let mut vm = FakeVm::with_files(&files);
+        vm.lookup_delay = self.lookup_delay;
+        std::thread::spawn(move || vm.serve(vm_end));
+        let hello = fsvm_proto::Hello { fs_kind: fsvm_proto::FS_VFAT, read_only: false, was_dirty: false, check_pending: false, root: ROOT_GUEST };
+        Ok((Client::new(StreamTransport(our_end), self.deadlines), hello))
+    }
+    fn stop_vm(&mut self, _within: Duration) {}
+}
+
+/// A volume served at `target` from a FakeVm, with the end of its VM's socket (to break the session), its stop and
+/// the end of its FUSE loop.
+struct Served {
+    vm_side: UnixStream,
+    closer: fs::Closer,
+    end: mpsc::Receiver<String>,
+}
+
+fn serve_at(target: &CString, vm: FakeVm, deadlines: Deadlines, asked_ro: bool, session: Box<dyn fs::Session>) -> Result<Served, String> {
+    let dev = fuse_mount(target)?;
+    let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let vm_side = vm_end.try_clone().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || vm.serve(vm_end));
+    let client = Client::new(StreamTransport(our_end), deadlines);
+    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, asked_ro, asked_ro, 0, false, false, session);
+    let closer = filesystem.closer();
+    let (end_tx, end) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = end_tx.send(format!("{:?}", fs::serve_fuse(dev, filesystem)));
+    });
+    Ok(Served { vm_side, closer, end })
+}
+
+/// Unmounts, waits for the FUSE loop's end and stops the volume orderly.
+fn unserve(target: &CString, s: Served) -> Result<fs::Closed, String> {
+    // SAFETY: plain system call on a valid string.
+    check(unsafe { libc::umount2(target.as_ptr(), 0) } == 0, &format!("unmount: {}", std::io::Error::last_os_error()))?;
+    s.end.recv_timeout(Duration::from_secs(10)).map_err(|_| "the FUSE loop did not end after the unmount")?;
+    Ok(s.closer.close(Duration::from_secs(1), Duration::from_secs(5)))
+}
+
+fn errno_of<T: std::fmt::Debug>(r: &std::io::Result<T>) -> Option<i32> {
+    r.as_ref().err().and_then(|e| e.raw_os_error())
+}
+
+/// Review 1b H3 and M2: a file stays open while its VM is replaced and a different file holds its name in the new
+/// one. Its reads and writes must fail rather than reach that other file, which keeps its contents. The kernel must
+/// drop what it cached of the name at once, not after its 5 s, and a new open reaches the new file. With `change`,
+/// the old VM had acknowledged writes, so the eject must not report the volume as written back.
+fn reconnect(mnt: &std::path::Path, target: &CString, change: bool) -> Result<(), String> {
+    use std::os::unix::fs::FileExt;
+    let replacement = b"REPLACEMENT-FILE".to_vec();
+    let session = RestartWith {
+        files: vec![("a.txt".into(), replacement.clone()), ("sub/keep".into(), Vec::new())],
+        lookup_delay: Duration::ZERO,
+        deadlines: Deadlines::default(),
+    };
+    let first: &[u8] = b"ORIGINAL";
+    let vm = if change { FakeVm::new() } else { FakeVm::with_files(&[("a.txt", first), ("sub/keep", &b""[..])]) };
+    let served = serve_at(target, vm, Deadlines::default(), false, Box::new(session))?;
+    let file = mnt.join("a.txt");
+    let r = (|| -> Result<(), String> {
+        if change {
+            std::fs::write(&file, first).map_err(|e| format!("a write before the break: {e}"))?;
+        }
+        let f = std::fs::OpenOptions::new().read(true).write(change).open(&file).map_err(|e| format!("open: {e}"))?;
+        // A process working in a directory of the volume (a shell's cd): the directory stays reachable after the new
+        // VM, whose directories keep their inodes.
+        let sub = mnt.join("sub");
+        std::fs::create_dir_all(&sub).map_err(|e| format!("mkdir sub: {e}"))?;
+        std::env::set_current_dir(&sub).map_err(|e| format!("cd sub: {e}"))?;
+        check(std::fs::metadata(&file).map_err(|e| e.to_string())?.len() == first.len() as u64, "size before the break")?;
+        // The VM ends: the next call breaks the session and a new VM comes up, with another a.txt.
+        let _ = served.vm_side.shutdown(std::net::Shutdown::Both);
+        let mut buf = [0u8; 64];
+        // The kernel reads ahead, and after that read failed it reads the page once more: both must fail.
+        let during = f.read_at(&mut buf, 0).map(|n| String::from_utf8_lossy(&buf[..n]).into_owned());
+        check(errno_of(&during) == Some(libc::EIO), &format!("a read as the VM went: {during:?}"))?;
+        let after = f.read_at(&mut buf, 0).map(|n| String::from_utf8_lossy(&buf[..n]).into_owned());
+        check(errno_of(&after) == Some(libc::EIO), &format!("a read through the old descriptor after the new VM: {after:?}"))?;
+        if change {
+            let w = f.write_at(b"XX", 0);
+            check(errno_of(&w) == Some(libc::EIO), &format!("a write through the old descriptor after the new VM: {w:?}"))?;
+            let sync = f.sync_all();
+            check(errno_of(&sync) == Some(libc::EIO), &format!("fsync of the old descriptor: {sync:?}"))?;
+        }
+        let cwd = std::env::current_dir();
+        std::env::set_current_dir("/").map_err(|e| format!("cd /: {e}"))?;
+        check(cwd.is_ok(), &format!("the working directory on the volume after the new VM: {cwd:?}"))?;
+        // The kernel cached a.txt's size for 5 s: the new VM's must show at once.
+        let t = std::time::Instant::now();
+        let size = loop {
+            let size = std::fs::metadata(&file).map_err(|e| e.to_string())?.len();
+            if size == replacement.len() as u64 || t.elapsed() > Duration::from_millis(1500) {
+                break size;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        check(size == replacement.len() as u64, &format!("the kernel still shows the old size {size} after {:?}", t.elapsed()))?;
+        let now = std::fs::read(&file).map_err(|e| format!("a new open after the new VM: {e}"))?;
+        check(now == replacement, &format!("the file under the name now: {:?}", String::from_utf8_lossy(&now)))?;
+        // The name's file written through a new open, a whole page, which the kernel keeps cached: the old
+        // descriptor must not see it either. The kernel shares cached pages within an inode, so the new file must not
+        // get the old descriptor's inode.
+        let newer = pattern(8192, 3);
+        std::fs::write(&file, &newer).map_err(|e| format!("a write through a new open: {e}"))?;
+        let mut buf = [0u8; 64];
+        let old = f.read_at(&mut buf, 0).map(|n| String::from_utf8_lossy(&buf[..n]).into_owned());
+        let old = old.map(|t| t.chars().take(16).collect::<String>());
+        check(errno_of(&old) == Some(libc::EIO), &format!("a read through the old descriptor after a new open wrote: {old:?}"))?;
+        drop(f);
+        Ok(())
+    })();
+    let closed = unserve(target, served);
+    r?;
+    let closed = closed?;
+    let want = if change { fs::Closed::NotWrittenBack } else { fs::Closed::Clean };
+    check(closed == want, &format!("the eject after the new VM: {closed:?}, not {want:?}"))
+}
+
+/// Review 1b M1: a volume vold asked read-only whose VM answers its mount with a check pending. It must stay
+/// read-only: no check, no switch (which would make it writable), and vold is told r, not R.
+fn read_only_asked(mnt: &std::path::Path, target: &CString) -> Result<(), String> {
+    let hello = |read_only, check_pending| fsvm_proto::Hello { fs_kind: fsvm_proto::FS_VFAT, read_only, was_dirty: check_pending, check_pending, root: ROOT_GUEST };
+    check(fs::ready_letter(true, &hello(true, false)) == b'r', "asked read-only: vold must hear r")?;
+    check(fs::ready_letter(true, &hello(true, true)) == b'r', "asked read-only, a check pending: vold must hear r")?;
+    check(fs::ready_letter(false, &hello(false, false)) == b'R', "served writable: R")?;
+    check(fs::ready_letter(false, &hello(true, true)) == b'c', "checking: c")?;
+    check(fs::ready_letter(false, &hello(true, false)) == b'r', "write-protected: r")?;
+    let dev = fuse_mount(target)?;
+    let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let switched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut vm = FakeVm::new();
+    vm.check = Some(CheckPlan { polls: 0, lose_switch: false, switch_delay: Duration::ZERO, switched: switched.clone() });
+    std::thread::spawn(move || vm.serve(vm_end));
+    let client = Client::new(StreamTransport(our_end), Deadlines::default());
+    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, true, true, 0, false, true, Box::new(CleanRestart));
+    let (told_tx, told_rx) = mpsc::channel::<u8>();
+    let told_tx = std::sync::Mutex::new(told_tx);
+    filesystem.spawn_checker(Box::new(move |what: u8| {
+        let _ = told_tx.lock().unwrap().send(what);
+    }));
+    let closer = filesystem.closer();
+    let (end_tx, end_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = end_tx.send(format!("{:?}", fs::serve_fuse(dev, filesystem)));
+    });
+    let r = (|| -> Result<(), String> {
+        let file = mnt.join("ro.txt");
+        // An honest check takes two polls of a second: well within this.
+        let told = told_rx.recv_timeout(Duration::from_secs(4)).ok();
+        check(told.is_none(), &format!("vold was told {:?} for a volume asked read-only", told.map(|c| c as char)))?;
+        check(!switched.load(std::sync::atomic::Ordering::SeqCst), "the switch to writable was asked of the VM")?;
+        let w = std::fs::write(&file, b"no");
+        check(errno_of(&w) == Some(libc::EROFS), &format!("a write to a volume asked read-only: {w:?}"))?;
+        Ok(())
+    })();
+    // SAFETY: plain system call on a valid string.
+    let umounted = unsafe { libc::umount2(target.as_ptr(), 0) } == 0;
+    let ended = end_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+    let _ = closer.close(Duration::from_secs(1), Duration::from_secs(5));
+    r?;
+    check(umounted && ended, "unmount")
+}
+
+/// Review 1b M6: a deep directory's path looked up again inside one request, one slow LOOKUP after another, after a
+/// new VM took over. The request must end within its time (Deadlines::operation, 2 s here), not after every lookup's
+/// own deadline. (A file of the old VM is not looked up by fsvmd again: its inode answers ESTALE and the kernel looks
+/// each name up in a request of its own.)
+fn slow_lookups(mnt: &std::path::Path, target: &CString) -> Result<(), String> {
+    let deep = "d0/d1/d2/d3/d4/d5/d6/d7/f.txt";
+    let second = Duration::from_secs(1);
+    let deadlines =
+        Deadlines { hello: second, meta: second, mutate: second, io: second, mount: second, listing: 2 * second, operation: 2 * second };
+    let session = RestartWith { files: vec![(deep.into(), b"deep".to_vec())], lookup_delay: Duration::from_millis(300), deadlines };
+    let served = serve_at(target, FakeVm::with_files(&[(deep, &b"deep"[..])]), deadlines, false, Box::new(session))?;
+    let r = (|| -> Result<(), String> {
+        let dir = mnt.join("d0/d1/d2/d3/d4/d5/d6/d7");
+        check(std::fs::read(mnt.join(deep)).map_err(|e| e.to_string())? == b"deep", "read before the break")?;
+        check(std::fs::read_dir(&dir).map_err(|e| e.to_string())?.count() == 1, "listing before the break")?;
+        let _ = served.vm_side.shutdown(std::net::Shutdown::Both);
+        // The kernel knows the path: OPENDIR reaches fsvmd for the deep directory, whose eight names fsvmd looks up
+        // again in the new VM at 300 ms each (the session breaks in this request or in the file's release before).
+        let t = std::time::Instant::now();
+        let listing = std::fs::read_dir(&dir).map(|l| l.count());
+        let took = t.elapsed();
+        check(took < Duration::from_millis(2600), &format!("the request took {took:?}: {listing:?}"))?;
+        check(errno_of(&listing) == Some(libc::EIO), &format!("a request past its time: {listing:?}"))?;
+        Ok(())
+    })();
+    let closed = unserve(target, served);
+    r?;
+    closed.map(|_| ())
+}
+
+/// Review 1b L2: the VM has no handle left. The app's open gets EMFILE (too many open files), not EIO.
+fn no_handle_left(mnt: &std::path::Path, target: &CString) -> Result<(), String> {
+    let mut vm = FakeVm::with_files(&[("e.txt", &b"e"[..])]);
+    vm.max_handles = 2;
+    let served = serve_at(target, vm, Deadlines::default(), false, Box::new(NoRestart))?;
+    let r = (|| -> Result<(), String> {
+        let file = mnt.join("e.txt");
+        let a = std::fs::File::open(&file).map_err(|e| format!("first open: {e}"))?;
+        let b = std::fs::File::open(&file).map_err(|e| format!("second open: {e}"))?;
+        let c = std::fs::File::open(&file);
+        check(errno_of(&c) == Some(libc::EMFILE), &format!("an open beyond the VM's handles: {c:?}"))?;
+        drop((a, b));
+        std::fs::File::open(&file).map_err(|e| format!("an open after two closed: {e}"))?;
+        Ok(())
+    })();
+    let closed = unserve(target, served);
+    r?;
+    closed.map(|_| ())
+}
+
+fn ctx() -> fuse::filesystem::Context {
+    fuse::filesystem::Context { uid: 0, gid: 0, pid: 1 }
+}
+
+/// Review 1b M7: a file opened, then unlinked, while the VM answers GETATTR through its handle with a directory. The
+/// open file must keep its kind: EIO, never a directory's attributes for an inode opened as a file.
+fn unlinked_open_file() -> Result<(), String> {
+    use fuse::filesystem::FileSystem;
+    let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::new();
+    vm.handle_attr_dir = true;
+    std::thread::spawn(move || vm.serve(vm_end));
+    let client = Client::new(StreamTransport(our_end), Deadlines::default());
+    let f = fs::FsvmFs::new(client, ROOT_GUEST, false, false, 0, false, false, Box::new(NoRestart));
+    let (entry, h, _) = f.create(ctx(), 1, c"x", 0o600, libc::O_RDWR as u32, 0, None).map_err(|e| format!("create: {e}"))?;
+    let h = h.ok_or("create gave no handle")?;
+    f.unlink(ctx(), 1, c"x").map_err(|e| format!("unlink: {e}"))?;
+    let got = f.getattr(ctx(), entry.inode, Some(h));
+    let mode = got.as_ref().map(|(st, _)| st.st_mode & libc::S_IFMT).ok();
+    check(errno_of(&got) == Some(libc::EIO), &format!("getattr of the open, unlinked file: {got:?}, file type {mode:?}"))
+}
+
+/// Review 1b L1: the partitions of one drive hold MAX_OPEN_LISTING_BYTES of open listings together, not each.
+fn listings_of_a_drive() -> Result<(), String> {
+    use fuse::filesystem::FileSystem;
+    // A directory of 12000 names of 200 bytes: about 3 MiB of a listing's 4.
+    let many = || {
+        let mut vm = FakeVm::new();
+        for i in 0..12000u64 {
+            let name = format!("{i:0200}").into_bytes();
+            vm.nodes.insert(1000 + i, FakeNode { kind: Kind::File, parent: ROOT_GUEST, name, data: Vec::new() });
+        }
+        vm
+    };
+    let card = std::sync::Arc::new(fs::Listings::default());
+    let part = |vm: FakeVm| -> Result<fs::FsvmFs, String> {
+        let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+        std::thread::spawn(move || vm.serve(vm_end));
+        let client = Client::new(StreamTransport(our_end), Deadlines::default());
+        Ok(fs::FsvmFs::new(client, ROOT_GUEST, false, false, 0, false, false, Box::new(NoRestart)).with_listings(card.clone()))
+    };
+    let parts = [part(many())?, part(many())?];
+    let mut open = 0usize;
+    for p in &parts {
+        loop {
+            match p.opendir(ctx(), 1, 0) {
+                Ok(_) => open += 1,
+                Err(e) if e.raw_os_error() == Some(libc::ENOMEM) => break,
+                Err(e) => return Err(format!("opendir: {e}")),
+            }
+            check(open <= 20, "listings without end")?;
+        }
+    }
+    let each = 12000 * (200 + fsvm_proto::LISTING_ENTRY_COST);
+    check(open * each <= fsvm_proto::MAX_OPEN_LISTING_BYTES, &format!("{open} listings of {each} bytes open on one drive"))?;
+    check(card.used() == open * each, &format!("{} bytes counted for {open} listings", card.used()))?;
+    // A partition that goes gives its listings' memory back.
+    drop(parts);
+    check(card.used() == 0, &format!("{} bytes still counted after the partitions went", card.used()))
 }
 
 /// A drive's partition (fsvmd drive.rs PartSession): no new session after a broken one, and giving up ends only this
@@ -232,7 +565,7 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
 struct GivesUp(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl fs::Session for GivesUp {
-    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
         anyhow::bail!("no new session for this partition")
     }
     fn stop_vm(&mut self, _within: Duration) {}
@@ -301,8 +634,44 @@ fn two_partitions(mnt: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Review 1b, after M1: an app's OBB image as vold mounts it (FUSE read-only, fsvmd_obb read-only as asked). A read
+/// must never answer EROFS: its files open for reading and read back, only writes are refused.
+fn obb_read(mnt: &std::path::Path, target: &CString) -> Result<(), String> {
+    let dev = fuse_mount_flags(target, libc::MS_RDONLY)?;
+    let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let vm = FakeVm::with_files(&[("HELLO.TXT", &b"hello from the obb"[..]), ("dir/inner.bin", &b"inner"[..])]);
+    std::thread::spawn(move || vm.serve(vm_end));
+    let client = Client::new(StreamTransport(our_end), Deadlines::default());
+    let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, true, true, 0, true, false, Box::new(NoRestart));
+    let closer = filesystem.closer();
+    let (end_tx, end_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = end_tx.send(format!("{:?}", fs::serve_fuse(dev, filesystem)));
+    });
+    let r = (|| -> Result<(), String> {
+        let hello = std::fs::read(mnt.join("HELLO.TXT"));
+        check(hello.as_deref().ok() == Some(&b"hello from the obb"[..]), &format!("reading a file of the OBB: {hello:?}"))?;
+        let inner = std::fs::read(mnt.join("dir/inner.bin"));
+        check(inner.as_deref().ok() == Some(&b"inner"[..]), &format!("reading a file in a folder of the OBB: {inner:?}"))?;
+        let w = std::fs::OpenOptions::new().write(true).open(mnt.join("HELLO.TXT"));
+        check(errno_of(&w) == Some(libc::EROFS), &format!("an open for writing: {w:?}"))?;
+        Ok(())
+    })();
+    // SAFETY: plain system call on a valid string.
+    let umounted = unsafe { libc::umount2(target.as_ptr(), 0) } == 0;
+    let ended = end_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+    let _ = closer.close(Duration::from_secs(1), Duration::from_secs(5));
+    r?;
+    check(umounted && ended, "unmount")
+}
+
 /// Mounts FUSE at `target` with vold's options, as `mounted` does.
 fn fuse_mount(target: &CString) -> Result<std::fs::File, String> {
+    fuse_mount_flags(target, 0)
+}
+
+/// The same with extra mount flags (an OBB: MS_RDONLY, vold fs/Fsvm.cpp MountFuse).
+fn fuse_mount_flags(target: &CString, extra: libc::c_ulong) -> Result<std::fs::File, String> {
     use std::os::fd::AsRawFd;
     let dev = std::fs::OpenOptions::new().read(true).write(true).open("/dev/fuse").map_err(|e| format!("/dev/fuse: {e}"))?;
     let opts = CString::new(format!(
@@ -310,7 +679,7 @@ fn fuse_mount(target: &CString) -> Result<std::fs::File, String> {
         dev.as_raw_fd()
     ))
     .unwrap();
-    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOATIME;
+    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC | libc::MS_NOATIME | extra;
     // SAFETY: plain system call on valid strings.
     if unsafe { libc::mount(c"/dev/fuse".as_ptr(), target.as_ptr(), c"fuse".as_ptr(), flags, opts.as_ptr().cast()) } != 0 {
         return Err(format!("mounting FUSE: {}", std::io::Error::last_os_error()));
@@ -322,7 +691,7 @@ fn fuse_mount(target: &CString) -> Result<std::fs::File, String> {
 struct CleanRestart;
 
 impl fs::Session for CleanRestart {
-    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
         let (vm_end, our_end) = UnixStream::pair()?;
         std::thread::spawn(move || FakeVm::new().serve(vm_end));
         let hello = fsvm_proto::Hello {
@@ -345,7 +714,7 @@ fn checked(mnt: &std::path::Path, target: &CString, lose_switch: bool) -> Result
     let dev = fuse_mount(target)?;
     let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
     let mut vm = FakeVm::new();
-    vm.check = Some(CheckPlan { polls: 0, lose_switch });
+    vm.check = Some(CheckPlan { polls: 0, lose_switch, switch_delay: Duration::ZERO, switched: Default::default() });
     std::thread::spawn(move || vm.serve(vm_end));
     let client = Client::new(StreamTransport(our_end), Deadlines::default());
     let filesystem = fs::FsvmFs::new(client, ROOT_GUEST, false, true, 0, false, true, Box::new(CleanRestart));
@@ -370,7 +739,8 @@ fn checked(mnt: &std::path::Path, target: &CString, lose_switch: bool) -> Result
     // SAFETY: plain system call on a valid string.
     check(unsafe { libc::umount2(target.as_ptr(), 0) } == 0, "unmount after the check")?;
     end_rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "the FUSE loop did not end after the unmount")?;
-    check(closer.close(Duration::from_secs(1), Duration::from_secs(5)) == fs::Closed::Clean, "orderly stop")?;
+    let expected = if lose_switch { fs::Closed::NotWrittenBack } else { fs::Closed::Clean };
+    check(closer.close(Duration::from_secs(1), Duration::from_secs(5)) == expected, "orderly stop")?;
     // Nothing more for vold, and the Checker went with the volume.
     check(told_rx.recv_timeout(Duration::from_millis(1500)).is_err(), "vold was told more after the stop")?;
     Ok(())
@@ -543,227 +913,266 @@ fn exercise(mnt: &std::path::Path, done: &mpsc::Receiver<String>) -> Result<(), 
     Ok(())
 }
 
-/// An honest filesystem VM in memory, speaking the protocol as guest/fsvm_guest.c does.
-struct FakeVm {
-    nodes: HashMap<u64, FakeNode>,
-    handles: HashMap<u64, u64>,
-    next: u64,
-    /// A volume mounted read-only with a check pending (CHECK): the check runs one poll, then passes.
-    check: Option<CheckPlan>,
+/// Mid-call VM replacement must never turn an old inode into a handle or mutation of its replacement.
+fn interrupted_file(op: u16) -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem, SetattrValid};
+    let ctx = || Context { uid: 0, gid: 0, pid: 1 };
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::with_files(&[("a.txt", b"ORIGINAL")]);
+    vm.lose_op = Some(op);
+    std::thread::spawn(move || vm.serve(b));
+    let deadlines = Deadlines::default();
+    let session = RestartWith { files: vec![("a.txt".into(), b"REPLACEMENT".to_vec())], lookup_delay: Duration::ZERO, deadlines };
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), deadlines), ROOT_GUEST, false, false, 0, false, false, Box::new(session));
+    let ino = f.lookup(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?.inode;
+    let result = if op == 21 {
+        f.open(ctx(), ino, 0).map(|_| ())
+    } else if op == 3 {
+        f.getattr(ctx(), ino, None).map(|_| ())
+    } else {
+        // SAFETY: every stat64 field is valid as zero.
+        let mut attr: libc::stat64 = unsafe { std::mem::zeroed() };
+        attr.st_size = 1;
+        attr.st_mtime = 1_700_000_100;
+        let valid = if op == 12 { SetattrValid::SIZE } else { SetattrValid::MTIME };
+        f.setattr(ctx(), ino, attr, None, valid).map(|_| ())
+    };
+    check(errno_of(&result) == Some(libc::EIO), &format!("op {op} crossed the restart: {result:?}"))?;
+    let new = f.lookup(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?;
+    check(new.inode != ino, "the replacement reused the interrupted file's inode")?;
+    check(new.attr.st_size == 11, "a replay truncated the replacement")?;
+    Ok(())
 }
 
-struct CheckPlan {
-    polls: u32,
-    /// The VM goes away at the switch, without an answer.
-    lose_switch: bool,
-}
+struct SlowRestart;
 
-/// handle()'s answer for "end the session here".
-const GONE: i32 = -1;
-
-struct FakeNode {
-    kind: Kind,
-    parent: u64,
-    name: Vec<u8>,
-    data: Vec<u8>,
-}
-
-fn le32(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
-}
-fn le64(b: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes(b[at..at + 8].try_into().unwrap())
-}
-
-impl FakeVm {
-    fn new() -> Self {
-        let mut nodes = HashMap::new();
-        nodes.insert(ROOT_GUEST, FakeNode { kind: Kind::Dir, parent: ROOT_GUEST, name: Vec::new(), data: Vec::new() });
-        FakeVm { nodes, handles: HashMap::new(), next: 100, check: None }
+impl fs::Session for SlowRestart {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+        std::thread::sleep(Duration::from_millis(900).min(_deadline.saturating_duration_since(std::time::Instant::now())));
+        anyhow::bail!("the mount handshake did not finish")
     }
+    fn stop_vm(&mut self, _within: Duration) {}
+    fn give_up(&mut self) {}
+}
 
-    fn attr(&self, id: u64) -> Vec<u8> {
-        let n = &self.nodes[&id];
-        encode_attr(&Attr { node: id, kind: n.kind, size: n.data.len() as u64, mtime_s: 1_700_000_000, mtime_ns: 0 })
-            .to_vec()
+fn restart_budget() -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem};
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let mut vm = FakeVm::new();
+        vm.lookup_delay = Duration::from_millis(200);
+        vm.lose_op = Some(2);
+        // Delay the broken reply so that recovery begins late in the request.
+        std::thread::sleep(Duration::from_millis(250));
+        vm.serve(b);
+    });
+    let deadlines = Deadlines { meta: Duration::from_millis(400), operation: Duration::from_millis(500), ..Default::default() };
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), deadlines), ROOT_GUEST, false, false, 0, false, false, Box::new(SlowRestart));
+    let start = std::time::Instant::now();
+    let r = f.lookup(Context { uid: 0, gid: 0, pid: 1 }, 1, c"a");
+    let took = start.elapsed();
+    check(r.is_err(), "the broken request succeeded")?;
+    check(took < Duration::from_millis(650), &format!("a 500 ms request held for {took:?} during restart"))
+}
+
+fn interrupted_checker() -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem};
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::with_files(&[("a.txt", b"only reads")]);
+    vm.check = Some(CheckPlan { polls: 0, lose_switch: true, switch_delay: Duration::ZERO, switched: Default::default() });
+    std::thread::spawn(move || vm.serve(b));
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), Deadlines::default()), ROOT_GUEST, false, true, 0, false, true, Box::new(CleanRestart));
+    f.lookup(Context { uid: 0, gid: 0, pid: 1 }, 1, c"a.txt").map_err(|e| e.to_string())?;
+    let (tx, rx) = mpsc::channel();
+    f.spawn_checker(Box::new(move |b| { let _ = tx.send(b); }));
+    check(rx.recv_timeout(Duration::from_secs(6)) == Ok(b'W'), "the checker did not recover")?;
+    let closed = f.closer().close(Duration::from_secs(1), Duration::from_secs(3));
+    check(closed == fs::Closed::NotWrittenBack, &format!("eject after an interrupted repair with app reads only: {closed:?}"))
+}
+
+fn descriptor_setattr() -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem, SetattrValid};
+    let ctx = || Context { uid: 0, gid: 0, pid: 1 };
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    std::thread::spawn(move || FakeVm::with_files(&[("a.txt", b"ORIGINAL")]).serve(b));
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), Deadlines::default()), ROOT_GUEST, false, false, 0, false, false, Box::new(NoRestart));
+    let ino = f.lookup(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?.inode;
+    let h = f.open(ctx(), ino, libc::O_RDWR as u32).map_err(|e| e.to_string())?.0.unwrap();
+    f.unlink(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?;
+    // SAFETY: every stat64 field is valid as zero.
+    let mut attr: libc::stat64 = unsafe { std::mem::zeroed() };
+    attr.st_size = 3;
+    attr.st_mtime = 1_700_000_100;
+    let result = f.setattr(ctx(), ino, attr, Some(h), SetattrValid::SIZE | SetattrValid::MTIME);
+    check(result.as_ref().is_ok_and(|(a, _)| a.st_size == 3), &format!("ftruncate of an unlinked open file: {result:?}"))
+}
+
+/// Queueing behind the checker consumes the same request budget.
+fn queued_request() -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let switched = Arc::new(AtomicBool::new(false));
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::new();
+    vm.check = Some(CheckPlan { polls: 1, lose_switch: false, switch_delay: Duration::from_millis(900), switched: switched.clone() });
+    std::thread::spawn(move || vm.serve(b));
+    let deadlines = Deadlines { operation: Duration::from_millis(200), ..Default::default() };
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), deadlines), ROOT_GUEST, false, true, 0, false, true, Box::new(NoRestart));
+    let (tx, rx) = mpsc::channel();
+    f.spawn_checker(Box::new(move |b| { let _ = tx.send(b); }));
+    let wait_until = std::time::Instant::now() + Duration::from_secs(3);
+    while !switched.load(Ordering::SeqCst) && std::time::Instant::now() < wait_until {
+        std::thread::sleep(Duration::from_millis(1));
     }
+    check(switched.load(Ordering::SeqCst), "the checker never started its switch")?;
+    let start = std::time::Instant::now();
+    let result = f.getattr(Context { uid: 0, gid: 0, pid: 1 }, 1, None);
+    let took = start.elapsed();
+    check(errno_of(&result) == Some(libc::EIO), "the queued request did not fail")?;
+    check(took < Duration::from_millis(350), &format!("a 200 ms queued request waited {took:?}"))?;
+    check(rx.recv_timeout(Duration::from_secs(3)) == Ok(b'W'), "the checker never completed")?;
+    f.closer().close(Duration::from_secs(1), Duration::from_secs(3));
+    Ok(())
+}
 
-    fn child(&self, parent: u64, name: &[u8]) -> Option<u64> {
-        self.nodes.iter().find(|(&id, n)| id != ROOT_GUEST && n.parent == parent && n.name == name).map(|(&id, _)| id)
+/// Expired VM-call time must not discard the kernel's reference and handle cleanup.
+fn queued_cleanup() -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let ctx = || Context { uid: 0, gid: 0, pid: 1 };
+    let switched = Arc::new(AtomicBool::new(false));
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::with_files(&[("a.txt", b"cleanup")]);
+    vm.check = Some(CheckPlan { polls: 1, lose_switch: false, switch_delay: Duration::from_millis(900), switched: switched.clone() });
+    std::thread::spawn(move || vm.serve(b));
+    let short = Duration::from_millis(50);
+    let deadlines = Deadlines { meta: short, mutate: short, io: short, operation: Duration::from_millis(200), ..Default::default() };
+    let card = Arc::new(fs::Listings::default());
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), deadlines), ROOT_GUEST, false, true, 0, false, true, Box::new(NoRestart)).with_listings(card.clone());
+    let ino = f.lookup(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?.inode;
+    let file = f.open(ctx(), ino, 0).map_err(|e| e.to_string())?.0.unwrap();
+    let dir = f.opendir(ctx(), 1, 0).map_err(|e| e.to_string())?.0.unwrap();
+    check(card.used() > 0, "the fixture did not hold listing memory")?;
+    let (tx, rx) = mpsc::channel();
+    f.spawn_checker(Box::new(move |b| { let _ = tx.send(b); }));
+    let wait_until = std::time::Instant::now() + Duration::from_secs(3);
+    while !switched.load(Ordering::SeqCst) && std::time::Instant::now() < wait_until {
+        std::thread::sleep(Duration::from_millis(1));
     }
+    check(switched.load(Ordering::SeqCst), "the checker never started")?;
+    let release_dir = f.releasedir(ctx(), 1, 0, dir);
+    f.forget(ctx(), ino, 1);
+    let release_file = f.release(ctx(), ino, 0, file, false, false, None);
+    check(rx.recv_timeout(Duration::from_secs(3)) == Ok(b'W'), "the checker never completed")?;
+    let next = f.lookup(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?.inode;
+    let old_file = f.fsync(ctx(), ino, false, file);
+    let used = card.used();
+    check(release_dir.is_ok() && release_file.is_ok() && used == 0 && next != ino && errno_of(&old_file) == Some(libc::EBADF),
+        &format!("cleanup lost: releasedir {release_dir:?}, release {release_file:?}, listing {used}, inode {ino}->{next}, old handle {old_file:?}"))?;
+    f.closer().close(Duration::from_secs(1), Duration::from_secs(3));
+    Ok(())
+}
 
-    fn serve(mut self, mut s: UnixStream) {
-        loop {
-            let mut h = [0u8; 48];
-            if s.read_exact(&mut h).is_err() {
-                return;
-            }
-            let (op, flags, id) = (u16::from_le_bytes([h[4], h[5]]), u16::from_le_bytes([h[6], h[7]]), le32(&h, 8));
-            let (name_len, node, node2, arg, len, name2_len) =
-                (le32(&h, 12) as usize, le64(&h, 16), le64(&h, 24), le64(&h, 32), le32(&h, 40), le32(&h, 44) as usize);
-            let mut name = vec![0u8; name_len];
-            let mut name2 = vec![0u8; name2_len];
-            let mut data = vec![0u8; if op == 6 { len as usize } else { 0 }];
-            if s.read_exact(&mut name).is_err() || s.read_exact(&mut name2).is_err() || s.read_exact(&mut data).is_err() {
-                return;
-            }
-            let target = if node2 != 0 && matches!(op, 3 | 5 | 6 | 15) { self.handles.get(&node2).copied().unwrap_or(0) } else { node };
-            let r = self.handle(op, flags, target, node2, arg, len, &name, &name2, &data);
-            if r == Err(GONE) {
-                return;
-            }
-            let (status, payload) = match r {
-                Ok(p) => (0i32, p),
-                Err(e) => (-e, Vec::new()),
-            };
-            let mut out = Vec::with_capacity(16 + payload.len());
-            out.extend_from_slice(&RSP_MAGIC.to_le_bytes());
-            out.extend_from_slice(&id.to_le_bytes());
-            out.extend_from_slice(&status.to_le_bytes());
-            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            out.extend_from_slice(&payload);
-            if s.write_all(&out).is_err() {
-                return;
-            }
+/// A handle keeps its file kind after unlink, including every attribute-changing reply.
+fn descriptor_kind(op: u16) -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem, SetattrValid};
+    let ctx = || Context { uid: 0, gid: 0, pid: 1 };
+    let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let mut vm = FakeVm::with_files(&[("a.txt", b"ORIGINAL")]);
+    vm.wrong_attr_op = Some(op);
+    std::thread::spawn(move || vm.serve(b));
+    let f = fs::FsvmFs::new(Client::new(StreamTransport(a), Deadlines::default()), ROOT_GUEST, false, false, 0, false, false, Box::new(NoRestart));
+    let ino = f.lookup(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?.inode;
+    let h = f.open(ctx(), ino, libc::O_RDWR as u32).map_err(|e| e.to_string())?.0.unwrap();
+    f.unlink(ctx(), 1, c"a.txt").map_err(|e| e.to_string())?;
+    // SAFETY: every stat64 field is valid as zero.
+    let mut attr: libc::stat64 = unsafe { std::mem::zeroed() };
+    attr.st_size = 3;
+    attr.st_mtime = 1_700_000_100;
+    let valid = if op == 12 { SetattrValid::SIZE } else { SetattrValid::MTIME };
+    let result = f.setattr(ctx(), ino, attr, Some(h), valid);
+    check(errno_of(&result) == Some(libc::EIO), &format!("op {op} changed an unlinked open file's kind: {result:?}"))
+}
+
+/// A VM that ends during connect gets one new attempt, without restarting the request clock.
+fn dead_vm_connection_retry() -> Result<(), String> {
+    use std::time::Instant;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut retry = reconnect::DeadVmRetry::default();
+    check(!retry.after_connect_failure(false, deadline), "a live VM's failed connection was retried")?;
+    check(retry.after_connect_failure(true, deadline), "the VM ended during connect but no replacement was tried")?;
+    check(!retry.after_connect_failure(true, deadline), "more than one replacement connection was tried")?;
+    let mut expired = reconnect::DeadVmRetry::default();
+    check(!expired.after_connect_failure(true, Instant::now()), "an expired request got a new connection budget")
+}
+
+fn review_1b_r() -> Result<(), String> {
+    let cases: Vec<(&str, Result<(), String>)> = vec![
+        ("mid-open", interrupted_file(21)),
+        ("mid-getattr", interrupted_file(3)),
+        ("mid-truncate", interrupted_file(12)),
+        ("mid-mtime", interrupted_file(13)),
+        ("descriptor-setattr", descriptor_setattr()),
+        ("descriptor-truncate-kind", descriptor_kind(12)),
+        ("descriptor-mtime-kind", descriptor_kind(13)),
+        ("restart-budget", restart_budget()),
+        ("dead-vm-connect", dead_vm_connection_retry()),
+        ("queue-budget", queued_request()),
+        ("cleanup-after-queue", queued_cleanup()),
+        ("checker-lost-changes", interrupted_checker()),
+    ];
+    let mut failed = Vec::new();
+    for (name, result) in cases {
+        match result {
+            Ok(()) => println!("review-1b-r {name} PASS"),
+            Err(why) => { println!("review-1b-r {name} FAIL: {why}"); failed.push(name); }
         }
     }
+    check(failed.is_empty(), &format!("review-1b-r failures: {failed:?}"))
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn handle(
-        &mut self,
-        op: u16,
-        flags: u16,
-        node: u64,
-        node2: u64,
-        arg: u64,
-        len: u32,
-        name: &[u8],
-        name2: &[u8],
-        data: &[u8],
-    ) -> Result<Vec<u8>, i32> {
-        let exists = |vm: &FakeVm, id: u64| if vm.nodes.contains_key(&id) { Ok(()) } else { Err(libc::ESTALE) };
-        match op {
-            // GETATTR, LOOKUP
-            3 => exists(self, node).map(|_| self.attr(node)),
-            2 => self.child(node, name).map(|id| self.attr(id)).ok_or(libc::ENOENT),
-            // READDIR: everything in one page.
-            4 => {
-                exists(self, node)?;
-                let kids: Vec<(Vec<u8>, Attr)> = self
-                    .nodes
-                    .iter()
-                    .filter(|(&id, n)| n.parent == node && id != ROOT_GUEST)
-                    .map(|(&id, n)| (n.name.clone(), Attr { node: id, kind: n.kind, size: n.data.len() as u64, mtime_s: 0, mtime_ns: 0 }))
-                    .collect();
-                let entries: Vec<(&[u8], Attr)> = kids.iter().map(|(n, a)| (&n[..], *a)).collect();
-                Ok(if arg == 0 { encode_dir_page(0, &entries) } else { encode_dir_page(0, &[]) })
-            }
-            // READ
-            5 => {
-                exists(self, node)?;
-                assert!(len <= MAX_IO, "fsvmd asked for {len} bytes");
-                let d = &self.nodes[&node].data;
-                let start = (arg as usize).min(d.len());
-                let end = (start + len as usize).min(d.len());
-                Ok(d[start..end].to_vec())
-            }
-            // WRITE
-            6 => {
-                exists(self, node)?;
-                assert!(data.len() <= MAX_IO as usize, "fsvmd wrote {} bytes", data.len());
-                let d = &mut self.nodes.get_mut(&node).unwrap().data;
-                let end = arg as usize + data.len();
-                if d.len() < end {
-                    d.resize(end, 0);
-                }
-                d[arg as usize..end].copy_from_slice(data);
-                let mut p = (data.len() as u32).to_le_bytes().to_vec();
-                p.extend_from_slice(&[0; 4]);
-                Ok(p)
-            }
-            // CREATE, MKDIR
-            7 | 8 => {
-                exists(self, node)?;
-                if let Some(id) = self.child(node, name) {
-                    return if op == 7 && flags & 1 == 0 { Ok(self.attr(id)) } else { Err(libc::EEXIST) };
-                }
-                let id = self.next;
-                self.next += 1;
-                let kind = if op == 7 { Kind::File } else { Kind::Dir };
-                self.nodes.insert(id, FakeNode { kind, parent: node, name: name.to_vec(), data: Vec::new() });
-                Ok(self.attr(id))
-            }
-            // UNLINK, RMDIR
-            9 | 10 => {
-                let id = self.child(node, name).ok_or(libc::ENOENT)?;
-                if op == 10 && self.nodes.values().any(|n| n.parent == id) {
-                    return Err(libc::ENOTEMPTY);
-                }
-                self.nodes.remove(&id);
-                Ok(Vec::new())
-            }
-            // RENAME
-            11 => {
-                let id = self.child(node, name).ok_or(libc::ENOENT)?;
-                exists(self, node2)?;
-                if let Some(old) = self.child(node2, name2) {
-                    self.nodes.remove(&old);
-                }
-                let n = self.nodes.get_mut(&id).unwrap();
-                n.parent = node2;
-                n.name = name2.to_vec();
-                Ok(Vec::new())
-            }
-            // TRUNCATE, SET_MTIME
-            12 => {
-                exists(self, node)?;
-                self.nodes.get_mut(&node).unwrap().data.resize(arg as usize, 0);
-                Ok(self.attr(node))
-            }
-            13 => exists(self, node).map(|_| self.attr(node)),
-            // STATFS: 4 GiB in 4 KiB blocks.
-            14 => {
-                let mut p = Vec::new();
-                for v in [1u64 << 20, 1 << 19, 1 << 19] {
-                    p.extend_from_slice(&v.to_le_bytes());
-                }
-                p.extend_from_slice(&4096u32.to_le_bytes());
-                p.extend_from_slice(&[0; 4]);
-                Ok(p)
-            }
-            // FSYNC, FORGET, UNMOUNT
-            15 | 16 | 19 => Ok(Vec::new()),
-            // DIRTY
-            20 => Ok(0u64.to_le_bytes().to_vec()),
-            // OPEN, CLOSE
-            21 => {
-                exists(self, node)?;
-                let h = self.next;
-                self.next += 1;
-                self.handles.insert(h, node);
-                Ok(h.to_le_bytes().to_vec())
-            }
-            22 => {
-                self.handles.remove(&node2);
-                Ok(Vec::new())
-            }
-            // CHECK: poll (arg 0) or switch (arg 1). Writes are refused while it is pending.
-            23 => {
-                let plan = self.check.as_mut().ok_or(libc::EINVAL)?;
-                if arg == 0 {
-                    plan.polls += 1;
-                    let state: u32 = if plan.polls > 1 { 1 } else { 0 };
-                    let mut p = state.to_le_bytes().to_vec();
-                    p.extend_from_slice(&(plan.polls * 1000).to_le_bytes());
-                    return Ok(p);
-                }
-                if plan.lose_switch {
-                    return Err(GONE);
-                }
-                self.check = None;
-                Ok(Vec::new())
-            }
-            _ => Err(libc::EINVAL),
+
+struct DirectoryRestart(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl fs::Session for DirectoryRestart {
+    fn restart(&mut self, _deadline: std::time::Instant) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+        let (a, b) = UnixStream::pair()?;
+        let mut vm = FakeVm::with_files(&[("dir/new", b"replacement")]);
+        vm.mtime_counter = Some(self.0.clone());
+        std::thread::spawn(move || vm.serve(b));
+        Ok((Client::new(StreamTransport(a), Deadlines::default()), fsvm_proto::Hello {
+            fs_kind: fsvm_proto::FS_VFAT, read_only: false, was_dirty: false, check_pending: false, root: 1,
+        }))
+    }
+    fn stop_vm(&mut self, _within: Duration) {}
+    fn give_up(&mut self) {}
+}
+
+fn directory_timestamp_cases() -> Result<(), String> {
+    use fuse::filesystem::{Context, FileSystem, SetattrValid};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    let mut failures = Vec::new();
+    for op in [3, 13] {
+        let ctx = || Context { uid: 0, gid: 0, pid: 1 };
+        let (a, b) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let mut vm = FakeVm::with_files(&[("dir/old", b"original")]);
+        vm.lose_op = Some(op);
+        std::thread::spawn(move || vm.serve(b));
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let fs = fs::FsvmFs::new(Client::new(StreamTransport(a), Deadlines::default()), 1,
+            false, false, 0, false, false, Box::new(DirectoryRestart(mutations.clone())));
+        let ino = fs.lookup(ctx(), 1, c"dir").map_err(|e| e.to_string())?.inode;
+        // SAFETY: all stat64 fields accept zero.
+        let mut attr: libc::stat64 = unsafe { std::mem::zeroed() };
+        attr.st_mtime = 1_700_000_100;
+        let result = fs.setattr(ctx(), ino, attr, None, SetattrValid::MTIME);
+        let count = mutations.load(Ordering::SeqCst);
+        let continued = fs.getattr(ctx(), ino, None).is_ok() && fs.lookup(ctx(), 1, c"dir").ok().map(|e| e.inode) == Some(ino);
+        let _ = fs.closer().close(Duration::from_secs(1), Duration::from_secs(2));
+        if errno_of(&result) == Some(libc::EIO) && count == 0 && continued {
+            println!("review-1b-rr directory-op-{op} PASS, new-generation mutations {count}");
+        } else {
+            failures.push(format!("op{op}: result {result:?}, replacement mutations {count}, lookup continuity {continued}"));
         }
     }
+    check(failures.is_empty(), &format!("directory timestamp replay: {failures:?}"))
 }

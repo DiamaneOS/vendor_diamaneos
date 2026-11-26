@@ -137,11 +137,38 @@ static void servers(void)
 	CHECK(s.pid[0] == 105 && s.pid[1] == 104);
 }
 
+/* A read-only volume (an OBB image, a write-protected card, a card read-only while checked) refuses what changes it
+ * and nothing else: its files open for reading (review 1b, an OBB file that answered EROFS). */
+static void read_only_volume(void)
+{
+	current = "read-only volume";
+	struct fsvm_req q;
+	memset(&q, 0, sizeof(q));
+	q.op = FSVM_OPEN;
+	CHECK(!fsvm_changes_volume(&q));
+	q.flags = 1;
+	CHECK(fsvm_changes_volume(&q));
+	q.flags = 0;
+	const uint16_t reading[] = { FSVM_LOOKUP, FSVM_GETATTR, FSVM_READDIR, FSVM_READ, FSVM_STATFS, FSVM_FSYNC,
+				     FSVM_FORGET, FSVM_CLOSE, FSVM_DIRTY };
+	for (size_t i = 0; i < sizeof(reading) / sizeof(reading[0]); i++) {
+		q.op = reading[i];
+		CHECK(!fsvm_changes_volume(&q));
+	}
+	const uint16_t changing[] = { FSVM_CREATE, FSVM_MKDIR, FSVM_UNLINK, FSVM_RMDIR, FSVM_RENAME, FSVM_TRUNCATE,
+				      FSVM_SETMTIME, FSVM_WRITE };
+	for (size_t i = 0; i < sizeof(changing) / sizeof(changing[0]); i++) {
+		q.op = changing[i];
+		CHECK(fsvm_changes_volume(&q));
+	}
+}
+
 int main(void)
 {
 	first_request();
 	paths();
 	servers();
+	read_only_volume();
 	if (failures) {
 		fprintf(stderr, "fsvm_guest_disks_test: %d failures\n", failures);
 		return 1;

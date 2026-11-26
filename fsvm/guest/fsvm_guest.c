@@ -747,13 +747,22 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		return reply(s, q->id, -EINVAL, NULL, 0);
 	/* An open file's handle: no name needed, so it serves a file whose name went. */
 	if (q->node2 && (q->op == FSVM_READ || q->op == FSVM_WRITE || q->op == FSVM_FSYNC || q->op == FSVM_CLOSE ||
-			 q->op == FSVM_GETATTR)) {
+			 q->op == FSVM_GETATTR || q->op == FSVM_TRUNCATE || q->op == FSVM_SETMTIME)) {
 		if (q->op == FSVM_CLOSE)
 			return reply(s, q->id, handle_close(q->node2), NULL, 0);
 		int fd = handle_lookup(q->node2);
 		if (fd < 0)
 			return reply(s, q->id, -EBADF, NULL, 0);
-		if (q->op == FSVM_GETATTR) {
+		if (read_only && fsvm_changes_volume(q))
+			return reply(s, q->id, -EROFS, NULL, 0);
+		if (q->op == FSVM_TRUNCATE && ftruncate(fd, (off_t)q->arg))
+			return reply(s, q->id, -errno, NULL, 0);
+		if (q->op == FSVM_SETMTIME) {
+			struct timespec ts[2] = { { 0, UTIME_OMIT }, { (time_t)q->arg, (long)q->len } };
+			if (futimens(fd, ts))
+				return reply(s, q->id, -errno, NULL, 0);
+		}
+		if (q->op == FSVM_GETATTR || q->op == FSVM_TRUNCATE || q->op == FSVM_SETMTIME) {
 			struct stat st;
 			struct fsvm_attr at;
 			if (fstat(fd, &st))
@@ -805,8 +814,8 @@ static int handle(int s, struct fsvm_req *q, const char *name, const char *name2
 		break;
 	}
 
-	/* Everything below changes the volume. */
-	if (read_only)
+	/* Below: calls that change the volume, an open and a write back. A read-only volume refuses only the first. */
+	if (read_only && fsvm_changes_volume(q))
 		return reply(s, q->id, -EROFS, NULL, 0);
 	switch (q->op) {
 	case FSVM_CREATE:
@@ -1396,6 +1405,33 @@ static int verify_after_repair(const char *dev, uint32_t kind, int64_t deadline_
 	}
 }
 
+static int do_unmount(void);
+
+/* Count a large FAT exactly with bounded read-ahead, then restore the serving device's setting. */
+static void warm_free_space(void)
+{
+	unsigned long previous = 0, current = 0;
+	int changed = 0;
+	/* Smaller volumes keep their ordinary tuning. Never increase an already smaller setting. */
+	if (fs_kind == FSVM_FS_VFAT && mounted_length >= UINT64_C(1073741824) &&
+	    !ioctl(disk_fd, BLKRAGET, &previous) && previous > 256 &&
+	    !ioctl(disk_fd, BLKRASET, 256UL)) {
+		changed = 1;
+		if (ioctl(disk_fd, BLKRAGET, &current) || current != 256)
+			logline("free count read-ahead not confirmed", disk_dev, EIO);
+	}
+	struct statfs sf;
+	if (statfs(MNT, &sf))
+		logline("free count", mounted_dev, errno);
+	if (changed && (ioctl(disk_fd, BLKRASET, previous) ||
+	                ioctl(disk_fd, BLKRAGET, &current) || current != previous)) {
+		logline("free count read-ahead restore failed", disk_dev, EIO);
+		/* No ordinary work with altered tuning. Preserve the existing sync/unmount/backing flush. */
+		(void)do_unmount();
+		_exit(1);
+	}
+}
+
 static int check_switch(uint32_t repair_ms)
 {
 	if (!fs_kind || !check_pending || (check_state != FSVM_CHECK_PASSED && check_state != FSVM_CHECK_ERRORS))
@@ -1444,8 +1480,7 @@ static int check_switch(uint32_t repair_ms)
 		check_pending = 0;
 		return -EIO;
 	}
-	struct statfs sf;
-	(void)statfs(MNT, &sf);
+	warm_free_space();
 	handle_resume_all();
 	check_pending = read_only;
 	check_state = read_only ? FSVM_CHECK_FAILED : FSVM_CHECK_NONE;
@@ -1538,8 +1573,7 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	mounted_start = start;
 	mounted_length = length;
 	snprintf(mounted_dev, sizeof(mounted_dev), "%s", dev);
-	struct statfs sf;
-	(void)statfs(MNT, &sf);
+	warm_free_space();
 	logline(was_dirty ? "mounted, it was not cleanly unmounted before" : "mounted", dev, 0);
 	return 0;
 }
@@ -1549,8 +1583,6 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
  * served afterwards. 0, or a negative errno when the filesystem could not be written back or unmounted (fsvmd then
  * still stops the VM: it has nothing better).
  */
-static void check_stop(void);
-
 static int do_unmount(void)
 {
 	if (!fs_kind)
@@ -1840,14 +1872,37 @@ static int end_server(uint32_t index)
 	return servers.pid[index] ? -EBUSY : 0;
 }
 
+/* A byte here for each SIGCHLD, so the accept loop waits without a timeout (an idle VM keeps no timer). */
+static int child_pipe[2] = { -1, -1 };
+
+static void on_child(int sig)
+{
+	(void)sig;
+	int saved = errno;
+	(void)!write(child_pipe[1], "c", 1);
+	errno = saved;
+}
+
 /* Takes connections for ever: each names its disk, and a server of its own serves it (run_server). */
 static void accept_loop(int ls)
 {
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_child;
+	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	if (pipe2(child_pipe, O_CLOEXEC | O_NONBLOCK) == 0)
+		(void)sigaction(SIGCHLD, &sa, NULL);
 	for (;;) {
-		struct pollfd pfd = { ls, POLLIN, 0 };
-		int n = poll(&pfd, 1, 1000);
+		struct pollfd pfd[2] = { { ls, POLLIN, 0 }, { child_pipe[0], POLLIN, 0 } };
+		/* Without the pipe, the old one-second look for ended servers. */
+		int n = poll(pfd, 2, child_pipe[0] >= 0 ? -1 : 1000);
+		if (n > 0 && (pfd[1].revents & POLLIN)) {
+			char drain[64];
+			while (read(child_pipe[0], drain, sizeof(drain)) > 0)
+				;
+		}
 		reap_children();
-		if (n <= 0)
+		if (n <= 0 || !(pfd[0].revents & POLLIN))
 			continue;
 		int s = accept4(ls, NULL, NULL, SOCK_CLOEXEC);
 		if (s < 0)
@@ -1867,8 +1922,15 @@ static void accept_loop(int ls)
 		if (!r)
 			r = end_server(index);
 		pid_t p = r ? -1 : fork();
-		if (p == 0)
+		if (p == 0) {
+			/* A server reaps its own children: the accept loop's handler and pipe are not its. */
+			signal(SIGCHLD, SIG_DFL);
+			if (child_pipe[0] >= 0) {
+				close(child_pipe[0]);
+				close(child_pipe[1]);
+			}
 			run_server(s, ls, &q, index);
+		}
 		if (p < 0) {
 			(void)reply(s, q.id, r ? r : -ENOMEM, NULL, 0);
 		} else if (fsvm_servers_set(&servers, index, p)) {

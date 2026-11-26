@@ -59,3 +59,22 @@ int fsvm_servers_ended(struct fsvm_servers *s, pid_t pid)
 	}
 	return -1;
 }
+
+int fsvm_changes_volume(const struct fsvm_req *q)
+{
+	switch (q->op) {
+	case FSVM_CREATE:
+	case FSVM_MKDIR:
+	case FSVM_UNLINK:
+	case FSVM_RMDIR:
+	case FSVM_RENAME:
+	case FSVM_TRUNCATE:
+	case FSVM_SETMTIME:
+	case FSVM_WRITE:
+		return 1;
+	case FSVM_OPEN:
+		return q->flags & 1;
+	default:
+		return 0;
+	}
+}

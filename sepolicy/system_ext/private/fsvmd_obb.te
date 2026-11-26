@@ -5,14 +5,32 @@ type fsvmd_obb, domain, coredomain;
 type fsvmd_obb_exec, system_file_type, exec_type, file_type;
 type fsvmd_obb_tmpfs, file_type;
 
-# The fsvmd service starts it for vold (fsvmd/src/launcher.rs), and only the service.
-domain_auto_trans(fsvmd_launcher, fsvmd_obb_exec, fsvmd_obb)
-allow fsvmd_launcher fsvmd_obb:process { signal sigkill };
-allow fsvmd_launcher { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm }:process sigkill;
-allow fsvmd_obb fsvmd_launcher:process sigchld;
-allow fsvmd_obb fsvmd_launcher:fd use;
-neverallow { domain -fsvmd_launcher } fsvmd_obb:process transition;
-neverallow fsvmd_obb fsvmd_launcher:process { signal sigkill sigstop ptrace };
+# The OBB slots' fsvmd service starts it for vold (fsvmd/src/launcher.rs), and only that service. It is the card
+# slots' program from a binary of its own (fsvmd_obb_launcher, fsvmd.rc), so that it holds no right on cards: the
+# descriptors it passes on are an OBB file, a /dev/fuse descriptor and a pipe.
+type fsvmd_obb_launcher, domain, coredomain;
+type fsvmd_obb_launcher_exec, system_file_type, exec_type, file_type;
+init_daemon_domain(fsvmd_obb_launcher)
+domain_auto_trans(fsvmd_obb_launcher, fsvmd_obb_exec, fsvmd_obb)
+allow fsvmd_obb_launcher self:unix_stream_socket { accept listen read write getopt shutdown };
+allow fsvmd_obb_launcher self:process setcap;
+allow fsvmd_obb_launcher fsvmd_obb:process { signal sigkill };
+allow fsvmd_obb_launcher { fsvmd_obb_virtualizationmanager fsvmd_obb_virtmgr_crosvm }:process sigkill;
+allow fsvmd_obb fsvmd_obb_launcher:process sigchld;
+allow fsvmd_obb fsvmd_obb_launcher:fd use;
+unix_socket_connect(vold, fsvmd, fsvmd_obb_launcher)
+allow fsvmd_obb_launcher vold:fd use;
+allow fsvmd_obb_launcher vold:fifo_file write;
+allow fsvmd_obb_launcher fuse_device:chr_file { read write getattr };
+allow fsvmd_obb_launcher { media_rw_data_file fuse }:file { read getattr };
+neverallow { domain -vold -fsvmd_obb_launcher } fsvmd_obb_launcher:unix_stream_socket connectto;
+neverallow { domain -init } fsvmd_obb_launcher:process transition;
+neverallow { domain -fsvmd_obb_launcher } fsvmd_obb:process transition;
+neverallow fsvmd_obb fsvmd_obb_launcher:process { signal sigkill sigstop ptrace };
+neverallow fsvmd_obb_launcher vold_device:blk_file *;
+neverallow fsvmd_obb_launcher fuse_device:chr_file open;
+neverallow fsvmd_obb_launcher { media_rw_data_file fuse }:file { open write append };
+neverallow fsvmd_obb_launcher fsvmd_exec:file { execute execute_no_trans };
 
 # The descriptors vold hands over: the OBB file (3), read-only, from shared storage (media_rw_data_file) or a card's
 # FUSE mount (fuse), the /dev/fuse descriptor it mounted at /mnt/obb/<id> (4) and the pipe it reports readiness on
