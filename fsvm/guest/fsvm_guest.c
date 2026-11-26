@@ -1405,6 +1405,33 @@ static int verify_after_repair(const char *dev, uint32_t kind, int64_t deadline_
 	}
 }
 
+static int do_unmount(void);
+
+/* Count a large FAT exactly with bounded read-ahead, then restore the serving device's setting. */
+static void warm_free_space(void)
+{
+	unsigned long previous = 0, current = 0;
+	int changed = 0;
+	/* Smaller volumes keep their ordinary tuning. Never increase an already smaller setting. */
+	if (fs_kind == FSVM_FS_VFAT && mounted_length >= UINT64_C(1073741824) &&
+	    !ioctl(disk_fd, BLKRAGET, &previous) && previous > 256 &&
+	    !ioctl(disk_fd, BLKRASET, 256UL)) {
+		changed = 1;
+		if (ioctl(disk_fd, BLKRAGET, &current) || current != 256)
+			logline("free count read-ahead not confirmed", disk_dev, EIO);
+	}
+	struct statfs sf;
+	if (statfs(MNT, &sf))
+		logline("free count", mounted_dev, errno);
+	if (changed && (ioctl(disk_fd, BLKRASET, previous) ||
+	                ioctl(disk_fd, BLKRAGET, &current) || current != previous)) {
+		logline("free count read-ahead restore failed", disk_dev, EIO);
+		/* No ordinary work with altered tuning. Preserve the existing sync/unmount/backing flush. */
+		(void)do_unmount();
+		_exit(1);
+	}
+}
+
 static int check_switch(uint32_t repair_ms)
 {
 	if (!fs_kind || !check_pending || (check_state != FSVM_CHECK_PASSED && check_state != FSVM_CHECK_ERRORS))
@@ -1453,8 +1480,7 @@ static int check_switch(uint32_t repair_ms)
 		check_pending = 0;
 		return -EIO;
 	}
-	struct statfs sf;
-	(void)statfs(MNT, &sf);
+	warm_free_space();
 	handle_resume_all();
 	check_pending = read_only;
 	check_state = read_only ? FSVM_CHECK_FAILED : FSVM_CHECK_NONE;
@@ -1547,8 +1573,7 @@ static int do_mount(uint32_t index, uint64_t start, uint64_t length, int want_ro
 	mounted_start = start;
 	mounted_length = length;
 	snprintf(mounted_dev, sizeof(mounted_dev), "%s", dev);
-	struct statfs sf;
-	(void)statfs(MNT, &sf);
+	warm_free_space();
 	logline(was_dirty ? "mounted, it was not cleanly unmounted before" : "mounted", dev, 0);
 	return 0;
 }
