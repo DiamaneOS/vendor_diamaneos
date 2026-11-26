@@ -21,14 +21,19 @@
 //! fsvmd --volume <id> --gid <gid> --disk-bytes <n> --partition <i> --start <s> --length <l> --fs <vfat|exfat|->
 //!       --meta-bytes <m> [--owner-uid <uid>] [--read-only]
 //! fsvmd --obb --volume <id> --gid <gid> --disk-bytes <n>
-//! fsvmd --format <vfat|exfat> --disk-bytes <n> --block-size <512|4096>
 //! fsvmd --repair --volume <id> --gid <gid> --disk-bytes <n> --block-size <b> --partition <i> --start <s>
 //!       --length <l> --fs <vfat|exfat> [--meta-bytes <m>]
+//! fsvmd --drive <disk id> --block-size <b> --disk <bytes>:<vfat|exfat|->:<meta-bytes> [--disk ...] [--read-only]
 //! ```
 //!
 //! Descriptors: 3 is the whole disk (a vold block device) or the OBB file, read-only for probe and OBB. 4 is the
-//! /dev/fuse descriptor vold mounted (not for probe). 5 is a pipe to vold.
+//! /dev/fuse descriptor vold mounted (not for probe). 5 is a pipe to vold. A drive gets only 3: its end of a socket
+//! pair, over which vold hands it the partitions' ranges, mounts and repairs (drive.rs, drive_msg.rs).
 //!
+//! - Drive: one VM serves every public partition of one drive, each partition a disk of the VM and a range of its
+//!   own on Android, each with its own FUSE mount, check, repair and read-only state. All disks are given at the
+//!   VM's start. A partition's broken session gets a new session in the same VM: the other partitions keep theirs.
+//!   A partition is formatted in the drive's VM too, so that no mkfs runs on Android.
 //! - Probe: the VM reads the partition table. fsvmd checks the layout (fsvm_proto::layout) and writes it to the pipe
 //!   in the line format below, then stops the VM. vold creates volumes from it, and adds the one adoptable storage
 //!   partition to Android's kernel from it.
@@ -47,6 +52,8 @@
 //! END
 //! ```
 
+mod drive;
+mod drive_msg;
 mod fs;
 mod seccomp;
 mod vm;
@@ -72,10 +79,10 @@ enum Mode {
     Probe,
     Serve,
     Obb,
-    /// Formats the volume in the VM (`--format vfat|exfat`), so that no mkfs runs on Android.
-    Format,
     /// Repairs the volume in the VM with no time limit (`--repair`), while vold keeps it from apps.
     Repair,
+    /// Serves every public partition of one drive from one VM (`--drive`, drive.rs).
+    Drive,
 }
 
 #[derive(Debug)]
@@ -92,6 +99,8 @@ struct Args {
     length: u64,
     fs: u32,
     meta_bytes: u64,
+    /// A drive's partitions, each a disk of its VM (`--disk`).
+    disks: Vec<drive_msg::DiskSpec>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -108,21 +117,19 @@ fn parse_args() -> Result<Args> {
         length: 0,
         fs: u32::MAX,
         meta_bytes: 0,
+        disks: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().with_context(|| arg.clone());
         match arg.as_str() {
             "--probe" => a.mode = Mode::Probe,
-            "--format" => {
-                a.mode = Mode::Format;
-                a.fs = match val()?.as_str() {
-                    "vfat" => FS_VFAT,
-                    "exfat" => FS_EXFAT,
-                    other => bail!("--format {other}"),
-                }
-            }
             "--obb" => a.mode = Mode::Obb,
+            "--drive" => {
+                a.mode = Mode::Drive;
+                a.volume = drive_msg::name(&val()?).map_err(|e| anyhow!(e))?;
+            }
+            "--disk" => a.disks.push(drive_msg::parse_disk(&val()?).map_err(|e| anyhow!(e))?),
             "--repair" => a.mode = Mode::Repair,
             "--volume" => a.volume = val()?,
             "--gid" => a.gid = val()?.parse()?,
@@ -145,16 +152,22 @@ fn parse_args() -> Result<Args> {
             _ => bail!("unknown argument {arg}"),
         }
     }
-    ensure!(a.disk_bytes > 0 && a.disk_bytes % 512 == 0, "--disk-bytes must be a positive multiple of 512");
     ensure!(a.block_size == 512 || a.block_size == 4096, "--block-size must be 512 or 4096");
+    ensure!((a.mode == Mode::Drive) != a.disks.is_empty(), "--disk is for --drive, which needs one");
+    if a.mode == Mode::Drive {
+        ensure!(a.disks.len() <= drive_msg::MAX_DISKS, "{} disks, at most {}", a.disks.len(), drive_msg::MAX_DISKS);
+        ensure!(a.disk_bytes == 0 && a.partition == u32::MAX, "a drive takes --disk only");
+        return Ok(a);
+    }
+    ensure!(a.disk_bytes > 0 && a.disk_bytes % 512 == 0, "--disk-bytes must be a positive multiple of 512");
     match a.mode {
         Mode::Probe => {}
-        Mode::Format => ensure!(a.fs == FS_VFAT || a.fs == FS_EXFAT, "--format needs vfat or exfat"),
         Mode::Serve | Mode::Repair => ensure!(
             !a.volume.is_empty() && a.gid != u32::MAX && a.partition != u32::MAX && a.length > 0 && a.fs != u32::MAX,
             "--volume, --gid, --partition, --start, --length and --fs are required"
         ),
         Mode::Obb => ensure!(!a.volume.is_empty() && a.gid != u32::MAX, "--volume and --gid are required"),
+        Mode::Drive => {}
     }
     Ok(a)
 }
@@ -196,11 +209,39 @@ extern "C" fn on_sigterm(sig: libc::c_int) {
 /// vold's stop of a fsvmd that did not end on its own after its FUSE mount went: the volume is written back and
 /// unmounted in the VM if that is still possible in the time vold gives, then fsvmd exits and the VM stops.
 fn watch_sigterm(closer: fs::Closer) -> Result<()> {
+    let mut rd = stop_signals()?;
+    std::thread::spawn(move || {
+        let mut b = [0u8; 1];
+        let _ = rd.read(&mut b);
+        let (lock_wait, max) = stop_times(b[0]);
+        match closer.close(lock_wait, max) {
+            // The stop after the FUSE loop runs already and decides the exit. vold's kill covers a hang.
+            fs::Closed::InProgress => {}
+            c => exit_for(c),
+        }
+    });
+    Ok(())
+}
+
+/// The times of an orderly stop for what `stop_signals` read: a write back request (`W`) gets the whole orderly
+/// stop's time, a stop request what is left of vold's.
+fn stop_times(what: u8) -> (Duration, Duration) {
+    if what == b'W' {
+        warn!("vold asks for a write back: the volume goes, writing back before the VM stops");
+        (CLOSE_LOCK_WAIT, CLOSE_MAX)
+    } else {
+        warn!("stopped by vold: writing back before the VM stops");
+        (Duration::from_millis(300), Duration::from_millis(1500))
+    }
+}
+
+/// SIGTERM (vold's stop) and SIGUSR1 (vold's write back request) as `T` and `W` on the pipe this returns.
+fn stop_signals() -> Result<File> {
     let mut p = [0; 2];
     // SAFETY: pipe2 writes two new descriptors into `p`.
     ensure!(unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } == 0, "pipe2");
     // SAFETY: p[0] is a new descriptor that nothing else owns.
-    let mut rd = unsafe { File::from_raw_fd(p[0]) };
+    let rd = unsafe { File::from_raw_fd(p[0]) };
     TERM_PIPE.store(p[1], Ordering::Relaxed);
     // SAFETY: a zeroed sigaction with only the handler set, for SIGTERM. Handlers reset to the default on exec, so
     // the VM manager fsvmd starts is not affected.
@@ -212,24 +253,7 @@ fn watch_sigterm(closer: fs::Closer) -> Result<()> {
         ensure!(libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut()) == 0, "sigaction");
         ensure!(libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut()) == 0, "sigaction");
     }
-    std::thread::spawn(move || {
-        let mut b = [0u8; 1];
-        let _ = rd.read(&mut b);
-        // A write back request gets the whole orderly stop's time, a stop request what is left of vold's.
-        let (lock_wait, max) = if b[0] == b'W' {
-            warn!("vold asks for a write back: the volume goes, writing back before the VM stops");
-            (CLOSE_LOCK_WAIT, CLOSE_MAX)
-        } else {
-            warn!("stopped by vold: writing back before the VM stops");
-            (Duration::from_millis(300), Duration::from_millis(1500))
-        };
-        match closer.close(lock_wait, max) {
-            // The stop after the FUSE loop runs already and decides the exit. vold's kill covers a hang.
-            fs::Closed::InProgress => {}
-            c => exit_for(c),
-        }
-    });
-    Ok(())
+    Ok(rd)
 }
 
 /// Takes ownership of an inherited descriptor and marks it close-on-exec, so that the VM manager fsvmd starts gets
@@ -275,18 +299,20 @@ fn left(deadline: Instant) -> Result<Duration> {
     Ok(deadline - now)
 }
 
-/// Starts the VM, connects and checks the protocol version, before `deadline` less `keep`, the time the caller needs
-/// after the start. Each try waits for the VM as long as that allows: a VM on ordinary memory may spend most of it in
-/// its memory lend (vm::Vm::connect). A VM refused at its start (no pool room, and its ordinary memory too scattered
-/// or past the budget of pieces of all running VMs) ends the tries with NoRoom. A VM that ended before it answered
-/// for another reason is tried again while there is time, up to `tries`.
+/// Starts the VM with `disks`, connects to the server of disk `index` and checks the protocol version, before
+/// `deadline` less `keep`, the time the caller needs after the start. Each try waits for the VM as long as that
+/// allows: a VM on ordinary memory may spend most of it in its memory lend (vm::Vm::connect). A VM refused at its
+/// start (no pool room, and its ordinary memory too scattered or past the budget of pieces of all running VMs) ends
+/// the tries with NoRoom. A VM that ended before it answered for another reason is tried again while there is time,
+/// up to `tries`.
 fn start_vm(
-    disk: &File,
+    disks: &[File],
     writable: bool,
     memory_mib: u32,
     deadline: Instant,
     keep: Duration,
     tries: usize,
+    index: u32,
 ) -> Result<(vm::Vm, VmClient)> {
     let mut last = anyhow!("not started");
     for (attempt, wait) in [0u64, 1, 2].into_iter().take(tries).enumerate() {
@@ -296,7 +322,8 @@ fn start_vm(
             }
             std::thread::sleep(Duration::from_secs(wait));
         }
-        let vm = match vm::Vm::start(manager()?, disk.try_clone()?, writable, memory_mib) {
+        let volumes = disks.iter().map(|d| d.try_clone()).collect::<std::io::Result<Vec<File>>>()?;
+        let vm = match vm::Vm::start(manager()?, volumes, writable, memory_mib) {
             Ok(vm) => vm,
             Err(e) => {
                 warn!("filesystem VM start {} failed: {e:?}", attempt + 1);
@@ -321,14 +348,25 @@ fn start_vm(
                 continue;
             }
         };
-        let mut deadlines = Deadlines::default();
-        deadlines.hello = deadlines.hello.min(left(deadline)?);
-        let mut client = Client::new(StreamTransport(stream), deadlines);
-        let hello = client.hello().map_err(|e| anyhow!("hello: {e:?}"))?;
-        ensure!(hello.fs_kind == 0, "a fresh VM claims a mounted filesystem");
-        return Ok((vm, client));
+        return Ok((vm, select_disk(stream, index, deadline)?));
     }
     Err(last)
+}
+
+/// A new session with the server of disk `index` of the running VM `vm`: a drive's partition whose session broke, a
+/// format or a repair. The VM ends the disk's earlier server first.
+fn connect_disk(vm: &vm::Vm, index: u32, deadline: Instant, keep: Duration) -> Result<VmClient> {
+    let stream = vm.connect(PORT, left(deadline)?.saturating_sub(keep))?;
+    select_disk(stream, index, deadline)
+}
+
+/// Names the disk this session serves, with the protocol version (Client::select_disk).
+fn select_disk(stream: UnixStream, index: u32, deadline: Instant) -> Result<VmClient> {
+    let mut deadlines = Deadlines::default();
+    deadlines.hello = deadlines.hello.min(left(deadline)?);
+    let mut client = Client::new(StreamTransport(stream), deadlines);
+    client.select_disk(index).map_err(|e| anyhow!("disk {index}: {e:?}"))?;
+    Ok(client)
 }
 
 /// A VM refused at its start for want of memory. fsvmd then ends with EXIT_NO_ROOM and vold waits for room.
@@ -346,11 +384,10 @@ impl std::error::Error for NoRoom {}
 /// fsvmd's exit status when its VM was refused at its start for want of memory (vold fs/Fsvm.h kExitNoRoom).
 const EXIT_NO_ROOM: i32 = 5;
 
-/// vold waits 45 s for a format (fs/Fsvm.cpp Format) and holds its lock meanwhile, as it did for mkfs on Android.
+/// vold waits 45 s for a format in a drive's VM (fs/FsvmDrive.cpp, kFormatTimeoutMs) and holds its lock meanwhile, as
+/// it did for mkfs on Android.
 const FORMAT_BUDGET: Duration = Duration::from_secs(40);
 
-/// Formats the disk vold handed over (a partition's range, or a whole-disk volume) in a VM, writes `OK` to vold and
-/// stops the VM. vold then reads the new filesystem with a probe.
 /// The VM of a repair: the size of the volume's serving VM, which ran the same check to its end before vold asked for
 /// the repair (fs.rs, a check that found errors too late to repair them while apps wait). Without the volume's metadata
 /// size from vold, as large as a serving VM may be. A repair that runs out of memory there is tried once more at that
@@ -403,20 +440,36 @@ enum Repair {
 /// One repair in a VM of `memory_mib`. The VM is gone again when it returns.
 fn repair_in_vm(args: &Args, disk: &File, memory_mib: u32) -> Result<Repair> {
     let deadline = Instant::now() + SERVE_BUDGET;
-    let (vm, mut client) = start_vm(disk, true, memory_mib, deadline, PROBE_KEEP, 3)?;
+    let (vm, client) = start_vm(std::slice::from_ref(disk), true, memory_mib, deadline, PROBE_KEEP, 3, 0)?;
+    info!("repairing volume {} in the VM ({memory_mib} MiB), no time limit", args.volume);
+    let result = repair_on(client, args.disk_bytes, args.block_size, (args.partition, args.start, args.length), args.fs, deadline)?;
+    vm.stop_and_wait(PROBE_VM_END);
+    Ok(result)
+}
+
+/// The repair itself, on a session with the volume's disk (its own VM, or a drive's): the partition must still be
+/// where the probe found it, then a writable mount whose check may take as long as it needs, and an unmount that
+/// marks it clean.
+fn repair_on(
+    mut client: VmClient,
+    disk_bytes: u64,
+    block_size: u32,
+    (index, start, length): (u32, u64, u64),
+    fs: u32,
+    deadline: Instant,
+) -> Result<Repair> {
     client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
-    let l = client.layout(args.disk_bytes, args.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
+    let l = client.layout(disk_bytes, block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
     let part = l
         .parts
         .iter()
-        .find(|p| p.index == args.partition && p.start == args.start && p.length == args.length)
+        .find(|p| p.index == index && p.start == start && p.length == length)
         .cloned()
-        .ok_or_else(|| anyhow!("partition {} is no longer where the probe found it", args.partition))?;
-    ensure!(part.fs_kind != 0 && (args.fs == 0 || part.fs_kind == args.fs), "the filesystem changed since the probe");
-    info!("repairing volume {} in the VM ({memory_mib} MiB), no time limit", args.volume);
+        .ok_or_else(|| anyhow!("partition {index} is no longer where the probe found it"))?;
+    ensure!(part.fs_kind != 0 && (fs == 0 || part.fs_kind == fs), "the filesystem changed since the probe");
     let check = Duration::from_millis(u32::MAX as u64);
     let hello = client.mount(part.index, part.start, part.length, false, part.fs_kind, check);
-    let result = match hello {
+    Ok(match hello {
         Ok(h) if !h.read_only => {
             if client.unmount(Duration::from_secs(20)).is_ok() {
                 Repair::Done
@@ -429,31 +482,17 @@ fn repair_in_vm(args: &Args, disk: &File, memory_mib: u32) -> Result<Repair> {
             warn!("the repair did not end with a mount: {e:?}");
             Repair::Failed
         }
-    };
-    vm.stop_and_wait(PROBE_VM_END);
-    Ok(result)
+    })
 }
 
 /// fsvmd's exit status when a repair did not leave the volume clean (vold fs/Fsvm.h kExitNotRepaired).
 const EXIT_NOT_REPAIRED: i32 = 4;
 
-fn format(args: &Args, disk: File, mut pipe: File) -> Result<()> {
-    ensure!(access_mode(&disk)? == libc::O_RDWR, "a format needs the disk writable");
-    let deadline = Instant::now() + FORMAT_BUDGET;
-    let (vm, mut client) = start_vm(&disk, true, layout::MIN_SERVE_MIB, deadline, FORMAT_KEEP, 3)?;
-    let budget = left(deadline)?.saturating_sub(Duration::from_secs(3));
-    client.format(args.fs, budget).map_err(|e| anyhow!("format: {e:?}"))?;
-    info!("formatted in the VM as {}", if args.fs == FS_EXFAT { "exfat" } else { "vfat" });
-    pipe.write_all(b"OK\n").context("telling vold")?;
-    drop(pipe);
-    vm.stop_and_wait(PROBE_VM_END);
-    Ok(())
-}
-
 fn probe(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     ensure!(access_mode(&disk)? == libc::O_RDONLY, "the probe disk must be read-only");
     let deadline = Instant::now() + PROBE_BUDGET;
-    let (vm, mut client) = start_vm(&disk, false, layout::PROBE_MIB, deadline, PROBE_KEEP, 3)?;
+    let (vm, mut client) =
+        start_vm(std::slice::from_ref(&disk), false, layout::PROBE_MIB, deadline, PROBE_KEEP, 3, 0)?;
     client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
     let l = client.layout(args.disk_bytes, args.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
     if l.dropped_labels > 0 {
@@ -495,7 +534,8 @@ impl Served {
         // OBB error).
         // A large VM refused for its pieces is refused again: one try, then the smallest serving VM below.
         let tries = if self.obb || self.memory > layout::MIN_SERVE_MIB { 1 } else { 3 };
-        let (vm, mut client) = match start_vm(&self.disk, !self.read_only, self.memory, deadline, SERVE_KEEP, tries) {
+        let disks = std::slice::from_ref(&self.disk);
+        let (vm, client) = match start_vm(disks, !self.read_only, self.memory, deadline, SERVE_KEEP, tries, 0) {
             Ok(started) => started,
             // A VM sized for the check of a large card that cannot start (no pool room, and ordinary memory refused
             // for its pieces): served from the smallest serving VM instead. A clean volume needs no more. A dirty one's
@@ -508,38 +548,129 @@ impl Served {
                     self.memory,
                     layout::MIN_SERVE_MIB
                 );
-                start_vm(&self.disk, !self.read_only, layout::MIN_SERVE_MIB, deadline, SERVE_KEEP, 1)?
+                start_vm(disks, !self.read_only, layout::MIN_SERVE_MIB, deadline, SERVE_KEEP, 1, 0)?
             }
             Err(e) => return Err(e),
         };
-        client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
-        let l = client.layout(self.disk_bytes, self.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
-        let part = if self.obb {
-            ensure!(l.table == Table::None && l.parts.len() == 1, "an OBB must be one filesystem without a partition table");
-            l.parts[0].clone()
-        } else {
-            l.parts
-                .iter()
-                .find(|p| p.index == self.partition && p.start == self.start && p.length == self.length)
-                .cloned()
-                .ok_or_else(|| anyhow!("partition {} is no longer where the probe found it", self.partition))?
+        let spec = MountSpec {
+            obb: self.obb,
+            read_only: self.read_only,
+            disk_bytes: self.disk_bytes,
+            block_size: self.block_size,
+            partition: self.partition,
+            start: self.start,
+            length: self.length,
+            fs: self.fs,
         };
-        ensure!(part.class == Class::Public, "partition {} is not a public volume", part.index);
-        ensure!(part.fs_kind != 0, "no FAT or exFAT filesystem on partition {}", part.index);
-        ensure!(self.obb || self.fs == 0 || part.fs_kind == self.fs, "the filesystem changed since the probe");
-        let remaining = left(deadline)?;
-        ensure!(remaining > MOUNT_MIN, "no time left to mount");
-        client.deadlines.mount = remaining;
-        let hello = if self.read_only {
-            client.mount(part.index, part.start, part.length, true, part.fs_kind, Duration::ZERO)
-        } else {
-            client.mount_check_later(part.index, part.start, part.length, part.fs_kind)
-        }
-        .map_err(|e| anyhow!("mount: {e:?}"))?;
-        client.deadlines = Deadlines::default();
+        let mounted = mount_on(client, &spec, deadline)?;
         self.vm = Some(vm);
-        Ok((client, hello))
+        Ok(mounted)
     }
+}
+
+/// What a session mounts: the partition the probe found, as vold names it.
+struct MountSpec {
+    obb: bool,
+    read_only: bool,
+    disk_bytes: u64,
+    block_size: u32,
+    partition: u32,
+    start: u64,
+    length: u64,
+    fs: u32,
+}
+
+/// On a fresh session with the volume's disk: checks the partition is still where the probe found it, with the
+/// filesystem it found, and mounts it (a volume marked dirty read-only at once, checked afterwards), before
+/// `deadline`.
+fn mount_on(mut client: VmClient, m: &MountSpec, deadline: Instant) -> Result<(VmClient, fsvm_proto::Hello)> {
+    client.deadlines.hello = client.deadlines.hello.min(left(deadline)?);
+    let l = client.layout(m.disk_bytes, m.block_size).map_err(|e| anyhow!("layout: {e:?}"))?;
+    let part = if m.obb {
+        ensure!(l.table == Table::None && l.parts.len() == 1, "an OBB must be one filesystem without a partition table");
+        l.parts[0].clone()
+    } else {
+        l.parts
+            .iter()
+            .find(|p| p.index == m.partition && p.start == m.start && p.length == m.length)
+            .cloned()
+            .ok_or_else(|| anyhow!("partition {} is no longer where the probe found it", m.partition))?
+    };
+    ensure!(part.class == Class::Public, "partition {} is not a public volume", part.index);
+    ensure!(part.fs_kind != 0, "no FAT or exFAT filesystem on partition {}", part.index);
+    ensure!(m.obb || m.fs == 0 || part.fs_kind == m.fs, "the filesystem changed since the probe");
+    let remaining = left(deadline)?;
+    ensure!(remaining > MOUNT_MIN, "no time left to mount");
+    client.deadlines.mount = remaining;
+    let hello = if m.read_only {
+        client.mount(part.index, part.start, part.length, true, part.fs_kind, Duration::ZERO)
+    } else {
+        client.mount_check_later(part.index, part.start, part.length, part.fs_kind)
+    }
+    .map_err(|e| anyhow!("mount: {e:?}"))?;
+    client.deadlines = Deadlines::default();
+    Ok((client, hello))
+}
+
+/// The pipe to vold of a served volume. A drive's partition closes it when it ends (vold's Watch then knows), so it
+/// can be taken away from the checker that writes to it.
+pub type Pipe = std::sync::Arc<std::sync::Mutex<Option<File>>>;
+
+/// Writes `what` to vold's pipe, while it is open.
+pub fn tell(pipe: &Pipe, what: &[u8]) -> std::io::Result<()> {
+    match pipe.lock().map_err(|_| std::io::Error::other("pipe lock"))?.as_mut() {
+        Some(p) => p.write_all(what),
+        None => Err(std::io::ErrorKind::BrokenPipe.into()),
+    }
+}
+
+/// A volume served from now on: tells vold how (`R`, `r` or `c`), and returns the FUSE side with its checker running
+/// and its pipe kept for the check's end.
+#[allow(clippy::too_many_arguments)]
+fn start_serving(
+    client: VmClient,
+    hello: fsvm_proto::Hello,
+    asked_read_only: bool,
+    gid: u32,
+    owner_uid: u32,
+    obb: bool,
+    volume: &str,
+    session: Box<dyn fs::Session>,
+    pipe: &Pipe,
+) -> Result<fs::FsvmFs> {
+    let read_only = asked_read_only || hello.read_only;
+    info!("volume {volume}: VM serves filesystem kind {}, read-only {read_only}", hello.fs_kind);
+    if hello.was_dirty {
+        warn!("volume {volume}: the filesystem was not cleanly unmounted before (the VM checks it)");
+    }
+    // R: served as asked. c: asked writable, served read-only while the VM checks it, then W (writable now) or F (it
+    // stays read-only) follow on the same pipe. r: asked writable and served read-only by the VM (a write-protected
+    // card, or its driver found an error). Later, c again when a new VM after a broken session checks the volume
+    // again. vold reports r, c and F as mounted read-only.
+    let ready: &[u8] = if hello.check_pending {
+        b"c"
+    } else if read_only && !asked_read_only {
+        b"r"
+    } else {
+        b"R"
+    };
+    tell(pipe, ready).context("telling vold")?;
+    if hello.check_pending {
+        warn!("volume {volume}: marked dirty, served read-only while the VM checks it");
+    }
+    let filesystem =
+        fs::FsvmFs::new(client, hello.root, asked_read_only, read_only, gid, obb, hello.check_pending, session)
+            .with_owner(owner_uid);
+    if !obb {
+        // The pipe stays open for the check's end (also for a check a new session starts after a broken one).
+        let pipe = pipe.clone();
+        filesystem.spawn_checker(Box::new(move |what: u8| {
+            let _ = tell(&pipe, &[what]);
+        }));
+    } else if let Ok(mut p) = pipe.lock() {
+        p.take();
+    }
+    Ok(filesystem)
 }
 
 impl fs::Session for Served {
@@ -561,7 +692,7 @@ fn exit_for(c: fs::Closed) -> ! {
     std::process::exit(if c == fs::Closed::Clean { 0 } else { EXIT_NOT_WRITTEN_BACK })
 }
 
-fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
+fn serve(args: &Args, disk: File, pipe: File) -> Result<()> {
     let fuse_dev = inherited(FUSE_FD)?;
     ensure!(fuse_dev.metadata()?.file_type().is_char_device(), "descriptor 4 is not /dev/fuse");
     let obb = args.mode == Mode::Obb;
@@ -589,40 +720,18 @@ fn serve(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     };
     let (client, hello) = served.bring_up(SERVE_BUDGET)?;
     let asked_read_only = served.read_only;
-    let read_only = asked_read_only || hello.read_only;
-    info!("volume {}: VM serves filesystem kind {}, read-only {}", args.volume, hello.fs_kind, read_only);
-    if hello.was_dirty {
-        warn!("volume {}: the filesystem was not cleanly unmounted before (the VM checks it)", args.volume);
-    }
-
-    // R: served as asked. c: asked writable, served read-only while the VM checks it, then W (writable now) or F (it
-    // stays read-only) follow on the same pipe. r: asked writable and served read-only by the VM (a write-protected
-    // card, or its driver found an error). Later, c again when a new VM after a broken session checks the volume
-    // again. vold reports r, c and F as mounted read-only.
-    let ready: &[u8] = if hello.check_pending {
-        b"c"
-    } else if read_only && !served.read_only {
-        b"r"
-    } else {
-        b"R"
-    };
-    pipe.write_all(ready).context("telling vold")?;
-    if hello.check_pending {
-        warn!("volume {}: marked dirty, served read-only while the VM checks it", args.volume);
-    }
-
-    let filesystem =
-        fs::FsvmFs::new(client, hello.root, asked_read_only, read_only, args.gid, obb, hello.check_pending, Box::new(served))
-            .with_owner(args.owner_uid);
-    if !obb {
-        // The pipe stays open for the check's end (also for a check a new VM starts after a broken session).
-        let pipe = std::sync::Mutex::new(pipe);
-        filesystem.spawn_checker(Box::new(move |what: u8| {
-            let _ = pipe.lock().map(|mut p| p.write_all(&[what]));
-        }));
-    } else {
-        drop(pipe);
-    }
+    let pipe: Pipe = std::sync::Arc::new(std::sync::Mutex::new(Some(pipe)));
+    let filesystem = start_serving(
+        client,
+        hello,
+        asked_read_only,
+        args.gid,
+        args.owner_uid,
+        obb,
+        &args.volume,
+        Box::new(served),
+        &pipe,
+    )?;
     let closer = filesystem.closer();
     watch_sigterm(filesystem.closer())?;
     let r = fs::serve_fuse(fuse_dev, filesystem);
@@ -656,12 +765,14 @@ fn run() -> Result<()> {
     let args = parse_args()?;
     check_binary(&args)?;
     let disk = inherited(DISK_FD)?;
-    let pipe = inherited(PIPE_FD)?;
     let ft = disk.metadata()?.file_type();
     match args.mode {
         Mode::Obb => ensure!(ft.is_file(), "descriptor 3 is not a file"),
+        // A drive's disks come over vold's socket (drive.rs), descriptors 4 and 5 stay closed.
+        Mode::Drive => ensure!(ft.is_socket(), "descriptor 3 is not vold's socket"),
         _ => ensure!(ft.is_block_device(), "descriptor 3 is not a block device"),
     }
+    let pipe = if args.mode == Mode::Drive { None } else { Some(inherited(PIPE_FD)?) };
     // The VM manager first, then the filter: it and crosvm start without it (they need exec and their file
     // capability), fsvmd itself never starts another program after this. Nothing vold handed over reaches the VM
     // manager but over binder: /dev/fuse (taken later, in serve) is close-on-exec before it starts.
@@ -671,11 +782,14 @@ fn run() -> Result<()> {
     let how = seccomp::install_for_fsvmd(manager.pid())?;
     let _ = MANAGER.set(manager);
     info!("seccomp filter on ({how} anything else)");
+    let Some(pipe) = pipe else {
+        return drive::run(&args.volume, &args.disks, args.block_size, !args.read_only, disk);
+    };
     match args.mode {
         Mode::Probe => probe(&args, disk, pipe),
-        Mode::Format => format(&args, disk, pipe),
         Mode::Repair => repair(&args, disk, pipe),
         Mode::Serve | Mode::Obb => serve(&args, disk, pipe),
+        Mode::Drive => unreachable!("handled above"),
     }
 }
 

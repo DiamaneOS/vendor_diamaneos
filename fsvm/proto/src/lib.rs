@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The protocol between fsvmd on Android and the filesystem VM, version 3.
+//! The protocol between fsvmd on Android and the filesystem VM, version 7.
 //!
 //! A protected VM mounts a removable filesystem (SD card, USB drive) with its own kernel and serves it over vsock.
 //! The VM is assumed hostile: a crafted filesystem may have taken over its kernel. So this crate decodes every reply
@@ -27,9 +27,11 @@
 //! Reply header (16 bytes): magic `FMR2`, id u32, status i32 (0, or a negative Linux errno), len u32. Then len
 //! payload bytes. An error reply carries no payload.
 //!
-//! A VM starts with nothing mounted. LAYOUT reports the partitions it read from the disk (phase 2: Android's kernel
-//! reads no partition table of an SD card or USB disk, see `layout`). MOUNT then mounts one of them, once per VM,
-//! and replies like HELLO. Every other operation needs a mounted volume.
+//! Every connection first names one of the VM's disks (DISK, with the client's version), and the VM serves that disk
+//! on it from a server of its own, at most one per disk: a drive's VM has one disk per public partition. A server
+//! starts with nothing mounted. LAYOUT reports the partitions it read from its disk (phase 2: Android's kernel reads
+//! no partition table of an SD card or USB disk, see `layout`). MOUNT then mounts one of them, once per server, and
+//! replies like HELLO. Every other operation needs a mounted volume.
 //!
 //! The guest's mirror of these definitions is `guest/proto.h`.
 
@@ -44,8 +46,9 @@ pub use client::{Client, Deadlines, StreamTransport, Transport};
 pub const REQ_MAGIC: u32 = u32::from_le_bytes(*b"FMV2");
 pub const RSP_MAGIC: u32 = u32::from_le_bytes(*b"FMR2");
 /// 4: UNMOUNT, DIRTY, the data-only FSYNC flag and the dirty flag in HELLO. 5: OPEN and CLOSE, and file handles in
-/// READ, WRITE and FSYNC. 6: the check after the mount (MOUNT flags bit 1, CHECK, HELLO's check flag).
-pub const VERSION: u32 = 6;
+/// READ, WRITE and FSYNC. 6: the check after the mount (MOUNT flags bit 1, CHECK, HELLO's check flag). 7: DISK first
+/// on every connection, one server per disk, so that one VM serves every public partition of a drive.
+pub const VERSION: u32 = 7;
 pub const PORT: u32 = 5690;
 
 pub const REQ_HEADER: usize = 48;
@@ -121,6 +124,10 @@ pub enum Op {
     /// Formats the VM's whole disk (`arg`: FS_VFAT or FS_EXFAT, `len`: milliseconds it may take) with the pinned
     /// tree's newfs_msdos or mkfs.exfat, as vold did on Android. Only with nothing mounted.
     Format = 24,
+    /// The first request of every connection, and only there: `node` is the client's VERSION, `arg` the disk (0: the
+    /// VM's first disk). The VM serves that disk on this connection from a server of its own, at most one per disk,
+    /// and answers a HELLO. It refuses another version, and a disk it does not have.
+    Disk = 25,
 }
 
 /// How the check after a mount goes (CHECK `arg` 0).

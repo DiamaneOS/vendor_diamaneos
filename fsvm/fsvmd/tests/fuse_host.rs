@@ -222,6 +222,82 @@ fn mounted(mnt: &std::path::Path) -> Result<(), String> {
     println!("fsvmd_fuse_test: a dirty volume: read-only while checked, writable after the switch, vold told W");
     checked(mnt, &target, true)?;
     println!("fsvmd_fuse_test: the switch's answer lost: the new VM's clean mount makes the volume writable, vold told W");
+    two_partitions(mnt)?;
+    println!("fsvmd_fuse_test: two partitions of a drive: one gives up alone, the other serves on and stops clean");
+    Ok(())
+}
+
+/// A drive's partition (fsvmd drive.rs PartSession): no new session after a broken one, and giving up ends only this
+/// partition, never the process.
+struct GivesUp(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl fs::Session for GivesUp {
+    fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, fsvm_proto::Hello)> {
+        anyhow::bail!("no new session for this partition")
+    }
+    fn stop_vm(&mut self, _within: Duration) {}
+    fn give_up(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Two partitions of one drive, each with its own FUSE mount and session, in one process: the first one's session
+/// breaks for good, it answers EIO and its orderly stop says it was not written back, while the second keeps
+/// writing and reading and stops clean.
+fn two_partitions(mnt: &std::path::Path) -> Result<(), String> {
+    let dirs = [mnt.with_extension("a"), mnt.with_extension("b")];
+    let mut serving = Vec::new();
+    for dir in &dirs {
+        std::fs::create_dir_all(dir).map_err(|e| format!("mount point: {e}"))?;
+        let target = CString::new(dir.as_os_str().as_encoded_bytes()).unwrap();
+        let dev = fuse_mount(&target)?;
+        let (vm_end, our_end) = UnixStream::pair().map_err(|e| e.to_string())?;
+        let vm_side = vm_end.try_clone().map_err(|e| e.to_string())?;
+        std::thread::spawn(move || FakeVm::new().serve(vm_end));
+        let gave_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let client = Client::new(StreamTransport(our_end), Deadlines::default());
+        let filesystem =
+            fs::FsvmFs::new(client, ROOT_GUEST, false, false, 0, false, false, Box::new(GivesUp(gave_up.clone())));
+        let closer = filesystem.closer();
+        let (end_tx, end_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = end_tx.send(format!("{:?}", fs::serve_fuse(dev, filesystem)));
+        });
+        serving.push((target, vm_side, gave_up, closer, end_rx));
+    }
+    let r = (|| -> Result<(), String> {
+        for dir in &dirs {
+            std::fs::write(dir.join("p.txt"), dir.as_os_str().as_encoded_bytes())
+                .map_err(|e| format!("a write before the break: {e}"))?;
+        }
+        // The first partition's session ends (its server in the drive's VM is gone) and no new one comes.
+        let _ = serving[0].1.shutdown(std::net::Shutdown::Both);
+        let gone = std::fs::metadata(dirs[0].join("never-looked-up"));
+        check(gone.as_ref().err().and_then(|e| e.raw_os_error()) == Some(libc::EIO), &format!("the broken partition: {gone:?}"))?;
+        check(serving[0].2.load(std::sync::atomic::Ordering::SeqCst), "the broken partition did not give up")?;
+        let again = std::fs::read(dirs[0].join("p.txt"));
+        check(again.is_err(), "the partition that gave up still serves")?;
+        // The second one is untouched: writable, and reads back what it wrote.
+        check(!serving[1].2.load(std::sync::atomic::Ordering::SeqCst), "the other partition gave up too")?;
+        std::fs::write(dirs[1].join("after.txt"), b"still writable").map_err(|e| format!("the other partition: {e}"))?;
+        check(std::fs::read(dirs[1].join("after.txt")).map_err(|e| e.to_string())? == b"still writable", "read back")?;
+        check(std::fs::read(dirs[1].join("p.txt")).map_err(|e| e.to_string())? == dirs[1].as_os_str().as_encoded_bytes(), "read back")?;
+        Ok(())
+    })();
+    let mut stops = Vec::new();
+    for (target, _, _, closer, end_rx) in &serving {
+        // SAFETY: plain system call on a valid string.
+        let umounted = unsafe { libc::umount2(target.as_ptr(), 0) } == 0;
+        let ended = end_rx.recv_timeout(Duration::from_secs(10)).is_ok();
+        stops.push((umounted, ended, closer.close(Duration::from_secs(1), Duration::from_secs(5))));
+    }
+    for dir in &dirs {
+        let _ = std::fs::remove_dir(dir);
+    }
+    r?;
+    check(stops.iter().all(|s| s.0 && s.1), &format!("unmounts and FUSE loop ends: {stops:?}"))?;
+    check(stops[0].2 == fs::Closed::NotWrittenBack, &format!("the partition that gave up stopped {:?}", stops[0].2))?;
+    check(stops[1].2 == fs::Closed::Clean, &format!("the other partition stopped {:?}", stops[1].2))?;
     Ok(())
 }
 

@@ -85,12 +85,19 @@ const RESTART_WINDOW: Duration = Duration::from_secs(600);
 /// Deepest path resolved again after a VM change. FAT and exFAT paths cannot go deeper with names of one byte.
 const MAX_DEPTH: usize = 2048;
 
-/// Starts a new VM for the same volume when the session broke (a missed deadline, a VM that stopped).
+/// Starts a new VM for the same volume when the session broke (a missed deadline, a VM that stopped), or for a
+/// partition of a drive a new session in the drive's VM (drive.rs).
 pub trait Session: Send {
     /// Returns the new client and what the new VM said at its mount (root node, read-only, check pending).
     fn restart(&mut self) -> anyhow::Result<(Client<StreamTransport<UnixStream>>, Hello)>;
     /// Stops the VM and waits up to `within` for its end.
     fn stop_vm(&mut self, within: Duration);
+    /// No new session came up within the restart limit. A volume with a VM of its own ends fsvmd: its FUSE mount
+    /// ends, and vold, which watches this process, reports the card as not opened. A partition of a drive tells vold
+    /// on its own pipe and answers EIO from then on (State::failed): the drive's other partitions keep serving.
+    fn give_up(&mut self) {
+        std::process::exit(2);
+    }
 }
 
 struct State {
@@ -114,6 +121,9 @@ struct State {
     generation: u64,
     /// Set once the filesystem was written back and unmounted in the VM before a stop: nothing is served after.
     closed: bool,
+    /// Set when no new session came up after a broken one (Session::give_up): nothing is served after, and the
+    /// orderly stop says the volume was not written back.
+    failed: bool,
     /// The volume is served read-only until the VM's check after the mount passes (Checker).
     check_pending: bool,
     /// Wakes the Checker: a check is pending again (a new VM after a broken session), or the volume goes.
@@ -173,6 +183,7 @@ impl FsvmFs {
                 next_handle: 1,
                 generation: 0,
                 closed: false,
+                failed: false,
                 check_pending,
                 wake: Arc::new(Condvar::new()),
             })),
@@ -325,9 +336,13 @@ impl State {
     fn recover(&mut self, why: &str) {
         let now = Instant::now();
         self.restarts.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
+        if self.failed {
+            return;
+        }
         if self.restarts.len() >= MAX_RESTARTS {
             error!("filesystem VM session broken ({why}), {MAX_RESTARTS} new VMs within {RESTART_WINDOW:?}, giving up");
-            std::process::exit(2);
+            self.give_up();
+            return;
         }
         self.restarts.push(now);
         warn!("filesystem VM session broken ({why}), starting a new VM");
@@ -352,9 +367,16 @@ impl State {
             }
             Err(e) => {
                 error!("no new filesystem VM: {e:?}");
-                std::process::exit(2);
+                self.give_up();
             }
         }
+    }
+
+    fn give_up(&mut self) {
+        self.failed = true;
+        self.read_only.store(true, Ordering::SeqCst);
+        self.wake.notify_all();
+        self.session.give_up();
     }
 
     /// Runs one call on a node: resolves the VM's id, and on a stale id or a broken session tries once more.
@@ -375,10 +397,13 @@ impl State {
         replay: bool,
         mut f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>,
     ) -> io::Result<T> {
-        if self.closed {
+        if self.closed || self.failed {
             return Err(err(libc::EIO));
         }
         for attempt in 0..3 {
+            if self.failed {
+                return Err(err(libc::EIO));
+            }
             let last = attempt == 2;
             let r = match self.resolve(ino, 0) {
                 Ok(g) => f(&mut self.client, g),
@@ -431,7 +456,7 @@ impl State {
         handle: u64,
         mut f: impl FnMut(&mut Client<StreamTransport<UnixStream>>, u64) -> CallResult<T>,
     ) -> io::Result<T> {
-        if self.closed {
+        if self.closed || self.failed {
             return Err(err(libc::EIO));
         }
         match f(&mut self.client, handle) {
@@ -447,7 +472,7 @@ impl State {
     /// A rename resolves both directories on every attempt, so neither id is stale after a new VM took over. Not
     /// repeated after a broken session (call_once).
     fn rename_call(&mut self, olddir: u64, from: &[u8], newdir: u64, to: &[u8]) -> io::Result<()> {
-        if self.closed {
+        if self.closed || self.failed {
             return Err(err(libc::EIO));
         }
         for attempt in 0..3 {
@@ -559,6 +584,7 @@ impl State {
 
 /// Writes the volume back and unmounts it in the VM before the VM is stopped, so an eject loses nothing and leaves
 /// the card clean. Used when the FUSE loop ended (vold unmounted the volume) and on SIGTERM (vold's stop).
+#[derive(Clone)]
 pub struct Closer {
     state: Arc<Mutex<State>>,
     closing: Arc<AtomicBool>,
@@ -625,7 +651,10 @@ impl Closer {
             return Closed::Clean;
         }
         guard.closed = true;
-        let result = if guard.client.is_broken() {
+        let result = if guard.failed {
+            error!("no session serves the volume any more, stopping without writing back");
+            Closed::NotWrittenBack
+        } else if guard.client.is_broken() {
             error!("the filesystem VM session is broken, stopping without writing back");
             Closed::NotWrittenBack
         } else {
@@ -671,8 +700,10 @@ impl Closer {
                 }
             }
         };
-        // The VM ends before fsvmd does, so nothing holds its disk any more when vold takes it back.
+        // The VM ends before fsvmd does, so nothing holds its disk any more when vold takes it back. A drive's VM serves
+        // its other partitions on: the session ends, and the VM's server of this disk with it.
         guard.session.stop_vm(VM_END);
+        let _ = guard.client.transport_mut().0.shutdown(std::net::Shutdown::Both);
         result
     }
 }
@@ -703,7 +734,7 @@ impl Checker {
         // vold was told c (read-only while the VM checks it) when the check is pending from the start.
         let mut owed = s.check_pending;
         loop {
-            if s.closed || self.closing.load(Ordering::SeqCst) {
+            if s.closed || s.failed || self.closing.load(Ordering::SeqCst) {
                 return;
             }
             if !s.check_pending {

@@ -457,6 +457,39 @@ pub fn serve_memory_mib(fs_kind: u32, meta_bytes: u64) -> u32 {
     want.clamp(MIN_SERVE_MIB, MAX_SERVE_MIB)
 }
 
+/// Most public partitions one drive's VM serves (vold Disk kMaxPublicPerDisk), each a disk of the VM.
+pub const MAX_DRIVE_DISKS: usize = 4;
+/// What a further partition's server adds to a drive's VM besides its filesystem's metadata: its process and its
+/// filesystem driver's buffers.
+pub const DRIVE_PART_MIB: u32 = 16;
+
+/// The metadata share of a partition: what serve_memory_mib adds to its filesystem's base before the bounds.
+fn meta_share_mib(fs_kind: u32, meta_bytes: u64) -> u32 {
+    let meta_mib = meta_bytes.div_ceil(1 << 20).min(1 << 20) as u32;
+    match fs_kind {
+        crate::FS_EXFAT => 16 + meta_mib,
+        _ => (meta_mib.saturating_mul(5) / 4).min(160),
+    }
+}
+
+/// VM memory for one drive's VM, which serves all its public partitions (`parts`: filesystem kind and metadata bytes
+/// of each, 0 and 0 for one without a filesystem): the largest partition's own serving VM, plus for each other one
+/// DRIVE_PART_MIB and its metadata share. One partition gets exactly serve_memory_mib. Bounded like a serving VM: a
+/// drive whose partitions need more than MAX_SERVE_MIB is served from MAX_SERVE_MIB, where a check that needs more
+/// cannot finish and its partition stays read-only (vold system/vold fs/Fsvm.cpp DriveMemoryMib mirrors this).
+pub fn drive_memory_mib(parts: &[(u32, u64)]) -> u32 {
+    let Some(largest) = (0..parts.len()).max_by_key(|&i| serve_memory_mib(parts[i].0, parts[i].1)) else {
+        return MIN_SERVE_MIB;
+    };
+    let mut want = serve_memory_mib(parts[largest].0, parts[largest].1);
+    for (i, &(fs, meta)) in parts.iter().enumerate() {
+        if i != largest {
+            want = want.saturating_add(DRIVE_PART_MIB + meta_share_mib(fs, meta));
+        }
+    }
+    want.clamp(MIN_SERVE_MIB, MAX_SERVE_MIB)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,5 +761,23 @@ mod tests {
         assert_eq!(serve_memory_mib(crate::FS_EXFAT, 64 << 20), 144);
         assert_eq!(serve_memory_mib(crate::FS_EXFAT, u64::MAX), 256);
         assert_eq!(serve_memory_mib(0, 0), 96);
+    }
+
+    #[test]
+    fn drive_memory() {
+        // One partition: its own serving VM.
+        assert_eq!(drive_memory_mib(&[(crate::FS_VFAT, 1 << 20)]), 96);
+        assert_eq!(drive_memory_mib(&[(crate::FS_VFAT, 64 << 20)]), 144);
+        assert_eq!(drive_memory_mib(&[]), 96);
+        // Two small FAT partitions (the suite's two-partition card): 96 + 16 + 1.
+        assert_eq!(drive_memory_mib(&[(crate::FS_VFAT, 1 << 20), (crate::FS_VFAT, 1 << 20)]), 113);
+        // A FAT32 partition of 64 GB next to a small exFAT one: 144 + 16 + 16 + 1.
+        assert_eq!(drive_memory_mib(&[(crate::FS_EXFAT, 1 << 20), (crate::FS_VFAT, 64 << 20)]), 177);
+        // A partition still without a filesystem (offered for formatting): 96 + 16 + the other's share.
+        assert_eq!(drive_memory_mib(&[(crate::FS_VFAT, 1 << 20), (0, 0)]), 113);
+        assert_eq!(drive_memory_mib(&[(0, 0), (0, 0)]), 112);
+        // Four large partitions: bounded.
+        assert_eq!(drive_memory_mib(&[(crate::FS_VFAT, 256 << 20); 4]), MAX_SERVE_MIB);
+        assert_eq!(drive_memory_mib(&[(crate::FS_EXFAT, u64::MAX); 4]), MAX_SERVE_MIB);
     }
 }

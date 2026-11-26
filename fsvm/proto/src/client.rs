@@ -156,6 +156,11 @@ impl<T: Transport> Client<T> {
         self.broken.is_some()
     }
 
+    /// The transport, to end the session (a socket's shutdown).
+    pub fn transport_mut(&mut self) -> &mut T {
+        &mut self.t
+    }
+
     fn fail<X>(&mut self, why: String) -> CallResult<X> {
         if self.broken.is_none() {
             self.broken = Some(why.clone());
@@ -227,6 +232,20 @@ impl<T: Transport> Client<T> {
         match names::check_name(name) {
             Ok(_) => Ok(name),
             Err(_) => Err(CallError::Errno(errno::EINVAL)),
+        }
+    }
+
+    /// Names the disk this connection serves (`index`, 0 for the VM's first), with this side's protocol version: the
+    /// first call on every connection. The VM refuses another version, and its HELLO must carry this one
+    /// (decode_hello). A fresh server has nothing mounted.
+    pub fn select_disk(&mut self, index: u32) -> CallResult<Hello> {
+        let budget = self.deadlines.hello;
+        let req = Request { node: VERSION as u64, arg: index as u64, ..Default::default() };
+        let p = self.call(req, Op::Disk, HELLO_SIZE as u32, budget)?;
+        match decode_hello(&p) {
+            Ok(h) if h.fs_kind != 0 => self.fail("disk: a fresh server claims a mounted filesystem".into()),
+            Ok(h) => Ok(h),
+            Err(e) => self.fail(format!("disk: {e:?}")),
         }
     }
 

@@ -13,7 +13,8 @@
 // limitations under the License.
 
 //! Starts the filesystem VM: a raw protected VM with our guest kernel and the fsvm initramfs from the
-//! virtualization APEX, the whole disk (or an OBB image) as its first disk, and a fresh instance disk in memory.
+//! virtualization APEX, its disks first (the whole disk of a probe, an OBB image, or each public partition of one
+//! drive), all given at its start, and a fresh instance disk in memory last.
 
 use android_system_virtualizationservice::aidl::android::system::virtualizationservice::{
     CpuOptions::CpuOptions, CpuOptions::CpuTopology::CpuTopology, DiskImage::DiskImage,
@@ -74,9 +75,12 @@ fn memfd(name: &CStr) -> Result<File> {
 }
 
 impl Vm {
-    /// Starts the VM with `volume` as its first disk.
-    pub fn start(m: &Manager, volume: File, writable: bool, memory_mib: u32) -> Result<Vm> {
+    /// Starts the VM with `volumes` as its disks, vda first, all writable or none.
+    pub fn start(m: &Manager, volumes: Vec<File>, writable: bool, memory_mib: u32) -> Result<Vm> {
         let manager = &m.manager;
+        if volumes.is_empty() {
+            bail!("a VM without a disk");
+        }
 
         let instance_image = memfd(c"fsvm-instance")?;
         instance_image.set_len(INSTANCE_SIZE as u64)?;
@@ -89,28 +93,30 @@ impl Vm {
             .context("instance disk")?;
         let instance_id = manager.allocateInstanceId().context("instance id")?;
 
+        // vda, vdb...: the volumes. The VM manager passes each to crosvm as a raw disk, never a guessed format.
+        let mut disks: Vec<DiskImage> = volumes
+            .into_iter()
+            .map(|v| DiskImage { image: Some(ParcelFileDescriptor::new(v)), writable, partitions: vec![], id: None })
+            .collect();
+        // Last: the instance disk, which no connection can name (fsvmd asks only for the volumes).
+        disks.push(DiskImage {
+            image: None,
+            writable: true,
+            partitions: vec![Partition {
+                label: "vm-instance".into(),
+                image: Some(ParcelFileDescriptor::new(instance_image)),
+                writable: true,
+                guid: None,
+            }],
+            id: None,
+        });
         let config = VirtualMachineConfig::RawConfig(VirtualMachineRawConfig {
             name: "fsvm".into(),
             instanceId: instance_id,
             kernel: Some(ParcelFileDescriptor::new(File::open(KERNEL).context(KERNEL)?)),
             initrd: Some(ParcelFileDescriptor::new(File::open(INITRD).context(INITRD)?)),
             params: None,
-            disks: vec![
-                // vda: the volume. The VM manager passes it to crosvm as a raw disk, never a guessed format.
-                DiskImage { image: Some(ParcelFileDescriptor::new(volume)), writable, partitions: vec![], id: None },
-                // vdb: the instance disk.
-                DiskImage {
-                    image: None,
-                    writable: true,
-                    partitions: vec![Partition {
-                        label: "vm-instance".into(),
-                        image: Some(ParcelFileDescriptor::new(instance_image)),
-                        writable: true,
-                        guid: None,
-                    }],
-                    id: None,
-                },
-            ],
+            disks,
             protectedVm: true,
             memoryMib: memory_mib as i32,
             cpuOptions: CpuOptions { cpuTopology: CpuTopology::CpuCount(1) },
@@ -163,10 +169,15 @@ impl Vm {
         }
     }
 
-    /// Whether the VM ended because its start was refused (crosvm failed to make the VM: for a VM of at most 64 MiB
-    /// never the piece limit, so the hypervisor's limit of protected VMs at once).
+    /// Whether the VM ended because its start was refused (crosvm failed to make the VM: no pool room, and its
+    /// ordinary memory past the budget of pieces of all running VMs).
     pub fn refused_at_start(&self) -> bool {
         self.instance.wait_for_death_with_timeout(Duration::ZERO) == Some(DeathReason::StartFailed)
+    }
+
+    /// Whether the VM ended, for whatever reason.
+    pub fn ended(&self) -> bool {
+        self.instance.wait_for_death_with_timeout(Duration::ZERO).is_some()
     }
 
     pub fn stop(&self) {
@@ -176,11 +187,13 @@ impl Vm {
     }
 
     /// Stops the VM and waits up to `within` for its end, so that its disk is free afterwards.
-    pub fn stop_and_wait(&self, within: Duration) {
+    pub fn stop_and_wait(&self, within: Duration) -> bool {
         self.stop();
-        if self.instance.wait_for_death_with_timeout(within).is_none() {
+        let ended = self.instance.wait_for_death_with_timeout(within).is_some();
+        if !ended {
             warn!("the VM did not end within {within:?}");
         }
+        ended
     }
 }
 

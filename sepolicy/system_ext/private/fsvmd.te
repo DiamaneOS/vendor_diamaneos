@@ -31,6 +31,9 @@ allow fsvmd fsvmd_launcher:fd use;
 unix_socket_connect(vold, fsvmd, fsvmd_launcher)
 # The descriptors vold sends with a request pass through the service to the fsvmd it starts.
 allow fsvmd_launcher vold:fd use;
+# A drive's fsvmd (one VM for all public partitions of a card or USB drive) gets vold's end of a socket pair as its
+# descriptor 3 instead of a disk: the service only holds it on the way.
+allow fsvmd_launcher vold:unix_stream_socket { read write };
 # vold reads MediaProvider's uid from the package list for a card it serves through fsvmd (fs/Fsvm.cpp
 # MediaProviderUid), as the old sdcard daemon did: MediaProvider owns the card's files, so that it may set their times
 # when an app's write through /storage closes (stock's FAT and exFAT drivers let group media_rw do that).
@@ -52,9 +55,12 @@ neverallow vold self:global_capability_class_set { setuid setgid };
 
 # The descriptors vold hands over through the socket: the volume's block device (3), the /dev/fuse descriptor it
 # mounted at /mnt/media_rw/<uuid> (4) and the pipe fsvmd reports readiness on (5). fsvmd itself never reads the
-# volume.
+# volume. A drive's fsvmd gets vold's socket pair end as 3 (fsvmd/src/drive.rs), and over it the same descriptors for
+# each partition (its range, its /dev/fuse and its pipe) and the pipe of a repair: it reads vold's requests, answers
+# them, and checks it is a socket.
 allow fsvmd vold:fd use;
 allow fsvmd vold:fifo_file write;
+allow fsvmd vold:unix_stream_socket { read write getattr };
 # The kernel checks a descriptor against its open mode when fsvmd inherits it and when fsvmd passes it on over binder,
 # so fsvmd holds read and write on the disk it was handed, though it never reads it itself. It cannot open one.
 allow fsvmd vold_device:blk_file { read write getattr };

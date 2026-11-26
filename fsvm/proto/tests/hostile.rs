@@ -511,3 +511,61 @@ fn check_after_mount() {
     assert!(matches!(c.check_switch(Duration::ZERO, Duration::from_secs(1)), Err(CallError::Errno(e)) if e == errno::EIO));
     assert!(!c.is_broken());
 }
+
+/// A server that answers the first request (DISK) with `status` and `payload`, after checking it names `want_disk`
+/// with this side's version. It records what it got.
+fn disk_server(want_disk: u64, status: i32, payload: Vec<u8>) -> (Client<StreamTransport<UnixStream>>, std::sync::mpsc::Receiver<(u16, u64, u64)>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let c = with_server(move |mut s| {
+        let mut h = [0u8; REQ_HEADER];
+        if s.read_exact(&mut h).is_err() {
+            return;
+        }
+        let op = u16::from_le_bytes([h[4], h[5]]);
+        let id = u32::from_le_bytes(h[8..12].try_into().unwrap());
+        let node = u64::from_le_bytes(h[16..24].try_into().unwrap());
+        let arg = u64::from_le_bytes(h[32..40].try_into().unwrap());
+        let _ = tx.send((op, node, arg));
+        if op == Op::Disk as u16 && arg == want_disk {
+            reply(&mut s, id, status, &payload);
+        } else {
+            reply(&mut s, id, -errno::EINVAL, &[]);
+        }
+        // Open until the client goes, as a VM's server is.
+        let mut rest = Vec::new();
+        let _ = s.read_to_end(&mut rest);
+    });
+    (c, rx)
+}
+
+#[test]
+fn disk_is_named_first_with_the_version() {
+    let (mut c, rx) = disk_server(2, 0, hello_payload(0, false));
+    let h = c.select_disk(2).unwrap();
+    assert_eq!(h.fs_kind, 0);
+    assert_eq!(rx.recv().unwrap(), (Op::Disk as u16, VERSION as u64, 2));
+    assert!(!c.is_broken());
+}
+
+#[test]
+fn disk_refusals() {
+    // The VM refuses this side's version, or has no such disk: an errno, nothing served.
+    let (mut c, _rx) = disk_server(0, -71, vec![]);
+    assert!(matches!(c.select_disk(0), Err(CallError::Errno(_))));
+    let (mut c, _rx) = disk_server(1, 0, hello_payload(0, false));
+    assert!(matches!(c.select_disk(0), Err(CallError::Errno(_))));
+    // A VM of another version answers with its own: the session breaks.
+    let mut old = hello_payload(0, false);
+    old[0..4].copy_from_slice(&(VERSION - 1).to_le_bytes());
+    let (mut c, _rx) = disk_server(0, 0, old);
+    assert!(matches!(c.select_disk(0), Err(CallError::Broken(_))));
+    assert!(c.is_broken());
+    // A fresh server that claims a mounted filesystem: broken.
+    let (mut c, _rx) = disk_server(0, 0, hello_payload(FS_VFAT, false));
+    assert!(matches!(c.select_disk(0), Err(CallError::Broken(_))));
+    // A longer answer than a HELLO is refused from the header.
+    let mut long = hello_payload(0, false);
+    long.push(0);
+    let (mut c, _rx) = disk_server(0, 0, long);
+    assert!(matches!(c.select_disk(0), Err(CallError::Broken(_))));
+}
