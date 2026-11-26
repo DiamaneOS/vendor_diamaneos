@@ -29,12 +29,21 @@ $(call inherit-product, vendor/diamaneos/config/common.mk)
 # System_ext policy for DiamaneOS features of the platform forks (sepolicy/).
 SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += vendor/diamaneos/sepolicy/system_ext/private
 
+# The platform helper is an ordinary app on production builds.
+ifneq ($(filter userdebug eng,$(TARGET_BUILD_VARIANT)),)
+SYSTEM_EXT_PRIVATE_SEPOLICY_DIRS += vendor/diamaneos/sepolicy/system_ext/test
+endif
+
 # SD cards and USB drives served from a protected VM (fsvm/). Devices whose builds offer protected VMs set
 # DIAMANEOS_FS_IN_VM := true. Then vold no longer mounts FAT or exFAT in Android's kernel, with no fallback.
 ifeq ($(DIAMANEOS_FS_IN_VM),true)
 $(call soong_config_set_bool,diamaneos,fs_in_vm,true)
 PRODUCT_PACKAGES += fsvmd
 endif
+
+# A new SD card waits while the phone is locked (sdhold/): init writes the system server's lock
+# state to the kernel's hold of new cards (CONFIG_MMC_HOLD_NEW_CARDS).
+PRODUCT_PACKAGES += hold_new_sd.rc
 
 # DiamaneOS-wide overlays (overlay/).
 PRODUCT_PACKAGES += \

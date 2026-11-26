@@ -1,0 +1,11 @@
+# DiamaneOS: a new SD card waits while the phone is locked (sdhold/hold_new_sd.rc). The system
+# server sets the lock state as a property, and init writes it to the kernel's
+# kernel.hold_new_sd. Nothing else sets the property or writes the node.
+system_internal_prop(hold_new_sd_prop)
+set_prop(system_server, hold_new_sd_prop)
+
+type proc_hold_new_sd, fs_type, proc_type;
+allow init proc_hold_new_sd:file { open write };
+
+neverallow { domain -init } proc_hold_new_sd:file { write append };
+neverallow { domain -init -system_server } hold_new_sd_prop:property_service set;
