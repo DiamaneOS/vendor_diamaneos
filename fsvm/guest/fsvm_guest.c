@@ -1405,8 +1405,6 @@ static int verify_after_repair(const char *dev, uint32_t kind, int64_t deadline_
 	}
 }
 
-static int do_unmount(void);
-
 /* Count a large FAT exactly with bounded read-ahead, then restore the serving device's setting. */
 static void warm_free_space(void)
 {

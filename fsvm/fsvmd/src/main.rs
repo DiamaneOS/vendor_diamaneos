@@ -393,10 +393,10 @@ const FORMAT_BUDGET: Duration = Duration::from_secs(40);
 
 /// The VM of a repair: the size of the volume's serving VM, which ran the same check to its end before vold asked for
 /// the repair (fs.rs, a check that found errors too late to repair them while apps wait). Without the volume's metadata
-/// size from vold, as large as a serving VM may be. A repair that runs out of memory there is tried once more at that
+/// size, FAT starts at the serving minimum and other filesystems at the maximum. An unfinished check retries at the maximum
 /// size (repair).
 fn repair_memory_mib(args: &Args) -> u32 {
-    if args.meta_bytes == 0 {
+    if args.meta_bytes == 0 && args.fs != FS_VFAT {
         layout::MAX_SERVE_MIB
     } else {
         layout::serve_memory_mib(args.fs, args.meta_bytes)
