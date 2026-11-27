@@ -16,7 +16,6 @@ allow decode_service_app {
     gpu_service
     netstats_service
 }:service_manager find;
-allow decode_service_app hint_service:service_manager find;
 
 # The decoder VM: the app starts it through its own VM manager and crosvm (decode_service_app_virtualizationmanager,
 # decode_service_app_virtmgr_crosvm) and reaches it only over the vsock connections that VM manager hands it. The
