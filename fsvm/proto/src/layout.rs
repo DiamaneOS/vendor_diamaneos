@@ -456,6 +456,19 @@ pub fn serve_memory_mib(fs_kind: u32, meta_bytes: u64) -> u32 {
     want.clamp(MIN_SERVE_MIB, MAX_SERVE_MIB)
 }
 
+/// A repair's VM: the size vold admitted it by (`admitted`, 0 when vold names none), else the volume's serving VM, or
+/// the largest for a filesystem other than FAT without its metadata size. With vold's admission a check that does not
+/// finish there asks vold for the largest VM (fsvmd EXIT_REPAIR_LARGER), vold admits it and starts the repair again.
+pub fn repair_memory_mib(fs_kind: u32, meta_bytes: u64, admitted: u32) -> u32 {
+    if admitted != 0 {
+        admitted.clamp(MIN_SERVE_MIB, MAX_SERVE_MIB)
+    } else if meta_bytes == 0 && fs_kind != crate::FS_VFAT {
+        MAX_SERVE_MIB
+    } else {
+        serve_memory_mib(fs_kind, meta_bytes)
+    }
+}
+
 /// Most public partitions one drive's VM serves (vold Disk kMaxPublicPerDisk), each a disk of the VM.
 pub const MAX_DRIVE_DISKS: usize = 4;
 /// What a further partition's server adds to a drive's VM besides its filesystem's metadata: its process and its
@@ -492,6 +505,23 @@ pub fn drive_memory_mib(parts: &[(u32, u64)]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // vold fs/Fsvm.cpp RepairVmMib and tests/Fsvm_test.cpp AdmissionSizesAsFsvmd: the same sizes on both sides.
+    #[test]
+    fn repair_vm_is_the_admitted_one() {
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 0, 0), MIN_SERVE_MIB);
+        assert_eq!(repair_memory_mib(crate::FS_EXFAT, 0, 0), MAX_SERVE_MIB);
+        assert_eq!(repair_memory_mib(0, 0, 0), MAX_SERVE_MIB);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 64 << 20, 0), 144);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 1 << 20, 0), 96);
+        assert_eq!(repair_memory_mib(crate::FS_EXFAT, 65 << 20, 0), 145);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, u64::MAX, 0), MAX_SERVE_MIB);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 0, 96), 96);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 0, MAX_SERVE_MIB), MAX_SERVE_MIB);
+        assert_eq!(repair_memory_mib(crate::FS_EXFAT, 0, 96), 96);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 0, 50), MIN_SERVE_MIB);
+        assert_eq!(repair_memory_mib(crate::FS_VFAT, 0, 999), MAX_SERVE_MIB);
+    }
 
     const DISK: u64 = 64 << 21; // 64 GiB in sectors
 

@@ -100,6 +100,8 @@ struct Args {
     length: u64,
     fs: u32,
     meta_bytes: u64,
+    /// A repair's VM as vold admitted it (`--repair-mib`), 0 when vold names none.
+    repair_mib: u32,
     /// A drive's partitions, each a disk of its VM (`--disk`).
     disks: Vec<drive_msg::DiskSpec>,
 }
@@ -118,6 +120,7 @@ fn parse_args() -> Result<Args> {
         length: 0,
         fs: u32::MAX,
         meta_bytes: 0,
+        repair_mib: 0,
         disks: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -142,6 +145,7 @@ fn parse_args() -> Result<Args> {
             "--start" => a.start = val()?.parse()?,
             "--length" => a.length = val()?.parse()?,
             "--meta-bytes" => a.meta_bytes = val()?.parse()?,
+            "--repair-mib" => a.repair_mib = val()?.parse()?,
             "--fs" => {
                 a.fs = match val()?.as_str() {
                     "vfat" => FS_VFAT,
@@ -391,16 +395,15 @@ const EXIT_NO_ROOM: i32 = 5;
 /// it did for mkfs on Android.
 const FORMAT_BUDGET: Duration = Duration::from_secs(40);
 
-/// The VM of a repair: the size of the volume's serving VM, which ran the same check to its end before vold asked for
-/// the repair (fs.rs, a check that found errors too late to repair them while apps wait). Without the volume's metadata
-/// size, FAT starts at the serving minimum and other filesystems at the maximum. An unfinished check retries at the maximum
-/// size (repair).
+/// fsvmd's exit status when a repair's check did not finish in the VM vold admitted: vold admits the largest VM and
+/// starts the repair again (vold fs/Fsvm.h kExitRepairLarger).
+const EXIT_REPAIR_LARGER: i32 = 6;
+
+/// The VM of a repair (layout::repair_memory_mib): the size vold admitted, else the volume's serving VM, which ran
+/// the same check to its end before vold asked for the repair (fs.rs, a check that found errors too late to repair
+/// them while apps wait).
 fn repair_memory_mib(args: &Args) -> u32 {
-    if args.meta_bytes == 0 && args.fs != FS_VFAT {
-        layout::MAX_SERVE_MIB
-    } else {
-        layout::serve_memory_mib(args.fs, args.meta_bytes)
-    }
+    layout::repair_memory_mib(args.fs, args.meta_bytes, args.repair_mib)
 }
 
 /// What a start leaves before the deadline for the work after it: the probe's answer and a repair's look at the disk,
@@ -418,6 +421,11 @@ fn repair(args: &Args, disk: File, mut pipe: File) -> Result<()> {
     ensure!(access_mode(&disk)? == libc::O_RDWR, "a repair needs the disk writable");
     let first = repair_memory_mib(args);
     let mut repaired = repair_in_vm(args, &disk, first)?;
+    if repaired == Repair::NotFinished && first < layout::MAX_SERVE_MIB && args.repair_mib != 0 {
+        // vold admitted this VM only: it admits the largest before the repair runs there.
+        warn!("the check did not finish in {first} MiB, vold admits {} MiB for it", layout::MAX_SERVE_MIB);
+        std::process::exit(EXIT_REPAIR_LARGER);
+    }
     if repaired == Repair::NotFinished && first < layout::MAX_SERVE_MIB {
         // With no time limit, a check that did not finish was killed in the VM, out of memory for the card's table.
         warn!("the check did not finish in {first} MiB, once more in {} MiB", layout::MAX_SERVE_MIB);
